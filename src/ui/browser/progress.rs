@@ -39,6 +39,8 @@ pub(super) fn set_file_progress_delay_for_test(delay: Duration) {
 const INDETERMINATE_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const STALLED_CANCEL_DELAY: Duration = Duration::from_secs(8);
 
+const PROGRESS_THROTTLE_INTERVAL: Duration = Duration::from_millis(33);
+
 const IMMEDIATE_PROGRESS_ITEM_COUNT: usize = 16;
 
 fn should_show_progress_immediately(total: usize) -> bool {
@@ -73,6 +75,7 @@ pub(super) struct FileProgressView {
     archive_activity: gtk::Spinner,
     indeterminate: Rc<Cell<bool>>,
     pulse_source: Rc<RefCell<Option<glib::SourceId>>>,
+    last_transfer_render: Cell<Option<Instant>>,
 }
 
 fn transfer_progress_status(
@@ -283,6 +286,7 @@ impl ViewState {
             archive_activity,
             indeterminate,
             pulse_source,
+            last_transfer_render: Cell::new(None),
         }));
         let weak = Rc::downgrade(self);
         let cancel_action: Rc<dyn Fn()> = Rc::new(move || {
@@ -381,6 +385,22 @@ impl ViewState {
             return;
         };
         let total_items = self.file_operation_progress.get().1;
+        let is_terminal = (total_items > 0 && completed_items >= total_items)
+            || total_files.is_some_and(|total| total > 0 && completed_files >= total)
+            || total_bytes.is_some_and(|total| total > 0 && transferred_bytes >= total);
+        let is_initial = completed_items == 0 && completed_files == 0 && transferred_bytes == 0;
+        let now = Instant::now();
+        if !is_terminal
+            && !is_initial
+            && view
+                .last_transfer_render
+                .get()
+                .is_some_and(|last| now.duration_since(last) < PROGRESS_THROTTLE_INTERVAL)
+        {
+            return;
+        }
+        view.last_transfer_render.set(Some(now));
+
         let current_file = self.transfer_current_file.borrow();
         let (status, bytes, items, fraction) = transfer_progress_status(
             completed_items,
@@ -526,10 +546,14 @@ impl ViewState {
         } else {
             0
         };
-        view.status.set_text(&format!("{pct}%"));
+        let new_status = format!("{pct}%");
+        let new_fraction = completed as f64 / total.max(1) as f64;
+        if view.status.text() == new_status && view.progress.fraction() == new_fraction {
+            return;
+        }
+        view.status.set_text(&new_status);
         view.indeterminate.set(false);
-        view.progress
-            .set_fraction(completed as f64 / total.max(1) as f64);
+        view.progress.set_fraction(new_fraction);
     }
 
     pub(super) fn update_archive_progress(&self, completed: usize, total: usize) {
