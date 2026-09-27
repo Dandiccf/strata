@@ -873,6 +873,14 @@ fn tenxer_search_survives_view_rebuilds_and_ends_with_the_mode() {
                     "{mode:?}"
                 );
                 assert_eq!(revealed_filter_funnels(&first.view.widget()), 0, "{mode:?}");
+
+                // A monitor rescan reloads the searched folder; its hits stay.
+                let browser = first.view.browser();
+                browser.reload_active();
+                wait_loaded(&browser, 0);
+                pump(200);
+                wait_results(&first, &ALL_REPORTS);
+                assert!(first.view.listing_search_active(), "{mode:?} after reload");
             }
             focus_files(&first);
             assert!(first.press(Key::Escape, ModifierType::empty()));

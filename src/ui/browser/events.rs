@@ -302,8 +302,13 @@ impl ViewState {
                         *depth,
                         &column.sort_direction_button,
                     );
-                    let preserve_search =
-                        self.refreshing_source_filter.get() && column.recursive_search_active.get();
+                    // Recursive hits don't come from this listing, and an s
+                    // search must outlive the monitor rescans of a busy folder.
+                    let preserve_search = column.recursive_search_active.get()
+                        && (self.refreshing_source_filter.get()
+                            || column
+                                .with_query_binding(super::FilterQueryBinding::forced_recursive)
+                                .unwrap_or(false));
                     if !preserve_search {
                         column.search_session.cancel();
                         super::collection::deactivate_recursive_search(
