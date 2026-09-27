@@ -2946,6 +2946,21 @@ entry.preview-command-entry selection {
   font-weight: normal;
 }
 
+.sidebar-keycap {
+  color: @theme_text;
+  background-color: @theme_bg;
+  border: 1px solid @theme_border;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 0.85em;
+  font-weight: bold;
+}
+
+.shortcut-footer-chord-hint {
+  color: @theme_dim_text;
+  font-weight: normal;
+}
+
 .shortcut-footer-prompt {
   color: @theme_text;
   background: @theme_surface;

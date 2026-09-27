@@ -13,7 +13,10 @@ use gtk::{
 use super::{Dispatcher, KeyResult, command_modifiers};
 use crate::{
     app::Browser,
-    ui::preview::{DocumentScroll, PreviewSurface, preview_target},
+    ui::{
+        preview::{DocumentScroll, PreviewSurface, preview_target},
+        tenxer_mode::Chord,
+    },
 };
 
 impl Dispatcher {
@@ -79,6 +82,13 @@ impl Dispatcher {
             if matches!(key, Key::Tab) && mods.is_empty() {
                 return Some(Propagation::Proceed);
             }
+        }
+        if key == Key::g
+            && mods.is_empty()
+            && matches!(surface, PreviewSurface::Document | PreviewSurface::Archive)
+        {
+            self.shortcuts.arm_chord(Chord::PreviewTop);
+            return Some(Propagation::Stop);
         }
         let handled = match surface {
             PreviewSurface::Document => self.preview_document_key(key, mods),
@@ -221,6 +231,23 @@ impl Dispatcher {
             media_key,
             Key::space | Key::Left | Key::Right | Key::Up | Key::Down | Key::m
         )
+    }
+
+    /// **g g** in an owning document or archive preview.
+    pub(super) fn preview_to_top(&self) -> bool {
+        let Some(focused) = self.preview_focus() else {
+            return false;
+        };
+        match self.preview.surface(&focused) {
+            PreviewSurface::Document => {
+                self.preview.scroll_document(DocumentScroll::Start);
+            }
+            PreviewSurface::Archive => {
+                self.preview.archive_edge(false);
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// **J** / **K** scroll whatever the drawer shows without moving focus.

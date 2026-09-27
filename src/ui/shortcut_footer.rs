@@ -8,9 +8,10 @@ use std::{
 
 use gtk::{gdk, glib, prelude::*};
 
-use super::browser_modes::BrowserMode;
+use super::{browser_modes::BrowserMode, tenxer_mode::Chord};
 
 type Shortcut = (&'static str, &'static str);
+type ChordListener = Box<dyn Fn(Option<Chord>)>;
 
 #[derive(Clone)]
 pub(super) struct ShortcutFooter {
@@ -30,9 +31,37 @@ pub(super) struct ShortcutFooter {
     feedback: gtk::Label,
     feedback_epoch: Rc<Cell<u64>>,
     prompt: gtk::Entry,
-    chord: gtk::Label,
+    chords: ChordIndicator,
     visual: gtk::Label,
     view_mode: Rc<Cell<BrowserMode>>,
+}
+
+/// The armed chord and its footer mark. The chord is armed exactly while the
+/// mark is showing.
+#[derive(Clone)]
+struct ChordIndicator {
+    armed: Rc<Cell<Option<Chord>>>,
+    mark: glib::WeakRef<gtk::Label>,
+    hint: glib::WeakRef<gtk::Label>,
+    listeners: Rc<RefCell<Vec<ChordListener>>>,
+}
+
+impl ChordIndicator {
+    fn set(&self, chord: Option<Chord>) {
+        if let Some(mark) = self.mark.upgrade() {
+            mark.set_text(chord.map_or("", Chord::mark));
+            mark.set_visible(chord.is_some());
+        }
+        if let Some(hint) = self.hint.upgrade() {
+            hint.set_text(chord.map_or("", Chord::hint));
+            hint.set_visible(chord.is_some());
+        }
+        if self.armed.replace(chord) != chord {
+            for listener in self.listeners.borrow().iter() {
+                listener(chord);
+            }
+        }
+    }
 }
 
 impl ShortcutFooter {
@@ -54,6 +83,16 @@ impl ShortcutFooter {
         let chord = gtk::Label::new(None);
         chord.add_css_class("shortcut-footer-chord");
         chord.set_visible(false);
+        let chord_hint = gtk::Label::new(None);
+        chord_hint.add_css_class("shortcut-footer-chord-hint");
+        chord_hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        chord_hint.set_visible(false);
+        let chords = ChordIndicator {
+            armed: Rc::new(Cell::new(None)),
+            mark: chord.downgrade(),
+            hint: chord_hint.downgrade(),
+            listeners: Rc::new(RefCell::new(Vec::new())),
+        };
         let visual = gtk::Label::new(None);
         visual.add_css_class("shortcut-footer-chord");
         visual.set_visible(false);
@@ -68,9 +107,11 @@ impl ShortcutFooter {
         feedback.add_css_class("shortcut-footer-feedback");
         feedback.set_visible(false);
         root.append(&paste);
-        root.append(&tag);
         root.append(&visual);
         root.append(&chord);
+        root.append(&chord_hint);
+        // Transient marks grow leftward so the pill stays put.
+        root.append(&tag);
         root.append(&prompt);
         root.append(&feedback);
         root.append(&count);
@@ -204,6 +245,7 @@ impl ShortcutFooter {
             more.clone().upcast(),
             tag.clone().upcast(),
             chord.clone().upcast(),
+            chord_hint.clone().upcast(),
             visual.clone().upcast(),
             prompt.clone().upcast(),
             feedback.clone().upcast(),
@@ -228,7 +270,7 @@ impl ShortcutFooter {
             feedback,
             feedback_epoch: Rc::new(Cell::new(0)),
             prompt,
-            chord,
+            chords,
             visual,
             view_mode: Rc::new(Cell::new(mode)),
         };
@@ -263,7 +305,7 @@ impl ShortcutFooter {
         let view_mode = self.view_mode.clone();
         let feedback = self.feedback.downgrade();
         let prompt = self.prompt.downgrade();
-        let chord = self.chord.downgrade();
+        let chords = self.chords.clone();
         let primed = Rc::new(Cell::new(false));
         manager.bind_preference(
             &self.root,
@@ -284,9 +326,9 @@ impl ShortcutFooter {
                     && !enabled
                     && let Some(feedback) = feedback.upgrade()
                     && let Some(prompt) = prompt.upgrade()
-                    && let Some(chord) = chord.upgrade()
                 {
-                    clear_transient(&feedback, &prompt, &chord);
+                    clear_transient(&feedback, &prompt);
+                    chords.set(None);
                 }
                 rebuild_reference(&reference, view_mode.get());
             },
@@ -412,15 +454,31 @@ impl ShortcutFooter {
         self.prompt.set_visible(false);
     }
 
-    #[cfg(test)]
-    pub(in crate::ui) fn arm_chord(&self, mark: &str) {
-        self.chord.set_text(mark);
-        self.chord.set_visible(!mark.is_empty());
+    pub(in crate::ui) fn arm_chord(&self, chord: Chord) {
+        self.chords.set(Some(chord));
+    }
+
+    pub(in crate::ui) fn armed_chord(&self) -> Option<Chord> {
+        self.chords.armed.get()
+    }
+
+    pub(in crate::ui) fn cancel_chord(&self) {
+        self.chords.set(None);
+    }
+
+    pub(in crate::ui) fn connect_chord_changed(&self, listener: impl Fn(Option<Chord>) + 'static) {
+        self.chords.listeners.borrow_mut().push(Box::new(listener));
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn chord(&self) -> &gtk::Label {
-        &self.chord
+    pub(in crate::ui) fn chord(&self) -> gtk::Label {
+        self.chords.mark.upgrade().expect("chord mark")
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn chord_hint(&self) -> Option<String> {
+        let hint = self.chords.hint.upgrade()?;
+        hint.is_visible().then(|| hint.text().to_string())
     }
 
     pub(in crate::ui) fn prompt_has_focus(&self) -> bool {
@@ -617,13 +675,11 @@ fn apply_experimental_label(tag: &gtk::Label, reference_note: &gtk::Label, enabl
 
 const FEEDBACK_FLASH: Duration = Duration::from_millis(2_000);
 
-fn clear_transient(feedback: &gtk::Label, prompt: &gtk::Entry, chord: &gtk::Label) {
+fn clear_transient(feedback: &gtk::Label, prompt: &gtk::Entry) {
     feedback.set_text("");
     feedback.set_visible(false);
     prompt.set_text("");
     prompt.set_visible(false);
-    chord.set_text("");
-    chord.set_visible(false);
 }
 
 fn update_visual_mode(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {

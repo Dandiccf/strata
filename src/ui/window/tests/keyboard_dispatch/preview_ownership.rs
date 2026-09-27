@@ -254,6 +254,17 @@ fn tenxer_preview_owns_document_keys_until_returned() {
                 assert!(bottom > top);
                 fixture.press(Key::Home, ModifierType::empty());
                 assert_eq!(document_scroll(&fixture), top, "{mode:?}");
+                fixture.press(Key::G, ModifierType::SHIFT_MASK);
+                fixture.press(Key::g, ModifierType::empty());
+                assert_eq!(fixture.shortcuts.chord_hint().as_deref(), Some("g top"));
+                fixture.press(Key::g, ModifierType::empty());
+                assert_eq!(document_scroll(&fixture), top, "{mode:?} g g");
+                fixture.press(Key::g, ModifierType::empty());
+                fixture.press(Key::h, ModifierType::empty());
+                assert_eq!(fixture.shortcuts.feedback_text(), "Unknown chord");
+                assert!(preview_has_focus(&fixture), "{mode:?} g h stays");
+                assert_eq!(browser.active_location(), origin, "{mode:?} g h");
+                fixture.shortcuts.dismiss_feedback();
                 assert_eq!(focused_name(&browser), "long.txt", "{mode:?}");
                 assert_eq!(fixture.selected(), selection, "{mode:?}");
 

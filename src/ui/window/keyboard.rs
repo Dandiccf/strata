@@ -21,6 +21,7 @@ use crate::{
 
 use super::{SidebarState, SidebarView, TypeToSearch, visible_modal_layer};
 
+pub(super) mod chords;
 mod commands;
 mod focus;
 mod items;
@@ -60,6 +61,16 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
         },
     };
     dispatcher.preview.bind_keyboard_view(&dispatcher.view);
+    let keycaps = Rc::downgrade(&sidebar.state);
+    dispatcher.shortcuts.connect_chord_changed(move |chord| {
+        if let Some(sidebar) = keycaps.upgrade() {
+            sidebar.show_place_keycaps(chord == Some(crate::ui::tenxer_mode::Chord::Go));
+        }
+    });
+    // gtk_window_destroy() unrealizes while other references still exist, so the
+    // Widget::destroy signal is too late to drop a pending chord.
+    let cancel_on_destroy = dispatcher.shortcuts.clone();
+    window.connect_unrealize(move |_| cancel_on_destroy.cancel_chord());
     let preferences = dispatcher.type_to_search.preferences.clone();
     release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
     keys.connect_key_pressed(move |_, key, _, modifiers| {
@@ -403,6 +414,7 @@ impl Dispatcher {
         if let Some(layer) = visible_modal_layer(&self.window) {
             let focus_is_inside = gtk::prelude::RootExt::focus(&self.window)
                 .is_some_and(|focus| focus == layer || focus.is_ancestor(&layer));
+            self.shortcuts.cancel_chord();
             if !focus_is_inside {
                 layer.grab_focus();
                 return Some(Propagation::Stop);
@@ -462,7 +474,11 @@ impl Dispatcher {
             return None;
         }
         if (self.text_focused() && !self.preview_document_focused()) || self.focus_in_popover() {
+            self.shortcuts.cancel_chord();
             return None;
+        }
+        if let Some(result) = self.tenxer_chord(browser, key, modifiers) {
+            return Some(result);
         }
         if !items::continues_extend(key, modifiers) {
             browser.end_extend();

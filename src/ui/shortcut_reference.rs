@@ -319,6 +319,42 @@ const TENXER_SETTINGS: &[Binding] = &[
         keys: "Alt + Home",
     },
     Binding {
+        category: "Places",
+        action: "First item",
+        note: "",
+        keys: "g g",
+    },
+    Binding {
+        category: "Places",
+        action: "Home / ~/.config",
+        note: "",
+        keys: "g h / g c",
+    },
+    Binding {
+        category: "Places",
+        action: "Downloads / Documents / Pictures / Videos",
+        note: "",
+        keys: "g d / g k / g p / g v",
+    },
+    Binding {
+        category: "Places",
+        action: "Trash / Network / Recent",
+        note: "",
+        keys: "g t / g n / g r",
+    },
+    Binding {
+        category: "Places",
+        action: "Pinned place",
+        note: "Visible PINNED rows in sidebar order",
+        keys: "g 1–9",
+    },
+    Binding {
+        category: "Places",
+        action: "Cancel a pending chord",
+        note: "",
+        keys: "Esc",
+    },
+    Binding {
         category: "Navigation",
         action: "Move half a page",
         note: "",
@@ -642,6 +678,10 @@ fn tenxer_sections(mode: BrowserMode) -> Vec<ReferenceSection> {
             rows: tenxer_navigation(mode),
         },
         ReferenceSection {
+            title: "Places",
+            rows: TENXER_PLACES.to_vec(),
+        },
+        ReferenceSection {
             title: "Files and selection",
             rows: TENXER_FILES.to_vec(),
         },
@@ -823,6 +863,22 @@ const DEFAULT_FILES: &[(&str, &str)] = &[
     ("Alt+Enter", "Show item properties"),
     ("Menu / Shift+F10", "Open the context menu"),
     ("y / p", "Copy path / pin a folder (type-to-search off)"),
+];
+
+const TENXER_PLACES: &[(&str, &str)] = &[
+    ("g g", "First item"),
+    ("g h / g c", "Home / ~/.config"),
+    (
+        "g d / g k / g p / g v",
+        "Downloads / Documents / Pictures / Videos",
+    ),
+    ("g t / g n / g r", "Trash / Network / Recent"),
+    ("g 1–9", "Visible PINNED rows in sidebar order"),
+    (
+        "g g in the preview",
+        "Top of the document or first archive member",
+    ),
+    ("Esc after g", "Cancel the chord"),
 ];
 
 const TENXER_FILES: &[(&str, &str)] = &[
