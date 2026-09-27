@@ -585,8 +585,6 @@ impl ShortcutFooter {
     pub fn observe_browser(&self, browser: &Rc<crate::app::Browser>) {
         self.observed.replace(Rc::downgrade(browser));
         self.refresh_filter();
-        update_visual_mode(&self.visual, browser);
-        let visual = self.visual.downgrade();
         let weak_browser = Rc::downgrade(browser);
         let footer = self.clone();
         browser.observe(move |event| {
@@ -597,12 +595,8 @@ impl ShortcutFooter {
             ) {
                 footer.clear_feedback();
             }
-            let Some(browser) = weak_browser.upgrade() else {
-                return;
-            };
-            footer.refresh_filter();
-            if let Some(visual) = visual.upgrade() {
-                update_visual_mode(&visual, &browser);
+            if weak_browser.upgrade().is_some() {
+                footer.refresh_filter();
             }
         });
     }
@@ -657,6 +651,12 @@ impl ShortcutFooter {
         let browser = self.observed.borrow().upgrade();
         if let Some(browser) = browser {
             update_item_count(&self.count, &browser, status.as_ref());
+            // A range over results is theirs; the hidden directory's never shows.
+            let visual = match status.as_ref() {
+                Some(status) if status.visual.is_some() => status.visual,
+                _ => browser.visual_kind(),
+            };
+            update_visual_mode(&self.visual, visual);
         }
     }
 
@@ -1001,8 +1001,8 @@ fn apply_experimental_label(tag: &gtk::Label, reference_note: &gtk::Label, enabl
 
 const FEEDBACK_FLASH: Duration = Duration::from_millis(2_000);
 
-fn update_visual_mode(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
-    let (text, name) = match browser.visual_kind() {
+fn update_visual_mode(label: &gtk::Label, visual: Option<crate::app::VisualKind>) {
+    let (text, name) = match visual {
         Some(crate::app::VisualKind::Select) => ("VISUAL", "Visual select"),
         Some(crate::app::VisualKind::Unset) => ("UNSET", "Visual unset"),
         None => ("", ""),

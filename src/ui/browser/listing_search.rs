@@ -6,7 +6,7 @@
 //! **Include subfolders** preference is never written, and dismissal puts back
 //! the **f** query the search replaced.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use gtk::{glib, prelude::*};
 
@@ -17,6 +17,8 @@ use crate::{model::Location, ui::browser_modes::BrowserMode};
 pub(super) struct SearchState {
     /// The field the search borrowed and the **f** query it held.
     borrowed: RefCell<Option<(glib::WeakRef<gtk::Entry>, String)>>,
+    /// A hit's Miller column is opening beside the hits, not replacing them.
+    opening_hit_column: Cell<bool>,
 }
 
 impl SearchState {
@@ -164,12 +166,24 @@ impl BrowserView {
     pub(in crate::ui) fn forget_listing_search(&self) {
         self.state.forget_listing_search();
     }
+
+    /// Opens a directory hit in the column after `depth` and leaves the
+    /// search showing.
+    pub(in crate::ui) fn open_hit_column(&self, depth: usize, location: Location) {
+        let search = &self.state.listing_search;
+        let nested = search.opening_hit_column.replace(true);
+        self.state.browser.show_child(depth, location);
+        search.opening_hit_column.set(nested);
+    }
 }
 
 impl super::ViewState {
     /// Drops the search without restoring anything, for navigation and
     /// leaving the mode: its hits never outlive the folder they came from.
     pub(super) fn forget_listing_search(&self) {
+        if self.listing_search.opening_hit_column.get() {
+            return;
+        }
         self.listing_search.borrowed.take();
         if let Some(target) = self.filter_target().filter(Target::forced_recursive) {
             target.apply("", false);

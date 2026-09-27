@@ -5,17 +5,21 @@ use super::match_ranges;
 #[test]
 fn find_matches_case_insensitive_substrings_by_byte_range() {
     for (name, query, expected) in [
-        ("report-final.txt", "rep", vec![0..3]),
-        ("README.md", "read", vec![0..4]),
-        ("notes.txt", "T", vec![2..3, 6..7, 8..9]),
-        ("aaaa", "aa", vec![0..2, 2..4]),
-        ("Café Menu", "é m", vec![3..7]),
-        ("ÅNGSTRÖM", "ström", vec![4..10]),
+        ("report-final.txt", "rep", vec![(0, 3)]),
+        ("README.md", "read", vec![(0, 4)]),
+        ("notes.txt", "T", vec![(2, 3), (6, 7), (8, 9)]),
+        ("aaaa", "aa", vec![(0, 2), (2, 4)]),
+        ("Café Menu", "é m", vec![(3, 7)]),
+        ("ÅNGSTRÖM", "ström", vec![(4, 10)]),
         ("plain", "", vec![]),
         ("plain", "xyz", vec![]),
         ("ab", "abc", vec![]),
     ] {
         let ranges = match_ranges(name, query);
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(start, end)| start..end)
+            .collect();
         assert_eq!(ranges, expected, "{query:?} in {name:?}");
         for range in ranges {
             assert!(name.is_char_boundary(range.start) && name.is_char_boundary(range.end));

@@ -57,6 +57,7 @@ mod presentation;
 mod preview;
 mod progress;
 mod properties;
+mod result_selection;
 mod transfer;
 mod trash;
 
@@ -84,7 +85,7 @@ pub(super) use crate::ui::browser::entry::{
 };
 pub(super) use crate::ui::browser::inline_edit::{queue_rename, reveal_rename_row};
 pub(in crate::ui) use crate::ui::browser::listing_filter::{
-    FilterStatus, results_step_target, scroll_results_to,
+    FilterStatus, results_step_target, scroll_results_to, selected_cursor,
 };
 pub(super) use crate::ui::browser::pane_header::{
     column_sort_direction_toggle, column_sort_menu, empty_trash_button, pane_new_folder_button,
@@ -259,6 +260,7 @@ pub(super) struct ViewState {
     find: RefCell<find::FindState>,
     listing_filter: listing_filter::FilterState,
     listing_search: listing_search::SearchState,
+    result_selection: result_selection::ResultSelection,
     #[cfg(test)]
     send_to_menu_test_override: RefCell<Option<SendToMenuTestOverride>>,
     browser: Rc<Browser>,
@@ -636,6 +638,7 @@ impl BrowserView {
             find: RefCell::new(find::FindState::default()),
             listing_filter: listing_filter::FilterState::default(),
             listing_search: listing_search::SearchState::default(),
+            result_selection: result_selection::ResultSelection::default(),
             #[cfg(test)]
             send_to_menu_test_override: RefCell::new(None),
             browser,
@@ -1588,6 +1591,9 @@ impl BrowserView {
     }
 
     pub fn toggle_cursor_and_advance(&self) -> bool {
+        if let Some(toggled) = self.toggle_result_and_advance() {
+            return toggled;
+        }
         self.keyboard_navigation();
         let Some(depth) = self.focused_listing_depth() else {
             return false;
@@ -1605,6 +1611,9 @@ impl BrowserView {
     }
 
     pub fn toggle_visual(&self, kind: crate::app::VisualKind) -> bool {
+        if let Some(toggled) = self.toggle_result_visual(kind) {
+            return toggled;
+        }
         self.keyboard_navigation();
         let Some(depth) = self.focused_listing_depth() else {
             return false;
@@ -1632,7 +1641,7 @@ impl BrowserView {
     }
 
     pub fn leave_visual(&self) -> bool {
-        self.state.browser.leave_visual()
+        self.leave_result_visual() || self.state.browser.leave_visual()
     }
 
     /// Source positions of one pane in the order it displays them, including
@@ -1891,14 +1900,11 @@ impl BrowserView {
                     return None;
                 }
                 if column.recursive_search_active.get() {
-                    let selected = column.selection.selection();
-                    if selected.is_empty() {
-                        return None;
-                    }
+                    let cursor = listing_filter::column_cursor(column)?;
                     return column
                         .search_results
                         .borrow()
-                        .get(selected.maximum() as usize)
+                        .get(cursor as usize)
                         .map(search_result_entry);
                 }
                 if column.map.has_query() {

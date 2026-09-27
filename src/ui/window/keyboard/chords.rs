@@ -14,7 +14,7 @@ use super::{Dispatcher, KeyResult, command_modifiers, items::is_modifier_key};
 use crate::{
     app::Browser,
     model::Location,
-    ui::{browser_modes::BrowserMode, tenxer_mode::Chord, window::home_directory},
+    ui::{tenxer_mode::Chord, window::home_directory},
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -124,13 +124,7 @@ impl Dispatcher {
             return false;
         };
         match target {
-            GoTarget::FirstItem => {
-                let icon_results = self.view.view_mode() == BrowserMode::Icons
-                    && self.view.selected_search_results().is_some();
-                if !icon_results {
-                    self.view.move_displayed_cursor(-1, usize::MAX);
-                }
-            }
+            GoTarget::FirstItem => self.view.move_displayed_cursor(-1, usize::MAX),
             GoTarget::HitFolder => {
                 if !self.view.reveal_listing_search_hit() {
                     self.shortcuts.show_feedback("Nothing to reveal");

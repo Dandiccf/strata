@@ -435,12 +435,8 @@ fn tenxer_filter_commits_results_without_touching_the_hidden_directory() {
                 wait_until(|| {
                     fixture.view.item_view_has_focus()
                         && fixture.view.selected_search_result().is_some()
+                        && fixture.shortcuts.filter_mark().as_deref() == Some("filter: report")
                 });
-                assert_eq!(
-                    fixture.shortcuts.filter_mark().as_deref(),
-                    Some("filter: report"),
-                    "{mode:?}"
-                );
                 wait_until(|| {
                     fixture.shortcuts.count_text()
                         == ("3 items".to_owned(), "2 files, 1 folder".to_owned())
@@ -580,6 +576,7 @@ fn tenxer_filter_follows_live_scope_and_survives_view_rebuilds() {
             preferences.set_filter_include_subfolders(false);
             for fixture in [&first, &second] {
                 wait_results(fixture, &IMMEDIATE_REPORTS);
+                wait_until(|| fixture.view.item_view_has_focus());
             }
 
             // The rebuild lands while the typed query still waits on its debounce.
@@ -972,6 +969,283 @@ fn tenxer_go_hit_folder_reveals_the_cursor_hit() {
                         wait_loaded(&browser, 0);
                     }
                 }
+            }
+        },
+    );
+}
+
+fn hit_cursor(fixture: &KeyboardFixture) -> Option<String> {
+    fixture
+        .view
+        .selected_search_result()
+        .map(|entry| entry.display_name)
+}
+
+fn hidden_selection(fixture: &KeyboardFixture) -> Vec<String> {
+    fixture
+        .view
+        .browser()
+        .selected_entries()
+        .into_iter()
+        .map(|entry| entry.display_name)
+        .collect()
+}
+
+fn hit_names(order: &[String], positions: &[usize]) -> Vec<String> {
+    let mut names: Vec<_> = positions.iter().map(|&at| order[at].clone()).collect();
+    names.sort();
+    names
+}
+
+/// Moves the cursor onto `name` with real keys where the view has a linear
+/// order; Icons focus the hit directly.
+fn cursor_to_hit(fixture: &KeyboardFixture, name: &str) {
+    if fixture.view.view_mode() == BrowserMode::Icons {
+        let path = fixture
+            ._directory
+            .path()
+            .join(if name == "deep-report.txt" {
+                "reports/deep-report.txt"
+            } else {
+                name
+            });
+        assert!(fixture.view.focus_search_result(&path), "{name}");
+    } else {
+        assert!(fixture.press(Key::g, ModifierType::empty()));
+        assert!(fixture.press(Key::g, ModifierType::empty()));
+        for _ in ALL_REPORTS {
+            if hit_cursor(fixture).as_deref() == Some(name) {
+                break;
+            }
+            assert!(fixture.press(Key::j, ModifierType::empty()));
+        }
+    }
+    wait_until(|| hit_cursor(fixture).as_deref() == Some(name));
+}
+
+#[test]
+fn tenxer_search_hits_fill_and_range_apart_from_the_hidden_directory() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::footer_prompt::tenxer_search_hits_fill_and_range_apart_from_the_hidden_directory",
+        || {
+            let fixture = KeyboardFixture::new();
+            seed_filter_tree(&fixture);
+            let preferences = enable_tenxer(&fixture);
+            preferences.set_filter_include_subfolders(false);
+            let browser = fixture.view.browser();
+            let none = ModifierType::empty();
+            let shift = ModifierType::SHIFT_MASK;
+
+            for mode in [BrowserMode::Columns, BrowserMode::List, BrowserMode::Icons] {
+                fixture.view.set_view_mode(mode);
+                wait_loaded(&browser, 0);
+                select_named(&fixture, "beta.txt");
+                let hidden = hidden_selection(&fixture);
+                assert_eq!(hidden, ["beta.txt"], "{mode:?}");
+                commit_search(&fixture, "report");
+                wait_results(&fixture, &ALL_REPORTS);
+                let order = fixture.view.filter_result_names();
+                let at = |position: usize| Some(order[position].clone());
+                wait_until(|| hit_cursor(&fixture) == at(0));
+
+                assert!(fixture.press(Key::G, shift));
+                wait_until(|| hit_cursor(&fixture) == at(3));
+                for key in [Key::Home, Key::Page_Up] {
+                    assert!(fixture.press(key, none));
+                    assert!(fixture.press(Key::u, ModifierType::CONTROL_MASK));
+                    pump(20);
+                    assert_eq!(hit_cursor(&fixture), at(3), "{mode:?} {key:?} is swallowed");
+                }
+                assert!(fixture.press(Key::g, none));
+                assert!(fixture.press(Key::g, none));
+                wait_until(|| hit_cursor(&fixture) == at(0));
+                for key in [Key::End, Key::Page_Down] {
+                    assert!(fixture.press(key, none));
+                    pump(20);
+                    assert_eq!(hit_cursor(&fixture), at(0), "{mode:?} {key:?} is swallowed");
+                }
+
+                assert!(fixture.press(Key::space, none));
+                wait_until(|| hit_cursor(&fixture) == at(1));
+                assert_eq!(selected_result_names(&fixture), hit_names(&order, &[0]));
+                assert!(fixture.press(Key::space, none));
+                wait_until(|| hit_cursor(&fixture) == at(2));
+                assert_eq!(selected_result_names(&fixture), hit_names(&order, &[0, 1]));
+                assert!(
+                    !fixture.preview.is_enabled(),
+                    "{mode:?}: Space never previews"
+                );
+                pump(20);
+                assert_eq!(
+                    fixture.shortcuts.count_text().0,
+                    "4 items",
+                    "{mode:?}: the footer keeps the hit total"
+                );
+
+                if mode == BrowserMode::Icons {
+                    // Spatial moves keep the fill wherever the grid puts the cursor.
+                    assert!(fixture.press(Key::h, none));
+                    pump(20);
+                    assert_eq!(selected_result_names(&fixture), hit_names(&order, &[0, 1]));
+                    assert!(fixture.press(Key::v, none));
+                    wait_until(|| fixture.shortcuts.visual_text().as_deref() == Some("VISUAL"));
+                    assert!(fixture.press(Key::v, none));
+                    wait_until(|| fixture.shortcuts.visual_text().is_none());
+                    assert!(fixture.view.listing_search_active(), "{mode:?}");
+                } else {
+                    assert!(fixture.press(Key::j, none));
+                    wait_until(|| hit_cursor(&fixture) == at(3));
+                    assert_eq!(selected_result_names(&fixture), hit_names(&order, &[0, 1]));
+                    assert!(fixture.press(Key::k, none));
+                    wait_until(|| hit_cursor(&fixture) == at(2));
+
+                    assert!(fixture.press(Key::v, none));
+                    wait_until(|| fixture.shortcuts.visual_text().as_deref() == Some("VISUAL"));
+                    assert_eq!(
+                        selected_result_names(&fixture),
+                        hit_names(&order, &[0, 1, 2])
+                    );
+                    assert!(fixture.press(Key::j, none));
+                    wait_until(|| hit_cursor(&fixture) == at(3));
+                    assert_eq!(
+                        selected_result_names(&fixture),
+                        hit_names(&order, &[0, 1, 2, 3])
+                    );
+                    assert!(fixture.press(Key::k, none));
+                    wait_until(|| hit_cursor(&fixture) == at(2));
+                    assert_eq!(
+                        selected_result_names(&fixture),
+                        hit_names(&order, &[0, 1, 2])
+                    );
+
+                    // Esc leaves the range before it dismisses the hits.
+                    assert!(fixture.press(Key::Escape, none));
+                    wait_until(|| fixture.shortcuts.visual_text().is_none());
+                    assert!(fixture.view.listing_search_active(), "{mode:?}");
+                    assert_eq!(
+                        selected_result_names(&fixture),
+                        hit_names(&order, &[0, 1, 2])
+                    );
+
+                    assert!(fixture.press(Key::k, none));
+                    wait_until(|| hit_cursor(&fixture) == at(1));
+                    assert!(fixture.press(Key::V, shift));
+                    wait_until(|| fixture.shortcuts.visual_text().as_deref() == Some("UNSET"));
+                    assert_eq!(selected_result_names(&fixture), hit_names(&order, &[0, 2]));
+                    assert!(fixture.press(Key::V, shift));
+                    wait_until(|| fixture.shortcuts.visual_text().is_none());
+                    assert_eq!(selected_result_names(&fixture), hit_names(&order, &[0, 2]));
+                }
+                assert_eq!(
+                    hidden_selection(&fixture),
+                    hidden,
+                    "{mode:?}: hits never touch the hidden directory's fill"
+                );
+                assert_eq!(fixture.shortcuts.count_text().0, "4 items", "{mode:?}");
+
+                assert!(fixture.press(Key::Escape, none));
+                wait_until(|| !fixture.view.listing_search_active());
+                wait_until(|| fixture.view.selected_search_results().is_none());
+                assert_eq!(hidden_selection(&fixture), hidden, "{mode:?}");
+            }
+        },
+    );
+}
+
+#[test]
+fn tenxer_search_hit_keys_peek_preview_and_yield_to_chords() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::footer_prompt::tenxer_search_hit_keys_peek_preview_and_yield_to_chords",
+        || {
+            let fixture = KeyboardFixture::new();
+            seed_filter_tree(&fixture);
+            let preferences = enable_tenxer(&fixture);
+            preferences.set_filter_include_subfolders(false);
+            let browser = fixture.view.browser();
+            let none = ModifierType::empty();
+            let folder = fixture_name(&fixture).to_string();
+            let focus = || gtk::prelude::RootExt::focus(&fixture.window);
+
+            for mode in [BrowserMode::Columns, BrowserMode::List, BrowserMode::Icons] {
+                fixture.view.set_view_mode(mode);
+                wait_loaded(&browser, 0);
+                focus_files(&fixture);
+                commit_search(&fixture, "report");
+                wait_results(&fixture, &ALL_REPORTS);
+
+                cursor_to_hit(&fixture, "reports");
+                assert!(fixture.press(Key::i, none));
+                if mode == BrowserMode::Columns {
+                    wait_until(|| location_ends_with(browser.location_at(1), "reports"));
+                } else {
+                    wait_until(|| fixture.view.widget().has_css_class("peek-open"));
+                    assert!(fixture.press(Key::i, none));
+                    wait_until(|| !fixture.view.widget().has_css_class("peek-open"));
+                }
+                assert!(fixture.view.listing_search_active(), "{mode:?}");
+                assert!(fixture.view.item_view_has_focus(), "{mode:?}");
+                assert_eq!(hit_cursor(&fixture).as_deref(), Some("reports"), "{mode:?}");
+                assert!(location_ends_with(browser.active_location(), &folder));
+
+                cursor_to_hit(&fixture, "alpha-report.txt");
+                assert!(fixture.press(Key::i, none));
+                wait_until(|| fixture.preview.is_enabled());
+                assert!(
+                    !fixture.preview.owns_focus(focus().as_ref()),
+                    "{mode:?}: i never takes preview ownership"
+                );
+                assert!(fixture.view.item_view_has_focus(), "{mode:?}");
+                assert!(fixture.press(Key::i, none));
+                wait_until(|| !fixture.preview.is_enabled());
+
+                if mode != BrowserMode::Icons {
+                    assert!(fixture.press(Key::l, none));
+                    wait_until(|| fixture.preview.owns_focus(focus().as_ref()));
+                    assert!(fixture.press(Key::h, none));
+                    wait_until(|| fixture.view.item_view_has_focus());
+                    assert!(fixture.preview.is_open(), "{mode:?}: h keeps the drawer");
+                    assert!(fixture.view.listing_search_active(), "{mode:?}");
+                    assert_eq!(
+                        hit_cursor(&fixture).as_deref(),
+                        Some("alpha-report.txt"),
+                        "{mode:?}: h returns to the same hit"
+                    );
+                    assert!(fixture.press(Key::h, none));
+                    wait_until(|| !fixture.view.listing_search_active());
+                    assert!(location_ends_with(browser.active_location(), &folder));
+                    fixture.preview.close();
+                    focus_files(&fixture);
+                    commit_search(&fixture, "report");
+                    wait_results(&fixture, &ALL_REPORTS);
+                }
+
+                // An armed chord owns its second key over the hits.
+                pump(50);
+                let cursor = hit_cursor(&fixture);
+                assert!(cursor.is_some(), "{mode:?}");
+                assert!(fixture.press(Key::g, none));
+                assert!(fixture.press(Key::j, none));
+                assert_eq!(fixture.shortcuts.feedback_text(), "Unknown chord");
+                fixture.shortcuts.dismiss_feedback();
+                pump(20);
+                assert_eq!(hit_cursor(&fixture), cursor, "{mode:?}");
+                assert!(fixture.view.listing_search_active(), "{mode:?}");
+
+                assert!(fixture.press(Key::g, none));
+                assert!(fixture.press(Key::h, none));
+                let home = std::env::var_os("HOME").expect("isolated HOME");
+                wait_until(|| {
+                    browser.active_location().is_some_and(|location| {
+                        location
+                            .native_path()
+                            .is_some_and(|path| path.as_os_str() == home)
+                    })
+                });
+                wait_loaded(&browser, 0);
+                assert!(!fixture.view.listing_search_active(), "{mode:?}");
+                browser.navigate(crate::model::Location::local(fixture._directory.path()));
+                wait_until(|| location_ends_with(browser.active_location(), &folder));
+                wait_loaded(&browser, 0);
             }
         },
     );

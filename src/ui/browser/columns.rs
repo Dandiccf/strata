@@ -419,11 +419,13 @@ pub(super) fn restore_column_cursor(column: &ColumnView, position: u32) {
     let generations = column.cursor_restore_generation.clone();
     let generation = generations.get().wrapping_add(1);
     generations.set(generation);
+    // Recursive hits that replaced the rows since keep their own cursor.
+    let hits = column.recursive_search_active.clone();
     glib::idle_add_local_once(move || {
         let Some(list) = list.upgrade() else { return };
         let frames = Cell::new(0u8);
         list.add_tick_callback(move |list, _| {
-            if generations.get() != generation {
+            if generations.get() != generation || hits.get() {
                 return glib::ControlFlow::Break;
             }
             let focused = list.root().and_then(|root| root.focus());

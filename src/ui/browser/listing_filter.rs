@@ -14,6 +14,7 @@ use gtk::{glib, prelude::*};
 
 use super::{BrowserView, FilterQueryBinding, ViewState, columns::ColumnView};
 use crate::{
+    app::VisualKind,
     services::SearchItem,
     ui::{browser_modes::BrowserMode, inline_search::InlineSearch},
 };
@@ -44,6 +45,8 @@ pub(in crate::ui) struct FilterStatus {
     pub current: Option<PathBuf>,
     pub files: usize,
     pub folders: usize,
+    /// A visual range over the results.
+    pub visual: Option<VisualKind>,
 }
 
 impl FilterStatus {
@@ -85,6 +88,20 @@ pub(in crate::ui) fn scroll_results_to(
         list.scroll_to(position, flags, None);
     } else if let Some(grid) = view.downcast_ref::<gtk::GridView>() {
         grid.scroll_to(position, flags, None);
+    }
+}
+
+/// Results showing in place of the directory, with their own selection.
+pub(super) struct Hits {
+    pub(super) selection: gtk::MultiSelection,
+    pub(super) view: gtk::Widget,
+    /// The focused result, else a selected one.
+    pub(super) cursor: Option<u32>,
+}
+
+impl Hits {
+    pub(super) fn count(&self) -> u32 {
+        self.selection.n_items()
     }
 }
 
@@ -177,6 +194,21 @@ impl Target {
         }
     }
 
+    pub(super) fn hits(&self) -> Option<Hits> {
+        match self {
+            Self::Column(column) => column.recursive_search_active.get().then(|| Hits {
+                selection: column.selection.clone(),
+                view: column.list.clone().upcast(),
+                cursor: column_cursor(column),
+            }),
+            Self::Pane { search, .. } => search.hits().map(|(selection, view, cursor)| Hits {
+                selection,
+                view,
+                cursor,
+            }),
+        }
+    }
+
     pub(super) fn results(&self) -> Option<Vec<SearchItem>> {
         match self {
             Self::Column(column) => column
@@ -233,21 +265,32 @@ impl Target {
     }
 }
 
-fn column_cursor(column: &ColumnView) -> Option<u32> {
+pub(super) fn column_cursor(column: &ColumnView) -> Option<u32> {
     let focused = column.list.root().and_then(|root| root.focus());
     focused
         .and_then(|focused| {
             column.bound_rows.borrow().iter().find_map(|bound| {
                 let row = bound.row.upgrade()?;
-                (focused == *row.upcast_ref::<gtk::Widget>() || focused.is_ancestor(&row))
-                    .then(|| bound.item.upgrade().map(|item| item.position()))
-                    .flatten()
+                let row: &gtk::Widget = row.upcast_ref();
+                // GTK focuses the list item widget that holds the row.
+                (focused == *row
+                    || focused.is_ancestor(row)
+                    || row.parent().as_ref() == Some(&focused))
+                .then(|| bound.item.upgrade().map(|item| item.position()))
+                .flatten()
             })
         })
         .or_else(|| {
             let selected = column.selection.selection();
             (!selected.is_empty()).then(|| selected.maximum())
         })
+}
+
+/// Outside a fill the selection is the cursor; a row GTK kept focused may
+/// belong to a previous query.
+pub(in crate::ui) fn selected_cursor(selection: &gtk::MultiSelection) -> Option<u32> {
+    let selected = selection.selection();
+    (!selected.is_empty()).then(|| selected.maximum())
 }
 
 fn step_column_results(
@@ -259,12 +302,13 @@ fn step_column_results(
     if !column.recursive_search_active.get() {
         return false;
     }
-    let Some(target) = results_step_target(
-        column_cursor(column),
-        column.selection.n_items(),
-        direction,
-        steps,
-    ) else {
+    let current = if steps == 0 {
+        selected_cursor(&column.selection)
+    } else {
+        column_cursor(column)
+    };
+    let Some(target) = results_step_target(current, column.selection.n_items(), direction, steps)
+    else {
         return true;
     };
     column.selection.select_item(target, true);
@@ -296,6 +340,7 @@ fn filter_status(target: &Target, root: Option<&Path>) -> Option<FilterStatus> {
         current,
         files: results.len() - folders,
         folders,
+        visual: None,
     })
 }
 
@@ -423,9 +468,24 @@ impl BrowserView {
         self.state.listing_filter.focus_on_arrival.set(true);
         if target.selection_is_empty() {
             view.grab_focus();
-        } else {
+        } else if !self.state.focus_filled_results() {
             target.step(1, 0, true);
         }
+    }
+
+    /// Returns keyboard focus to the results replacing the listing, on the
+    /// row they last focused, without rewriting their selection. Returns
+    /// `false` without results.
+    pub(in crate::ui) fn focus_results_cursor(&self) -> bool {
+        let Some(view) = self
+            .filter_target()
+            .and_then(|target| target.results_view())
+        else {
+            return false;
+        };
+        self.keyboard_navigation();
+        view.grab_focus();
+        true
     }
 
     /// Clears the focused listing's filter and returns focus to its directory.
@@ -448,6 +508,7 @@ impl BrowserView {
     /// Clears the filters 10xer left behind a closed funnel in every pane.
     pub(in crate::ui) fn clear_hidden_filters(&self) {
         self.state.listing_filter.focus_on_arrival.set(false);
+        self.state.forget_result_fill();
         let columns: Vec<_> = self
             .state
             .columns
@@ -471,7 +532,11 @@ impl BrowserView {
             .filter_depth()
             .and_then(|depth| self.state.browser.location_at(depth));
         let root = root.as_ref().and_then(|location| location.native_path());
-        Some(target.and_then(|target| filter_status(&target, root)))
+        let status = target.and_then(|target| filter_status(&target, root));
+        Some(status.map(|status| FilterStatus {
+            visual: self.state.result_visual_kind(),
+            ..status
+        }))
     }
 
     /// Whether filter or search results stand in for the focused directory.
@@ -488,6 +553,9 @@ impl BrowserView {
         steps: usize,
         take_focus: bool,
     ) -> bool {
+        if take_focus && self.step_filled_results(direction, steps) {
+            return true;
+        }
         self.filter_target()
             .is_some_and(|target| target.step(direction, steps, take_focus))
     }
@@ -498,8 +566,9 @@ impl BrowserView {
     pub(in crate::ui) fn invert_filter_results(&self) -> bool {
         self.filter_target().is_some_and(|target| {
             target.results_view().is_some() && {
-                if !target.searching() {
-                    target.invert();
+                if !target.searching() && target.invert() {
+                    // A late arrival would collapse the inverted selection to its cursor.
+                    self.state.listing_filter.focus_on_arrival.set(false);
                 }
                 true
             }
@@ -566,16 +635,20 @@ impl ViewState {
             self.listing_filter.focus_on_arrival.set(false);
             return;
         };
-        // Replacing the focused row leaves focus on a container of the results.
+        // Replacing the focused row leaves focus on a container of the results,
+        // or on the detached row itself.
         let focus = self.overlay.root().and_then(|root| root.focus());
         let still_waiting = focus.as_ref().is_none_or(|focus| {
-            focus == &results || focus.is_ancestor(&results) || results.is_ancestor(focus)
+            focus.root().is_none()
+                || focus == &results
+                || focus.is_ancestor(&results)
+                || results.is_ancestor(focus)
         });
         if !still_waiting {
             self.listing_filter.focus_on_arrival.set(false);
             return;
         }
-        if !target.selection_is_empty() {
+        if !target.selection_is_empty() && !self.focus_filled_results() {
             target.step(1, 0, true);
         }
     }

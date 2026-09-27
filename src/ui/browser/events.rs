@@ -260,14 +260,19 @@ impl ViewState {
                     }
                     column.entry_count.set(count);
                     set_filter_placeholder(column, count);
-                    let positions: Vec<_> = self
-                        .browser
-                        .selected_positions(*depth)
-                        .into_iter()
-                        .filter_map(|position| column.map.view_position(position))
-                        .collect();
-                    set_column_selections(column, &positions);
+                    // Recursive hits keep their own selection and cursor.
+                    let hits = column.recursive_search_active.get();
+                    if !hits {
+                        let positions: Vec<_> = self
+                            .browser
+                            .selected_positions(*depth)
+                            .into_iter()
+                            .filter_map(|position| column.map.view_position(position))
+                            .collect();
+                        set_column_selections(column, &positions);
+                    }
                     if restore_cursor
+                        && !hits
                         && let Some((focused_depth, position, _)) = self.browser.focused_item()
                         && focused_depth == *depth
                         && let Some(position) = column.map.view_position(position)
@@ -552,8 +557,10 @@ impl ViewState {
                 let column = self.columns.borrow().get(*depth).cloned();
                 if let Some(column) = column {
                     let editing = self.active_rename.borrow().is_some();
-                    if let Some(filtered_position) =
-                        position.and_then(|position| column.map.view_position(position))
+                    // Recursive hits keep their own selection and cursor.
+                    if let Some(filtered_position) = position
+                        .filter(|_| !column.recursive_search_active.get())
+                        .and_then(|position| column.map.view_position(position))
                     {
                         let positions: Vec<_> = self
                             .browser

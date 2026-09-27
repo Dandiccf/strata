@@ -456,6 +456,17 @@ impl InlineSearch {
         Some(self.showing_results()?.collection.view.clone())
     }
 
+    /// The results' own selection, view, and cursor while they replace the
+    /// listing.
+    pub(in crate::ui) fn hits(&self) -> Option<(gtk::MultiSelection, gtk::Widget, Option<u32>)> {
+        let collection = &self.showing_results()?.collection;
+        Some((
+            collection.selection.clone(),
+            collection.view.clone(),
+            collection.current_position(),
+        ))
+    }
+
     pub(in crate::ui) fn invert_selection(&self) -> bool {
         let Some(state) = self.showing_results() else {
             return false;
@@ -478,8 +489,13 @@ impl InlineSearch {
             return false;
         };
         let collection = &state.collection;
+        let current = if steps == 0 {
+            super::browser::selected_cursor(&collection.selection)
+        } else {
+            collection.current_position()
+        };
         let Some(target) = super::browser::results_step_target(
-            collection.current_position(),
+            current,
             collection.selection.n_items(),
             direction,
             steps,
