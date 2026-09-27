@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: MIT
+
+//! 10xer footer prompts. While a prompt has focus only its own keys act; every
+//! other key edits the text and never reaches a browsing command.
+
+use gtk::{
+    gdk::{Key, ModifierType as Modifiers},
+    glib::Propagation,
+};
+
+use super::{Dispatcher, KeyResult, command_modifiers};
+use crate::{app::Browser, ui::tenxer_mode::Prompt};
+
+fn plain(modifiers: Modifiers) -> bool {
+    !command_modifiers(modifiers)
+        .intersects(Modifiers::CONTROL_MASK | Modifiers::ALT_MASK | Modifiers::SUPER_MASK)
+}
+
+impl Dispatcher {
+    /// **/**, **?**, **n**, **N**, **f**, **s**, and the filter and search
+    /// **Esc** steps from the listing. Shift is ignored because some layouts
+    /// type **/** with it and **?** / **N** always need it.
+    pub(super) fn tenxer_prompt_keys(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+        if !plain(modifiers) || !self.view.item_view_has_focus() {
+            return None;
+        }
+        match key {
+            Key::slash | Key::KP_Divide => self.shortcuts.open_prompt(Prompt::Find),
+            Key::question => self.shortcuts.open_prompt(Prompt::FindBackward),
+            Key::n | Key::N => {
+                self.repeat_find(key == Key::N);
+                return Some(Propagation::Stop);
+            }
+            Key::f => {
+                let query = self.view.listing_filter().unwrap_or_default();
+                self.shortcuts.open_prompt_with(Prompt::Filter, &query)
+            }
+            Key::s => match self.view.begin_listing_search() {
+                Some(query) => self.shortcuts.open_prompt_with(Prompt::Search, &query),
+                None => {
+                    self.shortcuts.show_feedback("Nothing to search");
+                    true
+                }
+            },
+            Key::Escape if self.view.listing_search_active() => {
+                self.dismiss_search_step();
+                return Some(Propagation::Stop);
+            }
+            Key::Escape if self.view.clear_listing_filter() => return Some(Propagation::Stop),
+            _ => return None,
+        };
+        Some(Propagation::Stop)
+    }
+
+    fn dismiss_search_step(&self) {
+        if self.view.leave_visual() || self.view.dismiss_find_highlight() {
+            return;
+        }
+        if self.preview.is_enabled() {
+            self.preview.close();
+            self.view.focus_listing_search();
+            return;
+        }
+        self.view.dismiss_listing_search();
+    }
+
+    fn repeat_find(&self, reverse: bool) {
+        match self.view.repeat_find(reverse, true) {
+            None => self.shortcuts.show_feedback("No previous find"),
+            Some(false) => self.report_miss(),
+            Some(true) => {}
+        }
+    }
+
+    fn report_miss(&self) {
+        let query = self.view.find_query().unwrap_or_default();
+        self.shortcuts
+            .show_feedback(&format!("No matches for \u{201c}{query}\u{201d}"));
+    }
+
+    pub(super) fn prompt_key(
+        &self,
+        browser: &Browser,
+        key: Key,
+        modifiers: Modifiers,
+    ) -> Propagation {
+        let preferences = &self.type_to_search.preferences;
+        if crate::ui::tenxer_mode::is_toggle_shortcut(key, modifiers) {
+            preferences.set_tenxer_mode(!preferences.tenxer_mode());
+            return Propagation::Stop;
+        }
+        if !plain(modifiers) {
+            return Propagation::Proceed;
+        }
+        match key {
+            Key::Escape => {
+                if self.shortcuts.open_prompt_kind() == Some(Prompt::Filter) {
+                    self.shortcuts.dismiss_prompt();
+                    if !self.view.clear_listing_filter() {
+                        browser.focus_active();
+                    }
+                    return Propagation::Stop;
+                }
+                if self.shortcuts.open_prompt_kind() == Some(Prompt::Search) {
+                    let text = self.shortcuts.prompt_text();
+                    self.shortcuts.dismiss_prompt();
+                    self.view.commit_listing_search(&text);
+                    return Propagation::Stop;
+                }
+                self.view.dismiss_find_highlight();
+                self.return_to_listing(browser);
+            }
+            Key::Return | Key::KP_Enter => self.submit_prompt(browser),
+            Key::Up | Key::KP_Up => self.view.step_cursor_unfocused(-1),
+            Key::Down | Key::KP_Down => self.view.step_cursor_unfocused(1),
+            _ => return Propagation::Proceed,
+        }
+        Propagation::Stop
+    }
+
+    fn submit_prompt(&self, browser: &Browser) {
+        let text = self.shortcuts.prompt_text();
+        let found = match self.shortcuts.open_prompt_kind() {
+            Some(Prompt::Filter) => {
+                self.shortcuts.dismiss_prompt();
+                self.view.commit_listing_filter(&text);
+                return;
+            }
+            Some(Prompt::Search) => {
+                self.shortcuts.dismiss_prompt();
+                self.view.commit_listing_search(&text);
+                return;
+            }
+            _ if text.is_empty() => true,
+            Some(kind @ (Prompt::Find | Prompt::FindBackward)) => {
+                self.view.find(&text, kind == Prompt::FindBackward, false)
+            }
+            None => true,
+        };
+        // The cursor already moved under the prompt; one focus move follows it.
+        self.return_to_listing(browser);
+        if !found {
+            self.report_miss();
+        }
+    }
+
+    fn return_to_listing(&self, browser: &Browser) {
+        self.shortcuts.dismiss_prompt();
+        if !self.view.focus_visible_results() {
+            browser.focus_active();
+        }
+    }
+}

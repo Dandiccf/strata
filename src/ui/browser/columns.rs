@@ -252,6 +252,19 @@ pub(super) struct ColumnView {
 }
 
 impl ColumnView {
+    pub(super) fn flush_filter_query(&self) {
+        if let Some(binding) = self.query_binding.borrow().as_ref() {
+            binding.flush();
+        }
+    }
+
+    pub(super) fn with_query_binding<T>(
+        &self,
+        apply: impl FnOnce(&super::collection::FilterQueryBinding) -> T,
+    ) -> Option<T> {
+        self.query_binding.borrow().as_ref().map(apply)
+    }
+
     pub(super) fn context_menu_target(
         &self,
         position: Option<usize>,
@@ -405,11 +418,13 @@ pub(super) fn restore_column_cursor(column: &ColumnView, position: u32) {
     let generations = column.cursor_restore_generation.clone();
     let generation = generations.get().wrapping_add(1);
     generations.set(generation);
+    // Recursive hits that replaced the rows since keep their own cursor.
+    let hits = column.recursive_search_active.clone();
     glib::idle_add_local_once(move || {
         let Some(list) = list.upgrade() else { return };
         let frames = Cell::new(0u8);
         list.add_tick_callback(move |list, _| {
-            if generations.get() != generation {
+            if generations.get() != generation || hits.get() {
                 return glib::ControlFlow::Break;
             }
             let focused = list.root().and_then(|root| root.focus());
@@ -1041,6 +1056,9 @@ impl ViewState {
                         &filtered_model_for_search,
                         &model_for_search,
                     );
+                    if let Some(state) = weak_state_for_search.upgrade() {
+                        state.notify_filter_results_changed();
+                    }
                     return;
                 }
                 let Some(state) = weak_state_for_search.upgrade() else {
@@ -1065,6 +1083,7 @@ impl ViewState {
                         &filter_query_for_search,
                         fold_for_search(&text),
                     );
+                    state.notify_filter_results_changed();
                     return;
                 };
                 *filter_query_for_search.borrow_mut() = fold_for_search(&text);
@@ -1116,6 +1135,7 @@ impl ViewState {
                         if search::update_results(&sm, &results, &selection, &syncing, items) {
                             state.notify_search_selection_changed();
                         }
+                        state.notify_filter_results_changed();
                     }),
                 );
             },

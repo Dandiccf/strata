@@ -135,16 +135,22 @@ impl ListFactory {
             row.clear();
             return;
         };
-        let pending_name = self
-            .state
+        let state = self.state.as_ref().and_then(Weak::upgrade);
+        let pending_name = state
             .as_ref()
-            .and_then(Weak::upgrade)
             .and_then(|state| state.pending_rename_name(&binding.entry));
         let edit = super::bound_edit(&self.bound_items, item);
         if let Some(edit) = &edit {
             edit.bind(&binding.entry.location);
         }
         row.bind_labels(item, &binding.entry, pending_name.as_deref());
+        crate::ui::browser::find::highlight_name(
+            row.name.upcast_ref(),
+            state
+                .as_ref()
+                .and_then(|state| state.find_highlight())
+                .as_deref(),
+        );
         if let Some(edit) = &edit {
             edit.display.set_visible(!edit.is_editing());
             edit.field.set_visible(edit.is_editing());
