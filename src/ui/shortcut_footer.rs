@@ -8,14 +8,21 @@ use std::{
 
 use gtk::{gdk, glib, prelude::*};
 
-use super::{browser_modes::BrowserMode, tenxer_mode::Chord};
+use super::{
+    browser::FilterStatus,
+    browser_modes::BrowserMode,
+    tenxer_mode::{Chord, Prompt},
+};
 
 type Shortcut = (&'static str, &'static str);
 type ChordListener = Box<dyn Fn(Option<Chord>)>;
+/// `None` while the view is busy rebuilding; the footer then retries on idle.
+type FilterSource = Rc<RefCell<Option<Rc<dyn Fn() -> Option<Option<FilterStatus>>>>>>;
 
 #[derive(Clone)]
 pub(super) struct ShortcutFooter {
-    root: gtk::Box,
+    root: gtk::Stack,
+    status: gtk::Box,
     paste: gtk::Label,
     count: gtk::Label,
     show_hints: Rc<Cell<bool>>,
@@ -34,10 +41,70 @@ pub(super) struct ShortcutFooter {
     tag: gtk::Label,
     feedback: gtk::Label,
     feedback_epoch: Rc<Cell<u64>>,
-    prompt: gtk::Entry,
+    prompt: PromptBar,
     chords: ChordIndicator,
     visual: gtk::Label,
+    filter: gtk::Label,
+    current: CurrentHit,
+    filter_source: FilterSource,
+    filter_retry: Rc<Cell<bool>>,
+    observed: Rc<RefCell<std::rc::Weak<crate::app::Browser>>>,
     view_mode: Rc<Cell<BrowserMode>>,
+}
+
+/// The search hit under the cursor, as its path below the searched folder.
+/// The folder part gives way to an ellipsis before the name does.
+#[derive(Clone)]
+struct CurrentHit {
+    root: gtk::Box,
+    folder: gtk::Label,
+    name: gtk::Label,
+}
+
+impl CurrentHit {
+    const NAME_MIN_CHARS: usize = 32;
+
+    fn new() -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root.set_visible(false);
+        let folder = gtk::Label::new(None);
+        folder.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        folder.set_max_width_chars(60);
+        let name = gtk::Label::new(None);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        for label in [&folder, &name] {
+            label.add_css_class("shortcut-footer-chord-hint");
+            root.append(label);
+        }
+        Self { root, folder, name }
+    }
+
+    fn set(&self, path: Option<&std::path::Path>) {
+        let Some(path) = path.filter(|path| path.file_name().is_some()) else {
+            self.root.set_visible(false);
+            return;
+        };
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let folder = path
+            .parent()
+            .map(|folder| folder.to_string_lossy())
+            .unwrap_or_default();
+        self.folder.set_text(&folder);
+        self.folder.set_visible(!folder.is_empty());
+        let name = if folder.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{}{name}", std::path::MAIN_SEPARATOR)
+        };
+        self.name.set_text(&name);
+        let chars = name.chars().count();
+        self.name
+            .set_width_chars(chars.min(Self::NAME_MIN_CHARS) as i32);
+        let full = path.to_string_lossy();
+        self.root.set_tooltip_text(Some(&full));
+        super::accessibility::set_label(&self.root, &full);
+        self.root.set_visible(true);
+    }
 }
 
 /// The armed chord and its footer mark. The chord is armed exactly while the
@@ -205,10 +272,108 @@ impl ReferenceLayout {
     }
 }
 
+/// The open footer prompt. Its bar covers the whole footer so typing never
+/// shares the row with status marks.
+#[derive(Clone)]
+struct PromptBar {
+    bar: gtk::Box,
+    label: gtk::Label,
+    entry: gtk::Entry,
+    kind: Rc<Cell<Option<Prompt>>>,
+}
+
+#[derive(Clone)]
+struct WeakPromptBar {
+    bar: glib::WeakRef<gtk::Box>,
+    label: glib::WeakRef<gtk::Label>,
+    entry: glib::WeakRef<gtk::Entry>,
+    kind: Rc<Cell<Option<Prompt>>>,
+}
+
+impl PromptBar {
+    fn new() -> Self {
+        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        bar.add_css_class("shortcut-footer-prompt-bar");
+        bar.set_visible(false);
+        let label = gtk::Label::new(None);
+        label.add_css_class("shortcut-footer-prompt-label");
+        let entry = gtk::Entry::new();
+        entry.add_css_class("form-control");
+        entry.add_css_class("shortcut-footer-prompt");
+        entry.set_hexpand(true);
+        bar.append(&label);
+        bar.append(&entry);
+        Self {
+            bar,
+            label,
+            entry,
+            kind: Rc::new(Cell::new(None)),
+        }
+    }
+
+    fn downgrade(&self) -> WeakPromptBar {
+        WeakPromptBar {
+            bar: self.bar.downgrade(),
+            label: self.label.downgrade(),
+            entry: self.entry.downgrade(),
+            kind: self.kind.clone(),
+        }
+    }
+
+    fn has_focus(&self) -> bool {
+        self.bar.is_visible()
+            && self
+                .bar
+                .root()
+                .and_then(|root| root.focus())
+                .is_some_and(|focus| {
+                    focus == *self.entry.upcast_ref::<gtk::Widget>()
+                        || focus.is_ancestor(&self.entry)
+                })
+    }
+
+    fn open(&self, stack: &gtk::Stack, kind: Prompt, text: &str) -> bool {
+        // Replacing an open prompt must not hand its text to the new kind.
+        self.kind.set(None);
+        self.entry.set_text("");
+        self.kind.set(Some(kind));
+        self.label.set_text(kind.label());
+        super::accessibility::set_label(&self.entry, kind.name());
+        self.entry.set_text(text);
+        self.bar.set_visible(true);
+        stack.set_visible_child(&self.bar);
+        // A pre-filled query stays unselected so typing extends it.
+        let focused = self.entry.grab_focus_without_selecting();
+        self.entry.set_position(-1);
+        focused
+    }
+
+    fn close(&self) {
+        self.kind.set(None);
+        self.entry.set_text("");
+        self.bar.set_visible(false);
+    }
+}
+
+impl WeakPromptBar {
+    fn upgrade(&self) -> Option<PromptBar> {
+        Some(PromptBar {
+            bar: self.bar.upgrade()?,
+            label: self.label.upgrade()?,
+            entry: self.entry.upgrade()?,
+            kind: self.kind.clone(),
+        })
+    }
+}
+
 impl ShortcutFooter {
     pub fn new(mode: BrowserMode) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let root = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(120)
+            .build();
         root.add_css_class("shortcut-footer");
+        let status = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let count = gtk::Label::new(None);
         count.add_css_class("shortcut-footer-count");
         count.set_visible(false);
@@ -237,25 +402,27 @@ impl ShortcutFooter {
         let visual = gtk::Label::new(None);
         visual.add_css_class("shortcut-footer-chord");
         visual.set_visible(false);
-        let prompt = gtk::Entry::new();
-        prompt.add_css_class("form-control");
-        prompt.add_css_class("shortcut-footer-prompt");
-        prompt.set_width_chars(12);
-        prompt.set_hexpand(false);
-        prompt.set_visible(false);
-        super::accessibility::set_label(&prompt, "Command prompt");
+        let filter = gtk::Label::new(None);
+        filter.add_css_class("shortcut-footer-chord");
+        filter.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        filter.set_max_width_chars(40);
+        filter.set_visible(false);
+        let current = CurrentHit::new();
+        let prompt = PromptBar::new();
         let feedback = gtk::Label::new(None);
         feedback.add_css_class("shortcut-footer-feedback");
         feedback.set_visible(false);
-        root.append(&paste);
-        root.append(&visual);
-        root.append(&chord);
-        root.append(&chord_hint);
+        status.append(&paste);
+        status.append(&filter);
+        status.append(&visual);
+        status.append(&chord);
+        status.append(&chord_hint);
         // Transient marks grow leftward so the pill stays put.
-        root.append(&tag);
-        root.append(&prompt);
-        root.append(&feedback);
-        root.append(&count);
+        status.append(&tag);
+        status.append(&feedback);
+        status.append(&count);
+        root.add_child(&status);
+        root.add_child(&prompt.bar);
         let show_hints = Rc::new(Cell::new(true));
         let pending_popup = Rc::new(Cell::new(false));
 
@@ -263,10 +430,11 @@ impl ShortcutFooter {
         more.set_child(Some(&gtk::Label::new(Some("F1  Shortcuts"))));
         more.add_css_class("shortcut-footer-button");
         more.set_tooltip_text(Some("Show all file-view shortcuts (F1)"));
-        root.prepend(&more);
+        status.prepend(&more);
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
-        root.insert_child_after(&spacer, Some(&more));
+        status.insert_child_after(&current.root, Some(&more));
+        status.insert_child_after(&spacer, Some(&current.root));
         let popover = gtk::Popover::builder()
             .position(gtk::PositionType::Top)
             .halign(gtk::Align::Center)
@@ -528,7 +696,9 @@ impl ShortcutFooter {
             chord.clone().upcast(),
             chord_hint.clone().upcast(),
             visual.clone().upcast(),
-            prompt.clone().upcast(),
+            filter.clone().upcast(),
+            current.root.clone().upcast(),
+            prompt.bar.clone().upcast(),
             feedback.clone().upcast(),
         ]));
         for widget in status_widgets.borrow().iter() {
@@ -536,6 +706,7 @@ impl ShortcutFooter {
         }
         let footer = Self {
             root,
+            status,
             paste,
             count,
             show_hints,
@@ -557,6 +728,11 @@ impl ShortcutFooter {
             prompt,
             chords,
             visual,
+            filter,
+            current,
+            filter_source: Rc::new(RefCell::new(None)),
+            filter_retry: Rc::new(Cell::new(false)),
+            observed: Rc::new(RefCell::new(std::rc::Weak::new())),
             view_mode,
         };
         let keys = gtk::EventControllerKey::new();
@@ -568,17 +744,47 @@ impl ShortcutFooter {
                 .unwrap_or(glib::Propagation::Proceed)
         });
         footer.popover.add_controller(keys);
+        footer.close_prompt_on_focus_loss();
         footer.set_mode(mode);
         footer
     }
 
-    pub fn widget(&self) -> &gtk::Box {
+    /// Focus moving anywhere but the shortcut reference (a clicked row, another
+    /// pane) discards the prompt, so its text never reaches a browsing command.
+    fn close_prompt_on_focus_loss(&self) {
+        let focus = gtk::EventControllerFocus::new();
+        let prompt = self.prompt.downgrade();
+        let popover = self.popover.downgrade();
+        let pending_popup = self.pending_popup.clone();
+        focus.connect_leave(move |_| {
+            let prompt = prompt.clone();
+            let popover = popover.clone();
+            let pending_popup = pending_popup.clone();
+            // Focus has not settled on its new owner while ::leave runs.
+            glib::idle_add_local_once(move || {
+                let reference_open = pending_popup.get()
+                    || popover
+                        .upgrade()
+                        .is_some_and(|popover| popover.is_visible());
+                if let Some(prompt) = prompt.upgrade()
+                    && prompt.bar.is_visible()
+                    && !prompt.has_focus()
+                    && !reference_open
+                {
+                    prompt.close();
+                }
+            });
+        });
+        self.prompt.entry.add_controller(focus);
+    }
+
+    pub fn widget(&self) -> &gtk::Stack {
         &self.root
     }
 
     pub fn set_activity(&self, widget: &impl IsA<gtk::Widget>) {
         let widget = widget.as_ref().clone();
-        self.root.insert_child_after(&widget, Some(&self.count));
+        self.status.insert_child_after(&widget, Some(&self.count));
         self.status_widgets.borrow_mut().push(widget.clone());
         watch_status_widget(&widget, &self.status_widgets, &self.root);
     }
@@ -590,6 +796,7 @@ impl ShortcutFooter {
         let search = self.search.downgrade();
         let selected = self.selected_category.clone();
         let scroll = self.scroll.downgrade();
+        let popover = self.popover.downgrade();
         let view_mode = self.view_mode.clone();
         let feedback = self.feedback.downgrade();
         let prompt = self.prompt.downgrade();
@@ -607,12 +814,22 @@ impl ShortcutFooter {
                 };
                 let starting = !primed.replace(true);
                 apply_experimental_label(&tag, enabled);
+                if let Some(popover) = popover.upgrade() {
+                    if enabled {
+                        popover.add_css_class("tenxer-active");
+                    } else {
+                        popover.remove_css_class("tenxer-active");
+                    }
+                }
                 if !starting
                     && !enabled
                     && let Some(feedback) = feedback.upgrade()
-                    && let Some(prompt) = prompt.upgrade()
                 {
-                    clear_transient(&feedback, &prompt);
+                    feedback.set_text("");
+                    feedback.set_visible(false);
+                    if let Some(prompt) = prompt.upgrade() {
+                        prompt.close();
+                    }
                     chords.set(None);
                 }
                 if let (Some(categories), Some(search), Some(scroll)) =
@@ -659,10 +876,8 @@ impl ShortcutFooter {
     }
 
     pub fn observe_browser(&self, browser: &Rc<crate::app::Browser>) {
-        update_item_count(&self.count, browser);
-        update_visual_mode(&self.visual, browser);
-        let label = self.count.downgrade();
-        let visual = self.visual.downgrade();
+        self.observed.replace(Rc::downgrade(browser));
+        self.refresh_filter();
         let weak_browser = Rc::downgrade(browser);
         let footer = self.clone();
         browser.observe(move |event| {
@@ -673,16 +888,67 @@ impl ShortcutFooter {
             ) {
                 footer.clear_feedback();
             }
-            let Some(browser) = weak_browser.upgrade() else {
-                return;
-            };
-            if let Some(label) = label.upgrade() {
-                update_item_count(&label, &browser);
-            }
-            if let Some(visual) = visual.upgrade() {
-                update_visual_mode(&visual, &browser);
+            if weak_browser.upgrade().is_some() {
+                footer.refresh_filter();
             }
         });
+    }
+
+    /// Refreshes once on idle, after focus settles on the cursor row.
+    pub(in crate::ui) fn schedule_filter_refresh(&self) {
+        if self.filter_retry.replace(true) {
+            return;
+        }
+        let footer = self.clone();
+        glib::idle_add_local_once(move || {
+            footer.filter_retry.set(false);
+            footer.refresh_filter();
+        });
+    }
+
+    /// Reports `source`'s filter in place of the directory count while one is
+    /// active. Call [`Self::refresh_filter`] when it changes.
+    pub(in crate::ui) fn observe_filter(
+        &self,
+        source: impl Fn() -> Option<Option<FilterStatus>> + 'static,
+    ) {
+        self.filter_source.replace(Some(Rc::new(source)));
+        self.refresh_filter();
+    }
+
+    pub(in crate::ui) fn refresh_filter(&self) {
+        let source = self.filter_source.borrow().clone();
+        let status = match source {
+            Some(source) => match source() {
+                Some(status) => status,
+                None => {
+                    self.schedule_filter_refresh();
+                    return;
+                }
+            },
+            None => None,
+        };
+        match status.as_ref() {
+            Some(status) => {
+                let label = if status.search { "search" } else { "filter" };
+                self.filter.set_text(&format!("{label}: {}", status.query));
+                self.filter.set_tooltip_text(Some(&status.query));
+                self.filter.set_visible(true);
+            }
+            None => self.filter.set_visible(false),
+        }
+        self.current
+            .set(status.as_ref().and_then(|status| status.current.as_deref()));
+        let browser = self.observed.borrow().upgrade();
+        if let Some(browser) = browser {
+            update_item_count(&self.count, &browser, status.as_ref());
+            // A range over results is theirs; the hidden directory's never shows.
+            let visual = match status.as_ref() {
+                Some(status) if status.visual.is_some() => status.visual,
+                _ => browser.visual_kind(),
+            };
+            update_visual_mode(&self.visual, visual);
+        }
     }
 
     #[cfg(test)]
@@ -741,20 +1007,82 @@ impl ShortcutFooter {
         self.clear_feedback();
     }
 
+    pub(in crate::ui) fn open_prompt(&self, kind: Prompt) -> bool {
+        self.open_prompt_with(kind, "")
+    }
+
+    pub(in crate::ui) fn open_prompt_with(&self, kind: Prompt, text: &str) -> bool {
+        // An armed chord must stay visible, and the prompt covers its mark.
+        self.chords.set(None);
+        self.prompt.open(&self.root, kind, text)
+    }
+
+    /// Runs `listener` as the open prompt's text changes, not when a prompt
+    /// opens empty or closes.
+    pub(in crate::ui) fn connect_prompt_changed(
+        &self,
+        listener: impl Fn(Prompt, String) + 'static,
+    ) {
+        let kind = self.prompt.kind.clone();
+        self.prompt.entry.connect_changed(move |entry| {
+            if let Some(kind) = kind.get() {
+                listener(kind, entry.text().to_string());
+            }
+        });
+    }
+
     #[cfg(test)]
-    pub(in crate::ui) fn show_prompt(&self) {
-        self.prompt.set_visible(true);
-        self.prompt.set_sensitive(true);
+    pub(in crate::ui) fn filter_mark(&self) -> Option<String> {
+        self.filter
+            .is_visible()
+            .then(|| self.filter.text().to_string())
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn current_hit(&self) -> Option<(String, String)> {
+        let current = &self.current;
+        current.root.is_visible().then(|| {
+            let folder = if current.folder.is_visible() {
+                current.folder.text().to_string()
+            } else {
+                String::new()
+            };
+            (
+                format!("{folder}{}", current.name.text()),
+                current.root.tooltip_text().unwrap_or_default().to_string(),
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn count_text(&self) -> (String, String) {
+        (
+            self.count.text().to_string(),
+            self.count.tooltip_text().unwrap_or_default().to_string(),
+        )
     }
 
     #[cfg(test)]
     pub(in crate::ui) fn prompt(&self) -> &gtk::Entry {
-        &self.prompt
+        &self.prompt.entry
+    }
+
+    pub(in crate::ui) fn open_prompt_kind(&self) -> Option<Prompt> {
+        self.prompt.kind.get()
+    }
+
+    pub(in crate::ui) fn prompt_text(&self) -> String {
+        self.prompt.entry.text().to_string()
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn prompt_label(&self) -> Option<String> {
+        (self.root.visible_child().as_ref() == Some(self.prompt.bar.upcast_ref()))
+            .then(|| self.prompt.label.text().to_string())
     }
 
     pub(in crate::ui) fn dismiss_prompt(&self) {
-        self.prompt.set_text("");
-        self.prompt.set_visible(false);
+        self.prompt.close();
     }
 
     pub(in crate::ui) fn arm_chord(&self, chord: Chord) {
@@ -785,19 +1113,11 @@ impl ShortcutFooter {
     }
 
     pub(in crate::ui) fn prompt_is_visible(&self) -> bool {
-        gtk::prelude::WidgetExt::is_visible(&self.prompt)
+        self.prompt.bar.is_visible()
     }
 
     pub(in crate::ui) fn prompt_has_focus(&self) -> bool {
-        gtk::prelude::WidgetExt::is_visible(&self.prompt)
-            && self
-                .root
-                .root()
-                .and_then(|root| root.focus())
-                .is_some_and(|focus| {
-                    focus == *self.prompt.upcast_ref::<gtk::Widget>()
-                        || focus.is_ancestor(&self.prompt)
-                })
+        self.prompt.has_focus()
     }
 
     pub fn handle_key(
@@ -816,10 +1136,6 @@ impl ShortcutFooter {
             && !modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         let tilde = self.tilde_toggles(key, modifiers, reference_open);
         if self.prompt_has_focus() && !f1 && !tilde && !reference_open {
-            if key == gdk::Key::Escape && !command_modifiers {
-                self.dismiss_prompt();
-                return Some(glib::Propagation::Stop);
-            }
             return None;
         }
         if f1 || tilde {
@@ -1304,15 +1620,8 @@ fn apply_experimental_label(tag: &gtk::Label, enabled: bool) {
 
 const FEEDBACK_FLASH: Duration = Duration::from_millis(2_000);
 
-fn clear_transient(feedback: &gtk::Label, prompt: &gtk::Entry) {
-    feedback.set_text("");
-    feedback.set_visible(false);
-    prompt.set_text("");
-    prompt.set_visible(false);
-}
-
-fn update_visual_mode(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
-    let (text, name) = match browser.visual_kind() {
+fn update_visual_mode(label: &gtk::Label, visual: Option<crate::app::VisualKind>) {
+    let (text, name) = match visual {
         Some(crate::app::VisualKind::Select) => ("VISUAL", "Visual select"),
         Some(crate::app::VisualKind::Unset) => ("UNSET", "Visual unset"),
         None => ("", ""),
@@ -1333,7 +1642,18 @@ impl ShortcutFooter {
     }
 }
 
-fn update_item_count(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
+fn update_item_count(
+    label: &gtk::Label,
+    browser: &Rc<crate::app::Browser>,
+    filter: Option<&FilterStatus>,
+) {
+    if let Some(filter) = filter {
+        let noun = if filter.total() == 1 { "item" } else { "items" };
+        label.set_label(&format!("{} {noun}", filter.total()));
+        label.set_tooltip_text(Some(&file_folder_breakdown(filter.files, filter.folders)));
+        label.set_visible(true);
+        return;
+    }
     let Some(depth) = browser.active_depth() else {
         label.set_visible(false);
         return;
@@ -1357,18 +1677,15 @@ fn update_item_count(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
         )));
     } else {
         label.set_label(&format!("{} {noun}", counts.total));
-        let files = if counts.files == 1 { "file" } else { "files" };
-        let folders = if counts.folders == 1 {
-            "folder"
-        } else {
-            "folders"
-        };
-        label.set_tooltip_text(Some(&format!(
-            "{} {files}, {} {folders}",
-            counts.files, counts.folders
-        )));
+        label.set_tooltip_text(Some(&file_folder_breakdown(counts.files, counts.folders)));
     }
     label.set_visible(true);
+}
+
+fn file_folder_breakdown(files: usize, folders: usize) -> String {
+    let file_noun = if files == 1 { "file" } else { "files" };
+    let folder_noun = if folders == 1 { "folder" } else { "folders" };
+    format!("{files} {file_noun}, {folders} {folder_noun}")
 }
 
 fn selection_details(entries: &[crate::model::FileEntry]) -> String {
@@ -1408,7 +1725,7 @@ fn selection_details(entries: &[crate::model::FileEntry]) -> String {
 fn watch_status_widget(
     widget: &gtk::Widget,
     status_widgets: &Rc<RefCell<Vec<gtk::Widget>>>,
-    root: &gtk::Box,
+    root: &gtk::Stack,
 ) {
     let root = root.downgrade();
     let statuses = status_widgets.clone();
@@ -1471,6 +1788,7 @@ fn append_section(parent: &gtk::Box, title: &str, shortcuts: &[Shortcut], compac
     heading.append(&count);
     let divider = gtk::Separator::new(gtk::Orientation::Horizontal);
     divider.set_hexpand(true);
+    divider.set_valign(gtk::Align::Center);
     heading.append(&divider);
     section.append(&heading);
     let grid = gtk::Grid::new();

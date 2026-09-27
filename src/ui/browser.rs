@@ -43,8 +43,11 @@ mod dissolve_delete;
 mod entry;
 mod entry_animation;
 mod events;
+pub(in crate::ui) mod find;
 pub(super) mod fly_to_trash;
 mod inline_edit;
+mod listing_filter;
+mod listing_search;
 mod location;
 mod pane_header;
 pub(in crate::ui) mod paths;
@@ -54,6 +57,7 @@ mod presentation;
 mod preview;
 mod progress;
 mod properties;
+mod result_selection;
 mod transfer;
 mod trash;
 
@@ -80,6 +84,9 @@ pub(super) use crate::ui::browser::entry::{
     format_file_size, icon_for_name, metadata_needs_fill, model_type_group, rounded_size_and_unit,
 };
 pub(super) use crate::ui::browser::inline_edit::{queue_rename, reveal_rename_row};
+pub(in crate::ui) use crate::ui::browser::listing_filter::{
+    FilterStatus, results_step_target, scroll_results_to, selected_cursor,
+};
 pub(super) use crate::ui::browser::pane_header::{
     column_sort_direction_toggle, column_sort_menu, empty_trash_button, pane_new_folder_button,
     pane_refresh_button, sync_column_sort_direction,
@@ -182,9 +189,10 @@ pub(super) struct ViewState {
     column_resizing: Cell<bool>,
     horizontal_scroll_generation: Rc<Cell<u64>>,
     suppress_focus_scroll: Cell<bool>,
+    /// Set while a footer prompt moves the cursor; the prompt keeps the keys.
+    cursor_keeps_focus: Cell<bool>,
     pending_mirror: RefCell<Option<glib::SourceId>>,
     source_generation: Rc<Cell<u64>>,
-    refreshing_source_filter: Cell<bool>,
     peek: RefCell<Option<PeekView>>,
     pending_peek: RefCell<Option<glib::SourceId>>,
     pending_close: RefCell<Option<glib::SourceId>>,
@@ -251,6 +259,10 @@ pub(super) struct ViewState {
     drag_source_depth: Cell<Option<usize>>,
     suppress_scroll_after_drop: Cell<bool>,
     drop_active_depths: Cell<Option<(usize, usize)>>,
+    find: RefCell<find::FindState>,
+    listing_filter: listing_filter::FilterState,
+    listing_search: listing_search::SearchState,
+    result_selection: result_selection::ResultSelection,
     #[cfg(test)]
     send_to_menu_test_override: RefCell<Option<SendToMenuTestOverride>>,
     browser: Rc<Browser>,
@@ -564,9 +576,9 @@ impl BrowserView {
             column_resizing: Cell::new(false),
             horizontal_scroll_generation: Rc::new(Cell::new(0)),
             suppress_focus_scroll: Cell::new(false),
+            cursor_keeps_focus: Cell::new(false),
             pending_mirror: RefCell::new(None),
             source_generation,
-            refreshing_source_filter: Cell::new(false),
             peek: RefCell::new(None),
             pending_peek: RefCell::new(None),
             pending_close: RefCell::new(None),
@@ -626,6 +638,10 @@ impl BrowserView {
             drag_source_depth: Cell::new(None),
             suppress_scroll_after_drop: Cell::new(false),
             drop_active_depths: Cell::new(None),
+            find: RefCell::new(find::FindState::default()),
+            listing_filter: listing_filter::FilterState::default(),
+            listing_search: listing_search::SearchState::default(),
+            result_selection: result_selection::ResultSelection::default(),
             #[cfg(test)]
             send_to_menu_test_override: RefCell::new(None),
             browser,
@@ -641,6 +657,7 @@ impl BrowserView {
         // Columns are laid out from the start edge, so the blank strip beside the last
         // one is the natural place to begin a marquee that runs into it.
         register_cut_view(&state);
+        state.listing_filter.set_owner(&state);
         state.install_input_ownership();
         state.install_column_peek_targets();
         state.install_drag_autoscroll();
@@ -877,13 +894,11 @@ impl BrowserView {
     }
 
     pub(super) fn refresh_source_filter(&self) {
-        self.state.refreshing_source_filter.set(true);
         if let Some(last) = self.state.browser.active_depth() {
             for depth in 0..=last {
                 self.state.browser.retry_column(depth);
             }
         }
-        self.state.refreshing_source_filter.set(false);
         let columns = self.state.columns.borrow().clone();
         let mut changed = false;
         for column in &columns {
@@ -1026,6 +1041,7 @@ impl BrowserView {
         }
         // The rebuilt view has a different displayed order for the same anchor.
         self.state.browser.leave_visual();
+        let searching = self.state.listing_search_showing();
         self.state.mode.set(mode);
         let filter = match previous {
             BrowserMode::Columns => self.state.capture_active_column_filter(),
@@ -1052,6 +1068,7 @@ impl BrowserView {
                 .borrow_mut()
                 .clear_inactive_mode(previous),
         }
+        self.state.carry_listing_search(searching);
         if mode == BrowserMode::Columns {
             self.state.focus_rebuilt_active_column();
         } else if let Some(depth) = self.state.browser.active_depth() {
@@ -1577,6 +1594,9 @@ impl BrowserView {
     }
 
     pub fn toggle_cursor_and_advance(&self) -> bool {
+        if let Some(toggled) = self.toggle_result_and_advance() {
+            return toggled;
+        }
         self.keyboard_navigation();
         let Some(depth) = self.focused_listing_depth() else {
             return false;
@@ -1594,6 +1614,9 @@ impl BrowserView {
     }
 
     pub fn toggle_visual(&self, kind: crate::app::VisualKind) -> bool {
+        if let Some(toggled) = self.toggle_result_visual(kind) {
+            return toggled;
+        }
         self.keyboard_navigation();
         let Some(depth) = self.focused_listing_depth() else {
             return false;
@@ -1621,7 +1644,7 @@ impl BrowserView {
     }
 
     pub fn leave_visual(&self) -> bool {
-        self.state.browser.leave_visual()
+        self.leave_result_visual() || self.state.browser.leave_visual()
     }
 
     /// Source positions of one pane in the order it displays them, including
@@ -1880,14 +1903,11 @@ impl BrowserView {
                     return None;
                 }
                 if column.recursive_search_active.get() {
-                    let selected = column.selection.selection();
-                    if selected.is_empty() {
-                        return None;
-                    }
+                    let cursor = listing_filter::column_cursor(column)?;
                     return column
                         .search_results
                         .borrow()
-                        .get(selected.maximum() as usize)
+                        .get(cursor as usize)
                         .map(search_result_entry);
                 }
                 if column.map.has_query() {
@@ -2015,6 +2035,10 @@ impl BrowserView {
         }
         self.keyboard_navigation();
         let steps = steps.max(1);
+        // Filter results replace the directory; its hidden cursor stays put.
+        if self.step_filter_results(direction, steps, true) {
+            return;
+        }
         let focused = self.state.overlay.root().and_then(|root| root.focus());
         let collection = focused
             .as_ref()

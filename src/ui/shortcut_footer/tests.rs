@@ -305,7 +305,7 @@ fn tenxer_reference_follows_the_active_map() {
             assert_eq!(footer.tag.text(), crate::ui::tenxer_mode::TAG_TEXT);
             assert!(
                 footer
-                    .root
+                    .status
                     .observe_children()
                     .into_iter()
                     .flatten()

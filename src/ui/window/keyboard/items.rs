@@ -48,7 +48,8 @@ impl Dispatcher {
     }
 
     pub(super) fn dismiss_preview_or_selection(&self, browser: &Browser) -> KeyResult {
-        if self.type_to_search.preferences.tenxer_mode() && self.view.leave_visual() {
+        let tenxer = self.type_to_search.preferences.tenxer_mode();
+        if tenxer && (self.view.dismiss_find_highlight() || self.view.leave_visual()) {
             return Some(Propagation::Stop);
         }
         if self.preview.is_enabled() {
@@ -257,7 +258,16 @@ impl Dispatcher {
         let search = self.view.selected_search_results().is_some();
         let mods = super::command_modifiers(modifiers);
         if search && !mods.is_empty() {
-            return false;
+            return match mods {
+                Modifiers::CONTROL_MASK => {
+                    (matches!(key, Key::r | Key::R) && self.view.invert_filter_results())
+                        || (self.view.listing_search_active() && self.tenxer_control_page(key))
+                }
+                Modifiers::SHIFT_MASK => {
+                    matches!(key, Key::G | Key::V) && self.tenxer_shifted(browser, key)
+                }
+                _ => false,
+            };
         }
         if mods == Modifiers::CONTROL_MASK {
             return self.tenxer_control_page(key)
@@ -277,12 +287,13 @@ impl Dispatcher {
             return self.move_icon_cursor(browser, arrow, search);
         }
         match key {
+            key if swallowed_on_hits(key) && self.view.listing_search_active() => {}
             Key::Home | Key::KP_Home if !search => self.jump_displayed(-1),
             Key::End | Key::KP_End | Key::G if !search => self.jump_displayed(1),
             Key::H if !search => self.go_back(browser),
             Key::L if !search => self.go_forward(browser),
             Key::BackSpace if !search => self.go_parent(),
-            Key::o | Key::Return | Key::KP_Enter => self.activate_icons(browser),
+            Key::o | Key::Return | Key::KP_Enter => self.activate_focused(browser),
             Key::i => {
                 if !self.toggle_file_preview(browser) {
                     self.view.toggle_folder_peek();
@@ -292,8 +303,8 @@ impl Dispatcher {
             Key::Page_Down | Key::KP_Page_Down if !search => {
                 self.view.page_displayed_cursor(1, false)
             }
-            Key::space if !search => self.toggle_tenxer_cursor(),
-            Key::v if !search => self.toggle_visual(VisualKind::Select),
+            Key::space if !self.selection_keys_blocked() => self.toggle_tenxer_cursor(),
+            Key::v if !self.selection_keys_blocked() => self.toggle_visual(VisualKind::Select),
             Key::g => self.shortcuts.arm_chord(Chord::Go),
             _ => return false,
         }
@@ -324,7 +335,11 @@ impl Dispatcher {
         }
         self.view.keyboard_navigation();
         if search {
-            self.view.focus_search_results();
+            self.view.keep_result_fill(|| {
+                self.view.focus_search_results();
+                crate::ui::focus_navigation::activate_native_arrow(&self.window, arrow);
+            });
+            return true;
         }
         crate::ui::focus_navigation::activate_native_arrow(&self.window, arrow);
         if let Some((depth, positions, _)) = preserved {
@@ -351,19 +366,6 @@ impl Dispatcher {
         crate::ui::focus_navigation::activate_native_arrow(&self.window, arrow);
         browser.restore_visual(range);
         self.view.refresh_visual();
-    }
-
-    fn activate_icons(&self, browser: &Rc<Browser>) {
-        self.view.keyboard_navigation();
-        if let Some(entry) = self.view.selected_search_result() {
-            if entry.is_directory() {
-                browser.navigate(entry.location);
-            } else {
-                browser.open_location(entry.location);
-            }
-            return;
-        }
-        self.view.activate_focused();
     }
 
     pub(super) fn tenxer_listing(
@@ -394,6 +396,9 @@ impl Dispatcher {
     }
 
     fn tenxer_selection_command(&self, key: Key) -> bool {
+        if matches!(key, Key::r | Key::R) && self.view.invert_filter_results() {
+            return true;
+        }
         if self.view.selected_search_results().is_some() {
             return false;
         }
@@ -449,7 +454,9 @@ impl Dispatcher {
             Key::f | Key::F | Key::Page_Down | Key::KP_Page_Down => (1, false),
             _ => return false,
         };
-        self.view.page_displayed_cursor(direction, half);
+        if !self.view.listing_search_active() {
+            self.view.page_displayed_cursor(direction, half);
+        }
         true
     }
 
@@ -471,7 +478,7 @@ impl Dispatcher {
             return true;
         }
         match key {
-            Key::V if self.view.selected_search_results().is_none() => {
+            Key::V if !self.selection_keys_blocked() => {
                 self.toggle_visual(VisualKind::Unset);
             }
             Key::G => self.jump_displayed(1),
@@ -485,37 +492,29 @@ impl Dispatcher {
 
     fn tenxer_plain(&self, browser: &Rc<Browser>, key: Key) -> bool {
         match key {
+            key if swallowed_on_hits(key) && self.view.listing_search_active() => {}
             Key::j | Key::Down | Key::KP_Down => self.view.move_displayed_cursor(1, 1),
             Key::k | Key::Up | Key::KP_Up => self.view.move_displayed_cursor(-1, 1),
             Key::Home | Key::KP_Home => self.jump_displayed(-1),
             Key::End | Key::KP_End | Key::G => self.jump_displayed(1),
             Key::H => self.go_back(browser),
             Key::L => self.go_forward(browser),
+            Key::h | Key::Left | Key::KP_Left if self.view.listing_search_active() => {
+                self.view.dismiss_listing_search();
+            }
             Key::h | Key::Left | Key::KP_Left | Key::BackSpace => self.go_parent(),
             Key::l | Key::Right | Key::KP_Right => self.enter_preview(browser),
-            Key::o | Key::Return | Key::KP_Enter => self.activate_focused(),
+            Key::o | Key::Return | Key::KP_Enter => self.activate_focused(browser),
             Key::g => self.shortcuts.arm_chord(Chord::Go),
             Key::i if self.toggle_file_preview(browser) => {}
-            Key::i => {
-                if self.view.view_mode() != BrowserMode::Columns {
-                    return false;
-                }
+            Key::i if self.view.view_mode() == BrowserMode::Columns => {
                 self.open_miller_child(browser);
             }
+            Key::i => self.view.toggle_folder_peek(),
             Key::Page_Up | Key::KP_Page_Up => self.view.page_displayed_cursor(-1, false),
             Key::Page_Down | Key::KP_Page_Down => self.view.page_displayed_cursor(1, false),
-            Key::space => {
-                if self.view.selected_search_results().is_some() {
-                    return false;
-                }
-                self.toggle_tenxer_cursor();
-            }
-            Key::v => {
-                if self.view.selected_search_results().is_some() {
-                    return false;
-                }
-                self.toggle_visual(VisualKind::Select);
-            }
+            Key::space if !self.selection_keys_blocked() => self.toggle_tenxer_cursor(),
+            Key::v if !self.selection_keys_blocked() => self.toggle_visual(VisualKind::Select),
             _ => return false,
         }
         true
@@ -540,13 +539,41 @@ impl Dispatcher {
         browser.forward();
     }
 
-    fn activate_focused(&self) {
+    /// Opens the focused result while results replace the directory, and
+    /// nothing when there is none rather than the hidden directory's cursor.
+    fn activate_focused(&self, browser: &Rc<Browser>) {
         self.view.keyboard_navigation();
+        if let Some(entry) = self.view.selected_search_result() {
+            if entry.is_directory() {
+                browser.navigate(entry.location);
+            } else {
+                browser.open_location(entry.location);
+            }
+            return;
+        }
+        if self.view.results_replace_listing() {
+            return;
+        }
         self.view.activate_focused();
     }
 
+    fn selection_keys_blocked(&self) -> bool {
+        self.view.selected_search_results().is_some() && !self.view.results_replace_listing()
+    }
+
+    /// Opens the directory under the cursor, or the directory hit, in the
+    /// next column without moving focus.
     fn open_miller_child(&self, browser: &Rc<Browser>) {
         self.view.keyboard_navigation();
+        if self.view.results_replace_listing() {
+            if let (Some(depth), Some(entry)) =
+                (browser.active_depth(), self.view.selected_search_result())
+                && entry.is_directory()
+            {
+                self.view.open_hit_column(depth, entry.location);
+            }
+            return;
+        }
         let Some((depth, _, entry)) = browser.focused_item() else {
             return;
         };
@@ -554,6 +581,20 @@ impl Dispatcher {
             browser.show_child(depth, entry.location);
         }
     }
+}
+
+fn swallowed_on_hits(key: Key) -> bool {
+    matches!(
+        key,
+        Key::Home
+            | Key::KP_Home
+            | Key::End
+            | Key::KP_End
+            | Key::Page_Up
+            | Key::KP_Page_Up
+            | Key::Page_Down
+            | Key::KP_Page_Down
+    )
 }
 
 fn extend_arrow(key: Key) -> Option<Key> {

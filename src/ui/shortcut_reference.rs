@@ -319,6 +319,54 @@ const TENXER_SETTINGS: &[Binding] = &[
         keys: "Alt + Home",
     },
     Binding {
+        category: "Find",
+        action: "Find the next / previous name in this listing",
+        note: "Highlights matches without hiding rows",
+        keys: "/ / ?",
+    },
+    Binding {
+        category: "Find",
+        action: "Repeat the last find / in reverse",
+        note: "",
+        keys: "n / N",
+    },
+    Binding {
+        category: "Find",
+        action: "Move through the listing from the prompt",
+        note: "",
+        keys: "↑ / ↓",
+    },
+    Binding {
+        category: "Find",
+        action: "Dismiss find highlights",
+        note: "In the listing",
+        keys: "Esc",
+    },
+    Binding {
+        category: "Find",
+        action: "Filter this listing",
+        note: "Hides non-matches; follows Include subfolders",
+        keys: "f",
+    },
+    Binding {
+        category: "Find",
+        action: "Clear the filter",
+        note: "In the listing or the filter prompt",
+        keys: "Esc",
+    },
+    Binding {
+        category: "Find",
+        action: "Search this folder and its subfolders",
+        note: "Names only; up to 100 hits",
+        keys: "s",
+    },
+    Binding {
+        category: "Find",
+        action: "Dismiss the search",
+        note: "In the hits; restores an earlier filter",
+        keys: "Esc / h",
+    },
+    Binding {
         category: "Navigation",
         action: "Move half a page",
         note: "",
@@ -598,6 +646,16 @@ const TENXER_PLACE_CHORDS: &[PlaceChord] = &[
         },
         reference_keys: "",
         reference_label: "First item",
+    },
+    PlaceChord {
+        binding: Binding {
+            category: "Places",
+            action: "Folder holding the search hit",
+            note: "Selects the hit and ends the search",
+            keys: "g f",
+        },
+        reference_keys: "",
+        reference_label: "Folder holding the search hit",
     },
     PlaceChord {
         binding: Binding {
@@ -988,6 +1046,15 @@ const DEFAULT_TOOLS: &[(&str, &str)] = &[
 ];
 
 const TENXER_TOOLS: &[(&str, &str)] = &[
+    ("/ / ?", "Find the next / previous name in this listing"),
+    ("n / N", "Repeat the last find / in reverse"),
+    ("↑ / ↓ in a prompt", "Move through the listing"),
+    ("Enter / Esc in a prompt", "Apply / cancel it"),
+    ("Esc after a find", "Dismiss the find highlights"),
+    ("f", "Filter this listing"),
+    ("Esc after a filter", "Clear the filter"),
+    ("s", "Search this folder and its subfolders"),
+    ("Esc / h after a search", "Dismiss the hits"),
     ("Tab", "Focus the window header"),
     (
         "Enter / Space in the header",

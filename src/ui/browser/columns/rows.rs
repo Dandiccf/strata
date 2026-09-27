@@ -814,6 +814,13 @@ pub(super) fn column_rows(
         } else {
             label.set_opacity(1.0);
         }
+        crate::ui::browser::find::highlight_name(
+            label.upcast_ref(),
+            state
+                .as_ref()
+                .and_then(|state| state.find_highlight())
+                .as_deref(),
+        );
         let origin = entry
             .as_ref()
             .filter(|_| searching)

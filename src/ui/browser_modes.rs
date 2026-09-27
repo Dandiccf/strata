@@ -336,6 +336,8 @@ pub struct ModeViews {
     /// Page Up/Down scrolls the viewport itself; skip the follow-up `scroll_to`
     /// that `FocusChanged` would otherwise schedule from stale GridView estimates.
     suppress_focus_scroll: Cell<bool>,
+    /// Set while a footer prompt moves the cursor; the prompt keeps the keys.
+    cursor_keeps_focus: Cell<bool>,
 }
 
 impl ModeViews {
@@ -410,6 +412,7 @@ impl ModeViews {
             icons_thumbnail_size: Rc::new(Cell::new(DEFAULT_ICONS_THUMBNAIL_SIZE)),
             focus_before_header: RefCell::new(None),
             suppress_focus_scroll: Cell::new(false),
+            cursor_keeps_focus: Cell::new(false),
         }
     }
 
@@ -945,6 +948,40 @@ impl ModeViews {
         true
     }
 
+    /// The active pane's filter field, its funnel toggle, and the results that
+    /// replace its listing while the field has text.
+    pub(in crate::ui) fn active_filter(
+        &self,
+    ) -> Option<(
+        gtk::Entry,
+        gtk::ToggleButton,
+        super::inline_search::InlineSearch,
+    )> {
+        let pane = self
+            .panes_at(self.browser.active_depth()?)
+            .into_iter()
+            .next()?;
+        Some((
+            pane.filter_entry.clone()?,
+            pane.filter_button.clone()?,
+            pane.search.clone(),
+        ))
+    }
+
+    pub(in crate::ui) fn hidden_filter_entries(&self) -> Vec<gtk::Entry> {
+        self.icons_panes
+            .iter()
+            .chain(self.list_pane.iter())
+            .filter(|pane| {
+                pane.filter_button
+                    .as_ref()
+                    .is_some_and(|button| !button.is_active())
+            })
+            .filter_map(|pane| pane.filter_entry.clone())
+            .filter(|entry| !entry.text().is_empty())
+            .collect()
+    }
+
     pub(crate) fn capture_active_filter(&self) -> super::browser::ActivePaneFilter {
         let Some(depth) = self.browser.active_depth() else {
             return super::browser::ActivePaneFilter::default();
@@ -977,7 +1014,13 @@ impl ModeViews {
             return;
         };
         super::browser::restore_filter_controls(button, entry, filter);
-        super::browser::notify_filter_query(&pane.filter, &pane.filter_query, filter.query.clone());
+        if !pane.search.replaces_listing() {
+            super::browser::notify_filter_query(
+                &pane.filter,
+                &pane.filter_query,
+                filter.query.clone(),
+            );
+        }
         if filter.query.trim().is_empty() {
             pane.search.show_directory_listing();
         }
@@ -1380,6 +1423,36 @@ impl ModeViews {
         self.suppress_focus_scroll.set(true);
     }
 
+    pub(in crate::ui) fn set_cursor_keeps_focus(&self, keep: bool) {
+        self.cursor_keeps_focus.set(keep);
+    }
+
+    pub(in crate::ui) fn cursor_view(
+        &self,
+        depth: usize,
+        source: usize,
+    ) -> Option<(gtk::Widget, u32)> {
+        let panes = self.visible_panes();
+        let pane = panes.iter().find(|pane| pane.depth == depth)?;
+        pane.item_sections().into_iter().find_map(|section| {
+            let position = section.source_to_view(&pane.model, source)?;
+            (position < section.view_model.n_items()).then_some((section.view, position))
+        })
+    }
+
+    pub(in crate::ui) fn visit_name_labels(&self, visit: impl Fn(&gtk::Widget)) {
+        for pane in self.all_panes() {
+            for section in pane.item_sections() {
+                for bound in section.bound_items.borrow().iter() {
+                    if let Some(label) = bound.rename_label.upgrade() {
+                        visit(&label);
+                    }
+                }
+            }
+            pane.search.visit_result_name_labels(&visit);
+        }
+    }
+
     pub fn view_position_in(&self, view: &gtk::Widget, depth: usize, source: usize) -> Option<u32> {
         let panes = self.visible_panes();
         let pane = panes.iter().find(|pane| pane.depth == depth)?;
@@ -1736,9 +1809,15 @@ fn search_collection_options(
             browser.open_location(entry.location);
         }
     });
+    let focus_state = context_state.clone();
     let focus_items = Rc::new(move || {
-        if let Some(state) = context_state.borrow().as_ref().and_then(Weak::upgrade) {
+        if let Some(state) = focus_state.borrow().as_ref().and_then(Weak::upgrade) {
             super::browser::claim_keyboard_navigation(&state);
+        }
+    });
+    let results_changed = Rc::new(move || {
+        if let Some(state) = context_state.borrow().as_ref().and_then(Weak::upgrade) {
+            state.notify_filter_results_changed();
         }
     });
     let selection_changed = Rc::new(move |entries: Vec<FileEntry>| {
@@ -1753,6 +1832,7 @@ fn search_collection_options(
         single_click,
         selection_changed,
         focus_items,
+        results_changed,
     }
 }
 
@@ -1960,7 +2040,16 @@ fn build_icons_pane(
     let filter_for_pane = filter.clone();
     let query_for_filter = filter_query.clone();
     let filter_for_settled = filter.clone();
+    // Recursive-filter results replace a native listing; hiding its rows too
+    // would drop their selection out of sight.
+    let results_replace_listing = Rc::new(Cell::new(false));
+    let directory_filtered = results_replace_listing.clone();
     super::browser::debounce_filter_entry(&controls.filter_entry, move |text| {
+        let text = if directory_filtered.get() {
+            String::new()
+        } else {
+            text
+        };
         super::browser::notify_filter_query(&filter_for_settled, &query_for_filter, text);
     });
     let sections: Rc<RefCell<Vec<PaneSection>>> = Rc::new(RefCell::new(Vec::new()));
@@ -2120,6 +2209,7 @@ fn build_icons_pane(
             options.search_context_state.clone(),
         ),
     );
+    results_replace_listing.set(search.replaces_listing());
     content.append(&search.widget);
     marquee.add_origin_surface(&header);
     let pane = Pane {
@@ -2913,7 +3003,16 @@ fn build_list_pane(
     let filter_for_pane = filter.clone();
     let query_for_filter = filter_query.clone();
     let filter_for_settled = filter.clone();
+    // Recursive-filter results replace a native listing; hiding its rows too
+    // would drop their selection out of sight.
+    let results_replace_listing = Rc::new(Cell::new(false));
+    let directory_filtered = results_replace_listing.clone();
     super::browser::debounce_filter_entry(&filter_entry, move |text| {
+        let text = if directory_filtered.get() {
+            String::new()
+        } else {
+            text
+        };
         super::browser::notify_filter_query(&filter_for_settled, &query_for_filter, text);
     });
     let view_model =
@@ -3097,6 +3196,7 @@ fn build_list_pane(
             options.search_context_state.clone(),
         ),
     );
+    results_replace_listing.set(search.replaces_listing());
     content.append(&search.widget);
     let pane = Pane {
         depth,
@@ -4478,6 +4578,10 @@ fn apply_icons_entry(
     if label.text().as_deref() != Some(shown_name) {
         label.set_text(Some(shown_name));
     }
+    super::browser::find::highlight_name(
+        label.upcast_ref(),
+        state.and_then(|state| state.find_highlight()).as_deref(),
+    );
     super::thumbnail::set_thumbnail_or_icon(
         &icon,
         entry,

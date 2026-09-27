@@ -17,12 +17,14 @@ use super::{Dispatcher, KeyResult, command_modifiers, items::is_modifier_key};
 use crate::{
     app::Browser,
     model::Location,
-    ui::{browser_modes::BrowserMode, tenxer_mode::Chord, window::home_directory},
+    ui::{tenxer_mode::Chord, window::home_directory},
 };
 
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::ui::window) enum GoTarget {
     FirstItem,
+    /// The folder holding the search hit under the cursor.
+    HitFolder,
     /// `validate` routes URI places through mount-aware validation.
     Place {
         location: Location,
@@ -37,6 +39,7 @@ pub(in crate::ui::window) fn go_target(key: Key, pins: &[Location]) -> Option<Go
     let place = |location, validate| Some(GoTarget::Place { location, validate });
     match key {
         Key::g => Some(GoTarget::FirstItem),
+        Key::f => Some(GoTarget::HitFolder),
         Key::h => place(Location::local(home_directory()), false),
         Key::c => config_folder(),
         Key::t => place(Location::uri("trash:///"), false),
@@ -136,11 +139,10 @@ impl Dispatcher {
             return false;
         };
         match target {
-            GoTarget::FirstItem => {
-                let icon_results = self.view.view_mode() == BrowserMode::Icons
-                    && self.view.selected_search_results().is_some();
-                if !icon_results {
-                    self.view.move_displayed_cursor(-1, usize::MAX);
+            GoTarget::FirstItem => self.view.move_displayed_cursor(-1, usize::MAX),
+            GoTarget::HitFolder => {
+                if !self.view.reveal_listing_search_hit() {
+                    self.shortcuts.show_feedback("Nothing to reveal");
                 }
             }
             GoTarget::Place { location, validate } => {
