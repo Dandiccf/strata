@@ -7,6 +7,10 @@ impl PreviewDrawer {
         self.state.is_enabled()
     }
 
+    pub(in crate::ui) fn is_suspended(&self) -> bool {
+        self.state.sizing.is_suspended()
+    }
+
     pub(in crate::ui) fn action(&self) -> gio::SimpleAction {
         self.state.enabled_action.clone()
     }
@@ -72,6 +76,7 @@ impl PreviewState {
             self.show_placeholder();
         } else {
             self.hide_panel();
+            self.release_sidebar_rail();
         }
     }
 

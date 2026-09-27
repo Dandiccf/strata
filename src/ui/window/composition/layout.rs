@@ -174,6 +174,12 @@ fn browser_split(
     content
 }
 
+fn layout_trace(args: std::fmt::Arguments<'_>) {
+    if std::env::var_os("STRATA_RAIL_TRACE").is_some() {
+        eprintln!("[rail] {args}");
+    }
+}
+
 fn bind_sidebar_layout(
     content: &gtk::Paned,
     sidebar: &SidebarView,
@@ -190,7 +196,9 @@ fn bind_sidebar_layout(
         let Some(sidebar) = weak_sidebar.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        if weak_preview.is_open() {
+        // The preview owns the rail while open or suspended with content;
+        // touching it here fights sync_split every frame.
+        if weak_preview.is_open() || weak_preview.is_suspended() {
             return glib::ControlFlow::Continue;
         }
         let available = content
@@ -206,9 +214,15 @@ fn bind_sidebar_layout(
                 .saved_width
                 .get()
                 .unwrap_or_else(preferred_sidebar_width);
+            layout_trace(format_args!(
+                "bind_sidebar_layout RESTORE available={available} needs_full={needs_full} restore={restore}"
+            ));
             sidebar.set_rail(false);
             content.set_position(restore);
         } else if !is_railed && available < needs_full {
+            layout_trace(format_args!(
+                "bind_sidebar_layout RAIL available={available} needs_full={needs_full}"
+            ));
             sidebar.set_rail(true);
             content.set_position(sidebar_rail_width());
         }
