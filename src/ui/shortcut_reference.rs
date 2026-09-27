@@ -368,6 +368,24 @@ const TENXER_SETTINGS: &[Binding] = &[
     },
     Binding {
         category: "Places",
+        action: "Jump to a visited folder",
+        note: "Ranked by match, visit count, and recency",
+        keys: "z",
+    },
+    Binding {
+        category: "Places",
+        action: "Jump to a recent folder",
+        note: "Most recent visit first",
+        keys: "Z",
+    },
+    Binding {
+        category: "Places",
+        action: "Choose a visited folder",
+        note: "In the jump or recent prompt",
+        keys: "↑ / ↓",
+    },
+    Binding {
+        category: "Places",
         action: "Cancel a pending chord",
         note: "",
         keys: "Esc",
@@ -943,6 +961,9 @@ const TENXER_PLACES: &[(&str, &str)] = &[
     ("g 1–9", "Visible PINNED rows in sidebar order"),
     ("g Space", "Go to a typed path or URI"),
     ("Tab / Shift+Tab in go ›", "Cycle matching folders"),
+    ("z", "Jump to a visited folder by match and frecency"),
+    ("Z", "Jump to a recently visited folder"),
+    ("↑ / ↓ in jump › / recent ›", "Choose a visited folder"),
     (
         "g g in the preview",
         "Top of the document or first archive member",

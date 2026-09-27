@@ -118,6 +118,10 @@ pub(crate) enum Prompt {
     Search,
     /// **g Space**: go to a typed path or URI.
     Go,
+    /// **z**: jump to a visited folder ranked by match and frecency.
+    Jump,
+    /// **Z**: jump to a visited folder, most recent first.
+    Recent,
 }
 
 impl Prompt {
@@ -128,7 +132,14 @@ impl Prompt {
             Self::Filter => "filter:",
             Self::Search => "search:",
             Self::Go => "go \u{203a}",
+            Self::Jump => "jump \u{203a}",
+            Self::Recent => "recent \u{203a}",
         }
+    }
+
+    /// Prompts that pick a folder from Strata's navigation history.
+    pub(crate) fn picks_history(self) -> bool {
+        matches!(self, Self::Jump | Self::Recent)
     }
 
     pub(crate) fn name(self) -> &'static str {
@@ -138,6 +149,8 @@ impl Prompt {
             Self::Filter => "Filter this listing",
             Self::Search => "Search this folder and its subfolders",
             Self::Go => "Go to a path or URI",
+            Self::Jump => "Jump to a visited folder",
+            Self::Recent => "Jump to a recently visited folder",
         }
     }
 }
