@@ -14,7 +14,10 @@ use gtk::{
 use crate::{
     app::Browser,
     ui::{
-        browser::BrowserView, preview::PreviewDrawer, shortcut_footer::ShortcutFooter,
+        browser::BrowserView,
+        go_completion::{FolderSource, GoCompletion},
+        preview::PreviewDrawer,
+        shortcut_footer::ShortcutFooter,
         top_bar_navigation::TopBarNavigation,
     },
 };
@@ -42,6 +45,7 @@ pub(super) struct Bindings {
     pub preview: PreviewDrawer,
     pub type_to_search: TypeToSearch,
     pub shortcuts: ShortcutFooter,
+    pub folders: Rc<dyn FolderSource>,
 }
 
 pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bindings: Bindings) {
@@ -55,6 +59,7 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
         preview: bindings.preview,
         type_to_search: bindings.type_to_search,
         shortcuts: bindings.shortcuts,
+        go: GoCompletion::new(bindings.folders),
         sidebar: SidebarFocus {
             state: sidebar.state.clone(),
             widget: sidebar.widget.clone(),
@@ -71,7 +76,12 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
     // gtk_window_destroy() unrealizes while other references still exist, so the
     // Widget::destroy signal is too late to drop a pending chord.
     let cancel_on_destroy = dispatcher.shortcuts.clone();
-    window.connect_unrealize(move |_| cancel_on_destroy.cancel_chord());
+    let go_on_destroy = dispatcher.go.clone();
+    window.connect_unrealize(move |_| {
+        cancel_on_destroy.cancel_chord();
+        go_on_destroy.invalidate();
+    });
+    bind_go_completion(&dispatcher);
     let preferences = dispatcher.type_to_search.preferences.clone();
     release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
     clear_find_on_mode_exit(window, &dispatcher, &weak_browser);
@@ -166,6 +176,25 @@ fn bind_footer_filter(dispatcher: &Dispatcher) {
     dispatcher
         .view
         .connect_search_selection_changed(Rc::new(move || shortcuts.schedule_filter_refresh()));
+}
+
+/// Opening, closing, or editing a prompt discards go completion that belongs to
+/// earlier text. Completion's own replacements are not edits.
+fn bind_go_completion(dispatcher: &Dispatcher) {
+    let go = dispatcher.go.clone();
+    dispatcher
+        .shortcuts
+        .connect_prompt_reset(move || go.invalidate());
+    let go = dispatcher.go.clone();
+    let hint = dispatcher
+        .shortcuts
+        .prompt_sink(crate::ui::tenxer_mode::Prompt::Go);
+    dispatcher.shortcuts.connect_prompt_changed(move |kind, _| {
+        if kind == crate::ui::tenxer_mode::Prompt::Go {
+            go.invalidate();
+            hint.show(None, None);
+        }
+    });
 }
 
 /// Leaving 10xer mode forgets the find, footer filters, and search, and hands a focused
@@ -373,6 +402,7 @@ struct Dispatcher {
     preview: PreviewDrawer,
     type_to_search: TypeToSearch,
     shortcuts: ShortcutFooter,
+    go: GoCompletion,
 }
 
 struct KeyEvent {

@@ -700,6 +700,26 @@ const TENXER_PLACE_CHORDS: &[PlaceChord] = &[
     PlaceChord {
         binding: Binding {
             category: "Places",
+            action: "Go to a typed path or URI",
+            note: "Opens the footer go prompt",
+            keys: "g Space",
+        },
+        reference_keys: "",
+        reference_label: "Go to a typed path or URI",
+    },
+    PlaceChord {
+        binding: Binding {
+            category: "Places",
+            action: "Cycle matching folders",
+            note: "In the go prompt",
+            keys: "Tab / Shift + Tab",
+        },
+        reference_keys: "Tab / Shift + Tab in go ›",
+        reference_label: "Cycle matching folders",
+    },
+    PlaceChord {
+        binding: Binding {
+            category: "Places",
             action: "Top of the document or first archive member",
             note: "Preview",
             keys: "g g",

@@ -292,17 +292,42 @@ actions) while armed. The second key completes only that chord: **, a** /
 | **Space** | Footer `go ›` — type a path or URI. **Tab** / **Shift+Tab** cycle matching folders. |
 | **Esc** | Cancel |
 
-An unknown second key cancels with `Unknown chord`. In **go ›**, **Tab** /
-**Shift+Tab** cycle matching folders for the typed prefix: the current listing
-when the text has no slash, the parent after a slash, and `~` as home. No match
-keeps the typed text and stays in the prompt. The entry is cleared on submit,
-Escape, focus loss, and mode exit so credentials do not linger.
+An unknown second key cancels with `Unknown chord`.
 
-Slash-containing and home-folder completion uses cancellable background GIO work.
-Editing or replacing the prompt discards pending results. Enumeration is bounded
-(16,384 entries and 1,024 matching folders); an error or limit leaves the text
-unchanged with a hint to check or refine the path. URI input is submitted unchanged
-and is not folder-completed. Completion never mounts or probes a typed URI.
+**g Space** opens **go ›** in the footer instead of toggling the selection.
+Typing never navigates; **Enter** submits through the same navigation as the
+location bar (**Ctrl+L**). A path may be absolute, start with `~`, or be relative
+to the open local folder (`..` and `.` resolve like a shell's `cd`). A path
+naming a file opens its folder with the file selected. URI input is submitted
+unchanged, except that a password typed in the URI moves into the mount
+operation instead of the location. A missing or unreachable destination shows
+the location bar's error and leaves the current folder open. Empty **Enter**
+just closes the prompt. **Esc** cancels without navigating; clicking a listing
+row ends the prompt and keeps the clicked selection. The entry is cleared on
+submit, **Esc**, focus loss, a replacing prompt, and mode exit, and it keeps no
+undo history, so reopening the prompt or another window cannot recover typed
+credentials.
+
+In **go ›**, **Tab** / **Shift+Tab** cycle forward / backward through matching
+folders (never files) for the typed prefix: the current listing when the text
+has no slash, the parent after a slash, and `~` as home. Matching ignores case,
+and hidden folders appear when the listing shows them or the prefix starts with
+`.`. A completion keeps the typed form (relative, `~/`, or absolute) and ends in
+`/`, so the next **Tab** after typing more descends. Beside the entry the footer
+shows the position in the cycle (`2 of 5`) or why nothing changed. No match
+keeps the typed text and focus with `No matching folders`; another user's
+home (`~name`) shows `Only ~ and ~/ are supported`.
+
+Slash-containing and home-folder completion uses cancellable background GIO
+work and shows `Listing folders…` while it runs; the prompt keeps accepting
+edits and **Esc**. Editing, replacing, cancelling, or submitting the prompt,
+leaving the mode, or closing the window cancels pending work, and a late answer
+never changes the text. Enumeration is bounded (16,384 entries and 1,024
+matching folders); an error or exceeded limit leaves the text unchanged with
+`Can’t read that folder — check the path` or `Too many entries — refine the
+path` rather than cycling a partial list. Anything that looks like a URI
+(a scheme, `//host`, `\\host`, or `user@host:`) is never completed, mounted, or
+probed; **Tab** leaves it unchanged with `URIs are not completed`.
 
 ## Prompts
 

@@ -98,7 +98,7 @@ impl Chord {
         match self {
             Self::Go => {
                 "g first · f hit's folder · h home · d downloads · c config · t trash · n network · \
-                 r recent · k documents · p pictures · v videos · 1–9 pins"
+                 r recent · k documents · p pictures · v videos · 1–9 pins · space path"
             }
             Self::PreviewTop => "g top",
         }
@@ -111,6 +111,7 @@ pub(crate) enum Prompt {
     FindBackward,
     Filter,
     Search,
+    Go,
 }
 
 impl Prompt {
@@ -120,6 +121,7 @@ impl Prompt {
             Self::FindBackward => "?",
             Self::Filter => "filter:",
             Self::Search => "search:",
+            Self::Go => "go \u{203a}",
         }
     }
 
@@ -129,6 +131,7 @@ impl Prompt {
             Self::FindBackward => "Find backward in this listing",
             Self::Filter => "Filter this listing",
             Self::Search => "Search this folder and its subfolders",
+            Self::Go => "Go to a path or URI",
         }
     }
 }

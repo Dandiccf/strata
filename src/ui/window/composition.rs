@@ -93,6 +93,7 @@ impl WindowContent {
                     preferences: preferences.clone(),
                 },
                 shortcuts: self.footer.shortcuts.clone(),
+                folders: Rc::new(crate::ui::go_completion::GioFolders),
             },
         );
         notice

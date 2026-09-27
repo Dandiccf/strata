@@ -16,6 +16,7 @@ use super::{
 
 type Shortcut = (&'static str, &'static str);
 type ChordListener = Box<dyn Fn(Option<Chord>)>;
+type PromptResetListeners = Rc<RefCell<Vec<Box<dyn Fn()>>>>;
 /// `None` while the view is busy rebuilding; the footer then retries on idle.
 type FilterSource = Rc<RefCell<Option<Rc<dyn Fn() -> Option<Option<FilterStatus>>>>>>;
 
@@ -279,7 +280,11 @@ struct PromptBar {
     bar: gtk::Box,
     label: gtk::Label,
     entry: gtk::Entry,
+    hint: gtk::Label,
     kind: Rc<Cell<Option<Prompt>>>,
+    resets: PromptResetListeners,
+    /// Set while a [`PromptSink`] replaces the text, which is not an edit.
+    replacing: Rc<Cell<bool>>,
 }
 
 #[derive(Clone)]
@@ -287,7 +292,10 @@ struct WeakPromptBar {
     bar: glib::WeakRef<gtk::Box>,
     label: glib::WeakRef<gtk::Label>,
     entry: glib::WeakRef<gtk::Entry>,
+    hint: glib::WeakRef<gtk::Label>,
     kind: Rc<Cell<Option<Prompt>>>,
+    resets: PromptResetListeners,
+    replacing: Rc<Cell<bool>>,
 }
 
 impl PromptBar {
@@ -301,13 +309,21 @@ impl PromptBar {
         entry.add_css_class("form-control");
         entry.add_css_class("shortcut-footer-prompt");
         entry.set_hexpand(true);
+        let hint = gtk::Label::new(None);
+        hint.add_css_class("shortcut-footer-chord-hint");
+        hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        hint.set_visible(false);
         bar.append(&label);
         bar.append(&entry);
+        bar.append(&hint);
         Self {
             bar,
             label,
             entry,
+            hint,
             kind: Rc::new(Cell::new(None)),
+            resets: Rc::default(),
+            replacing: Rc::default(),
         }
     }
 
@@ -316,7 +332,26 @@ impl PromptBar {
             bar: self.bar.downgrade(),
             label: self.label.downgrade(),
             entry: self.entry.downgrade(),
+            hint: self.hint.downgrade(),
             kind: self.kind.clone(),
+            resets: self.resets.clone(),
+            replacing: self.replacing.clone(),
+        }
+    }
+
+    fn set_hint(&self, text: Option<&str>) {
+        self.hint.set_text(text.unwrap_or_default());
+        self.hint.set_visible(text.is_some());
+        self.entry
+            .update_property(&[gtk::accessible::Property::Description(
+                text.unwrap_or_default(),
+            )]);
+    }
+
+    fn reset(&self) {
+        self.set_hint(None);
+        for listener in self.resets.borrow().iter() {
+            listener();
         }
     }
 
@@ -336,6 +371,9 @@ impl PromptBar {
         // Replacing an open prompt must not hand its text to the new kind.
         self.kind.set(None);
         self.entry.set_text("");
+        self.reset();
+        // Undo history could otherwise bring back typed credentials.
+        self.entry.set_enable_undo(kind != Prompt::Go);
         self.kind.set(Some(kind));
         self.label.set_text(kind.label());
         super::accessibility::set_label(&self.entry, kind.name());
@@ -352,6 +390,7 @@ impl PromptBar {
         self.kind.set(None);
         self.entry.set_text("");
         self.bar.set_visible(false);
+        self.reset();
     }
 }
 
@@ -361,8 +400,37 @@ impl WeakPromptBar {
             bar: self.bar.upgrade()?,
             label: self.label.upgrade()?,
             entry: self.entry.upgrade()?,
+            hint: self.hint.upgrade()?,
             kind: self.kind.clone(),
+            resets: self.resets.clone(),
+            replacing: self.replacing.clone(),
         })
+    }
+}
+
+pub(in crate::ui) struct PromptSink {
+    prompt: WeakPromptBar,
+    kind: Prompt,
+}
+
+impl PromptSink {
+    /// Replaces the text (caret at the end) and the hint, but only while the
+    /// same kind of prompt is still open.
+    pub(in crate::ui) fn show(&self, text: Option<&str>, hint: Option<&str>) {
+        let Some(prompt) = self.prompt.upgrade() else {
+            return;
+        };
+        if prompt.kind.get() != Some(self.kind) || !prompt.bar.is_visible() {
+            return;
+        }
+        if let Some(text) = text {
+            // GTK reports a replacement as two changes: cleared, then filled.
+            prompt.replacing.set(true);
+            prompt.entry.set_text(text);
+            prompt.replacing.set(false);
+            prompt.entry.set_position(-1);
+        }
+        prompt.set_hint(hint);
     }
 }
 
@@ -1017,18 +1085,43 @@ impl ShortcutFooter {
         self.prompt.open(&self.root, kind, text)
     }
 
-    /// Runs `listener` as the open prompt's text changes, not when a prompt
-    /// opens empty or closes.
+    /// Runs `listener` as the open prompt's text is edited, not when a prompt
+    /// opens empty or closes, or a [`PromptSink`] replaces the text.
     pub(in crate::ui) fn connect_prompt_changed(
         &self,
         listener: impl Fn(Prompt, String) + 'static,
     ) {
         let kind = self.prompt.kind.clone();
+        let replacing = self.prompt.replacing.clone();
         self.prompt.entry.connect_changed(move |entry| {
+            if replacing.get() {
+                return;
+            }
             if let Some(kind) = kind.get() {
                 listener(kind, entry.text().to_string());
             }
         });
+    }
+
+    /// Runs `listener` whenever a prompt opens or closes, so work tied to the
+    /// previous text can be dropped.
+    pub(in crate::ui) fn connect_prompt_reset(&self, listener: impl Fn() + 'static) {
+        self.prompt.resets.borrow_mut().push(Box::new(listener));
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn prompt_hint(&self) -> Option<String> {
+        self.prompt
+            .hint
+            .is_visible()
+            .then(|| self.prompt.hint.text().to_string())
+    }
+
+    pub(in crate::ui) fn prompt_sink(&self, kind: Prompt) -> PromptSink {
+        PromptSink {
+            prompt: self.prompt.downgrade(),
+            kind,
+        }
     }
 
     #[cfg(test)]
