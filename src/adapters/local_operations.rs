@@ -4296,8 +4296,9 @@ impl OperationProvider for LocalOperationProvider {
                     });
                     return;
                 };
+                let base_name = item.target_name.as_deref().unwrap_or(name.as_os_str());
                 let name = PathBuf::from(fat_family_child_name(
-                    name.as_os_str(),
+                    base_name,
                     fat_family,
                     &mut used_names,
                 ));

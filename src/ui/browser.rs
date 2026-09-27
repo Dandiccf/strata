@@ -1489,7 +1489,7 @@ impl BrowserView {
         let Some((destination, sources)) = duplicate_transfer(&entries) else {
             return false;
         };
-        self.state.start_transfer(destination, sources, false);
+        self.state.start_duplicate_transfer(destination, sources);
         true
     }
 
