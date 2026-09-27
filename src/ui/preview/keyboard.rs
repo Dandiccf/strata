@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 //! Keyboard ownership for 10xer mode: the listing hands keys to the drawer and
-//! each preview surface decides what those keys do. The content box becomes
-//! focusable only while it owns keys, so default Tab order is unchanged.
+//! each preview surface decides what those keys do. In 10xer mode any focus
+//! inside the drawer owns the keys, including a password prompt that takes
+//! focus by itself. The content box is focusable only while it holds the keys
+//! for a surface that has no focusable widget yet, so default Tab order is
+//! unchanged.
 
 use super::*;
 use crate::ui::browser::{BrowserView, WeakBrowserView};
@@ -45,27 +48,10 @@ impl PreviewDrawer {
         self.state.surface(focused)
     }
 
-    /// Moves keys into the open drawer, waiting for a newly revealed pane to map.
+    /// Moves keys into the open drawer. A drawer suspended for lack of room
+    /// takes them when it is shown again for the same file.
     pub(in crate::ui) fn take_keyboard(&self) -> bool {
-        if !self.is_enabled() || self.state.sizing.is_suspended() {
-            return false;
-        }
-        if self.state.claim_keyboard() {
-            return true;
-        }
-        let weak = Rc::downgrade(&self.state);
-        let frames = Cell::new(0);
-        self.state.pane.add_tick_callback(move |_, _| {
-            let Some(state) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            frames.set(frames.get() + 1);
-            if !state.is_enabled() || state.claim_keyboard() || frames.get() >= MAX_CLAIM_FRAMES {
-                return glib::ControlFlow::Break;
-            }
-            glib::ControlFlow::Continue
-        });
-        true
+        self.state.take_keyboard()
     }
 
     pub(in crate::ui) fn scroll_document(&self, motion: DocumentScroll) -> bool {
@@ -111,6 +97,15 @@ impl PreviewState {
     pub(super) fn install_keyboard_ownership(self: &Rc<Self>) {
         let focus = gtk::EventControllerFocus::new();
         let weak = Rc::downgrade(self);
+        // Rebuilt archive rows and self-focusing password prompts re-enter here.
+        focus.connect_enter(move |_| {
+            if let Some(state) = weak.upgrade()
+                && super::super::preferences::PreferenceManager::shared().tenxer_mode()
+            {
+                state.set_keyboard_owner(true);
+            }
+        });
+        let weak = Rc::downgrade(self);
         focus.connect_leave(move |_| {
             if let Some(state) = weak.upgrade() {
                 state.content.set_focusable(false);
@@ -122,7 +117,7 @@ impl PreviewState {
 
     /// The owner bar replaces the Miller column's destination bar while the
     /// drawer holds the keys.
-    fn set_keyboard_owner(&self, owned: bool) {
+    pub(super) fn set_keyboard_owner(&self, owned: bool) {
         if owned {
             self.pane.add_css_class(OWNER_CLASS);
         } else {
@@ -138,6 +133,65 @@ impl PreviewState {
         }
     }
 
+    fn take_keyboard(self: &Rc<Self>) -> bool {
+        if !self.is_enabled() {
+            return false;
+        }
+        if self.sizing.is_suspended() {
+            self.claim_on_resume.set(true);
+            return true;
+        }
+        if self.claim_keyboard() {
+            return true;
+        }
+        let weak = Rc::downgrade(self);
+        let frames = Cell::new(0);
+        self.pane.add_tick_callback(move |_, _| {
+            let Some(state) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            frames.set(frames.get() + 1);
+            if !state.is_enabled() || state.claim_keyboard() || frames.get() >= MAX_CLAIM_FRAMES {
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+        true
+    }
+
+    /// Called when a suspended drawer is shown again.
+    pub(super) fn resume_keyboard_claim(self: &Rc<Self>) {
+        if self.claim_on_resume.replace(false) {
+            self.take_keyboard();
+        }
+    }
+
+    /// The document's own widget, so its select-all and copy handlers receive
+    /// **Ctrl+A** / **Ctrl+C**.
+    fn document_key_target(&self) -> Option<gtk::Widget> {
+        fn visit(widget: &gtk::Widget) -> Option<gtk::Widget> {
+            if !widget.is_visible() {
+                return None;
+            }
+            if widget.is_focusable()
+                && (widget.has_css_class("preview-virtual-list")
+                    || widget.has_css_class("preview-pdf-scroll")
+                    || widget.has_css_class("preview-text"))
+            {
+                return Some(widget.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if let Some(found) = visit(&widget) {
+                    return Some(found);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        visit(self.content.upcast_ref())
+    }
+
     fn claim_keyboard(&self) -> bool {
         if !self.pane.is_mapped() {
             return false;
@@ -146,6 +200,8 @@ impl PreviewState {
             browser.list().clone().upcast()
         } else if let Some(entry) = self.password_entry.borrow().as_ref() {
             entry.clone().upcast()
+        } else if let Some(document) = self.document_key_target() {
+            document
         } else {
             self.content.set_focusable(true);
             self.content.clone().upcast()
@@ -190,6 +246,21 @@ impl PreviewState {
         }
     }
 
+    /// Focus that moved inside the drawer by itself (a password prompt, rebuilt
+    /// archive rows) still owns the keys in 10xer mode.
+    pub(super) fn reassert_keyboard_owner(&self) {
+        let inside = self
+            .pane
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focused| {
+                focused == *self.pane.upcast_ref::<gtk::Widget>() || focused.is_ancestor(&self.pane)
+            });
+        if inside && super::super::preferences::PreferenceManager::shared().tenxer_mode() {
+            self.set_keyboard_owner(true);
+        }
+    }
+
     /// A newly rendered interactive surface inherits keys owned by the content box.
     pub(super) fn hand_keys_to(&self, widget: &impl IsA<gtk::Widget>) {
         if self.content.has_focus() {
@@ -197,11 +268,21 @@ impl PreviewState {
         }
     }
 
+    /// A document that finished rendering after **l** takes the keys from the
+    /// placeholder content box.
+    pub(super) fn hand_keys_to_document(&self) {
+        if self.content.has_focus()
+            && let Some(document) = self.document_key_target()
+        {
+            document.grab_focus();
+        }
+    }
+
     fn surface(&self, focused: &gtk::Widget) -> PreviewSurface {
         if self.archive_list_has_focus(Some(focused)) {
             return PreviewSurface::Archive;
         }
-        if crate::ui::focus_navigation::editable(focused) {
+        if accepts_typing(focused) {
             return PreviewSurface::Text;
         }
         let media_view = self.media.borrow().is_some()
@@ -275,5 +356,21 @@ impl PreviewState {
         };
         adjustment.set_value(target.clamp(lower, limit));
         true
+    }
+}
+
+/// Read-only source text is a document, not a text field.
+fn accepts_typing(focused: &gtk::Widget) -> bool {
+    let view = focused
+        .downcast_ref::<gtk::TextView>()
+        .cloned()
+        .or_else(|| {
+            focused
+                .ancestor(gtk::TextView::static_type())
+                .and_downcast::<gtk::TextView>()
+        });
+    match view {
+        Some(view) => view.is_editable(),
+        None => crate::ui::focus_navigation::editable(focused),
     }
 }

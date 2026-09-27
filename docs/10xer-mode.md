@@ -104,8 +104,9 @@ swallowed rather than passed to the listing behind it, so no key held by a
 preview can launch, move, rename, delete, paste into, or select listing items.
 Window commands that do not touch the listing (**q**, **Q**, **F1**, **F5**,
 **Ctrl+K**, **Ctrl+L**, **Ctrl+,**, **Ctrl+1**–**3**, **Ctrl+H**,
-**Ctrl+Shift+B**, **Ctrl+Shift+M**, and text size) still work, except inside a
-text field.
+**Ctrl+Shift+B**, **Ctrl+Shift+M**, and text size) still work. Inside a text
+field only **F1** and **Ctrl+Shift+M** still work; every other key is typed or
+edits the text.
 
 | Key | Document | Archive tree | Password field | Media |
 | --- | --- | --- | --- | --- |
@@ -130,8 +131,17 @@ focused preview button or slider (reached with **Tab** or the pointer) keeps
 GTK's own **Space** / **Enter** / arrow handling; **Shift+Tab** and **Esc** still
 return or close. Browsing archive members never extracts them, opens a listing
 file, or changes the listing's cursor or fill. Unlocking a password-protected
-archive hands the keys to its member tree. **Ctrl+C** / **Ctrl+A** copy or
-select document text instead of listing items.
+archive hands the keys to its member tree. **Ctrl+A** / **Ctrl+C** select all
+and copy the document's text, never listing items; with **l** the keys go to the
+document itself (text, source, or PDF) once it has rendered.
+
+A password prompt takes focus as soon as it appears, including when **i** or
+cursor movement shows a locked archive. It then owns the keys like any other
+surface: the header shows the owner bar, the Miller column drops its bar, and
+**i**, **h**, **j**, **k**, and **l** are typed into the password until **Esc**,
+**Shift+Tab**, or unlocking moves focus. If the drawer is hidden for lack of room
+when **l** is pressed, it takes the keys when it reappears for the same file;
+moving the cursor first cancels that.
 
 With 10xer mode off the default map is unchanged: an archive tree keeps its
 arrow, **k** / **j** / **h** / **l**, **Enter**, **Space**, and **Esc** keys

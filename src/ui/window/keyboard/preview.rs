@@ -22,6 +22,12 @@ impl Dispatcher {
             .filter(|focused| self.preview.owns_focus(Some(focused)))
     }
 
+    /// Read-only source text inside the drawer takes preview keys, not typing.
+    pub(super) fn preview_document_focused(&self) -> bool {
+        self.preview_focus()
+            .is_some_and(|focused| self.preview.surface(&focused) != PreviewSurface::Text)
+    }
+
     /// Text fields inside the drawer keep typed text and editing shortcuts,
     /// including characters the footer would otherwise claim.
     pub(super) fn tenxer_preview_text(
@@ -62,16 +68,18 @@ impl Dispatcher {
             self.close_preview(browser);
             return Some(Propagation::Stop);
         }
+        let surface = self.preview.surface(&focused);
         if !mods.intersects(Modifiers::CONTROL_MASK | Modifiers::ALT_MASK | Modifiers::SUPER_MASK) {
             if matches!(key, Key::J | Key::K) {
-                self.scroll_open_preview(key);
+                if surface != PreviewSurface::Media {
+                    self.scroll_open_preview(key);
+                }
                 return Some(Propagation::Stop);
             }
             if matches!(key, Key::Tab) && mods.is_empty() {
                 return Some(Propagation::Proceed);
             }
         }
-        let surface = self.preview.surface(&focused);
         let handled = match surface {
             PreviewSurface::Document => self.preview_document_key(key, mods),
             PreviewSurface::Archive => self.preview_archive_key(browser, key, mods),
@@ -93,7 +101,7 @@ impl Dispatcher {
             && matches!(key, Key::c | Key::a)
             && surface != PreviewSurface::Media
         {
-            // Copying selected document text belongs to the document.
+            // The focused document widget selects all or copies its own text.
             return Some(Propagation::Proceed);
         }
         Some(Propagation::Stop)

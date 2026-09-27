@@ -737,3 +737,18 @@ def test_tenxer_l_enters_the_preview_and_h_returns_without_navigating(strata, fi
     strata.wait(lambda: strata.window.find(name="Nothing to preview") is not None, "the unpreviewable file hint")
     assert strata.preview() is None
     assert strata.focused_name() == "package.deb"
+
+    strata.select_entry_with_keyboard("long.txt")
+    strata.keyboard.press("l")
+    strata.wait(lambda: strata.preview_shows("document line 0"), "l to reopen the preview")
+    strata.wait(lambda: strata.focused_name() is None, "the preview to own the keys again")
+    strata.keyboard.press("ctrl+a")
+    strata.keyboard.press("ctrl+c")
+    strata.keyboard.press("ctrl+l")
+    field = strata.editable_field()
+    strata.keyboard.press("ctrl+a")
+    strata.keyboard.press("ctrl+v")
+    strata.wait(
+        lambda: "document line 0" in field.text,
+        "Ctrl+A / Ctrl+C in the preview to copy the document text",
+    )

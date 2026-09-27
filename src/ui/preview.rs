@@ -174,6 +174,7 @@ struct PreviewState {
     animating: Cell<bool>,
     animation_generation: Rc<Cell<u64>>,
     keyboard_view: RefCell<Option<super::browser::WeakBrowserView>>,
+    claim_on_resume: Cell<bool>,
 }
 
 pub(in crate::ui) use keyboard::{DocumentScroll, PreviewSurface};
@@ -360,6 +361,7 @@ impl PreviewDrawer {
             animating: Cell::new(false),
             animation_generation: Rc::new(Cell::new(0)),
             keyboard_view: RefCell::new(None),
+            claim_on_resume: Cell::new(false),
         });
         let weak = Rc::downgrade(&state);
         state.enabled_action.connect_activate(move |_, _| {
@@ -664,6 +666,8 @@ impl PreviewState {
         if self.current.borrow().as_ref() == Some(&entry) && self.current_request.get().is_some() {
             return;
         }
+        // A suspended l stays pending until this file changes or the drawer closes.
+        self.claim_on_resume.set(false);
         if !self.revealer.reveals_child() {
             self.show(entry, depth);
             return;
@@ -730,6 +734,9 @@ impl PreviewState {
         self.set_enabled(false);
         self.clear_target();
         self.cancel_print();
+        // Destroying a focused prompt does not always report a focus leave.
+        self.content.set_focusable(false);
+        self.set_keyboard_owner(false);
     }
 
     fn close(self: &Rc<Self>) {
@@ -1233,6 +1240,7 @@ impl PreviewState {
         self.password_entry.replace(Some(password.clone()));
         self.content.append(&box_);
         password.grab_focus();
+        self.reassert_keyboard_owner();
     }
 
     fn render(self: &Rc<Self>, preview: Preview) {
@@ -1382,6 +1390,7 @@ impl PreviewState {
                 );
             }
         }
+        self.hand_keys_to_document();
     }
 
     fn render_archive(self: &Rc<Self>, tree: ArchivePreviewTree, focus_tree: bool) {
@@ -1413,6 +1422,7 @@ impl PreviewState {
         if let Some(browser) = self.archive_browser.borrow_mut().as_mut() {
             browser.navigate_to(depth);
         }
+        self.reassert_keyboard_owner();
     }
 
     fn archive_key(&self, key: gtk::gdk::Key) -> bool {
@@ -1435,6 +1445,8 @@ impl PreviewState {
             }
             _ => return false,
         }
+        drop(browsers);
+        self.reassert_keyboard_owner();
         true
     }
 
@@ -1471,6 +1483,8 @@ impl PreviewState {
             return;
         };
         browser.open_child(position as usize);
+        drop(browsers);
+        self.reassert_keyboard_owner();
     }
 
     fn render_document_preview(

@@ -461,7 +461,7 @@ impl Dispatcher {
         if !preferences.tenxer_mode() {
             return None;
         }
-        if self.text_focused() || self.focus_in_popover() {
+        if (self.text_focused() && !self.preview_document_focused()) || self.focus_in_popover() {
             return None;
         }
         if !items::continues_extend(key, modifiers) {

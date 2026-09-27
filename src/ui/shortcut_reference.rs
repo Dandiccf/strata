@@ -495,7 +495,7 @@ const TENXER_SETTINGS: &[Binding] = &[
     Binding {
         category: "Preview",
         action: "Return to the listing",
-        note: "h / ← in documents and media; the preview stays open",
+        note: "h / ← in documents; h in media (← seeks); the preview stays open",
         keys: "h / ← / Shift + Tab",
     },
     Binding {
@@ -794,7 +794,7 @@ const TENXER_PREVIEW_OWNED: &[(&str, &str)] = &[
     ),
     ("Space / ← → / ↑ ↓ / m in media", "Play, seek, volume, mute"),
     (
-        "h / ← in the preview",
+        "h / ← in a document, h in media",
         "Return to the listing; the preview stays open",
     ),
     ("Shift+Tab in any preview", "Return to the listing"),

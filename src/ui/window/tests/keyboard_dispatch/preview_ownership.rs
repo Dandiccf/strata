@@ -41,6 +41,11 @@ impl PreviewProvider for OwnershipPreview {
                         file_count: 2,
                     },
                 }
+            } else if name == "short.txt" {
+                PreviewContent::Text {
+                    content: "short one\nshort two\n".into(),
+                    truncated: false,
+                }
             } else {
                 PreviewContent::Text {
                     content: (0..LONG_LINES)
@@ -64,6 +69,7 @@ fn ownership_fixture() -> KeyboardFixture {
     let fixture = KeyboardFixture::with_provider(Rc::new(OwnershipPreview));
     let root = fixture._directory.path();
     std::fs::write(root.join("long.txt"), b"long").expect("long document");
+    std::fs::write(root.join("short.txt"), b"short").expect("short document");
     std::fs::write(root.join("bundle.zip"), b"zip").expect("archive");
     std::fs::write(root.join("locked.zip"), b"zip").expect("locked archive");
     std::fs::write(root.join("package.deb"), b"!<arch>").expect("unsupported file");
@@ -72,14 +78,16 @@ fn ownership_fixture() -> KeyboardFixture {
     preferences.set_tenxer_mode(true);
     preferences.set_group_by_type(false);
     let browser = fixture.view.browser();
+    // The window wires cursor-follow; the shared fixture does not.
+    fixture.preview.observe_browser(&browser);
     fixture.view.refresh();
     wait_loaded(&browser, 0);
-    wait_until(|| entry_count(&browser) == 8);
+    wait_until(|| entry_count(&browser) == 9);
     browser.set_folders_first(0, false);
     browser.set_sort(0, SortKey::Name, SortDirection::Ascending);
     wait_until(|| {
         let names = source_names(&browser);
-        names.len() == 8 && names.is_sorted()
+        names.len() == 9 && names.is_sorted()
     });
     fixture.view.set_view_mode(BrowserMode::List);
     wait_until(|| list_display_names(&fixture.view.widget()) == source_names(&browser));
@@ -107,6 +115,48 @@ fn wait_document(fixture: &KeyboardFixture) {
         document_scroll(fixture) > 0.0
     });
     fixture.preview.scroll_document(DocumentScroll::Start);
+}
+
+fn owner_bar(fixture: &KeyboardFixture) -> bool {
+    widget_with_class(&fixture.preview.widget(), "preview-keyboard-owner").is_some()
+}
+
+fn focused_has_class(fixture: &KeyboardFixture, class: &str) -> bool {
+    gtk::prelude::RootExt::focus(&fixture.window)
+        .is_some_and(|focused| focused.has_css_class(class))
+}
+
+fn emit_on_focused(fixture: &KeyboardFixture, key: Key, modifiers: ModifierType) {
+    let focused = gtk::prelude::RootExt::focus(&fixture.window).expect("focused widget");
+    let controllers = focused.observe_controllers();
+    for keys in (0..controllers.n_items()).filter_map(|index| {
+        controllers
+            .item(index)
+            .and_downcast::<gtk::EventControllerKey>()
+    }) {
+        if keys.emit_by_name::<bool>("key-pressed", &[&key, &0u32, &modifiers]) {
+            return;
+        }
+    }
+}
+
+fn clipboard_text(fixture: &KeyboardFixture) -> String {
+    let text = Rc::new(RefCell::new(None));
+    let slot = text.clone();
+    fixture
+        .window
+        .clipboard()
+        .read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
+            slot.replace(Some(
+                result
+                    .ok()
+                    .flatten()
+                    .map(|text| text.to_string())
+                    .unwrap_or_default(),
+            ));
+        });
+    wait_until(|| text.borrow().is_some());
+    text.take().unwrap_or_default()
 }
 
 fn archive_has_focus(fixture: &KeyboardFixture) -> bool {
@@ -316,6 +366,41 @@ fn tenxer_preview_owns_document_keys_until_returned() {
             fixture.press(Key::l, ModifierType::empty());
             assert_eq!(fixture.shortcuts.feedback_text(), "Nothing to preview");
             assert!(!fixture.preview.is_enabled());
+            fixture.press(Key::BackSpace, ModifierType::empty());
+            wait_loaded(&browser, 0);
+
+            move_to_named(&fixture, &browser, "long.txt");
+            fixture.press(Key::l, ModifierType::empty());
+            wait_until(|| focused_has_class(&fixture, "preview-virtual-list"));
+            assert!(owner_bar(&fixture));
+            assert!(
+                !fixture.press(Key::a, ModifierType::CONTROL_MASK),
+                "Ctrl+A goes to the document"
+            );
+            emit_on_focused(&fixture, Key::a, ModifierType::CONTROL_MASK);
+            assert!(!fixture.press(Key::c, ModifierType::CONTROL_MASK));
+            emit_on_focused(&fixture, Key::c, ModifierType::CONTROL_MASK);
+            let copied = clipboard_text(&fixture);
+            assert!(
+                copied.contains("line 0") && copied.contains(&format!("line {}", LONG_LINES - 1)),
+                "the whole document is copied, not listing paths: {copied:?}"
+            );
+            assert!(fixture.press(Key::i, ModifierType::empty()));
+            wait_until(|| fixture.view.item_view_has_focus());
+
+            move_to_named(&fixture, &browser, "short.txt");
+            fixture.press(Key::l, ModifierType::empty());
+            wait_until(|| focused_has_class(&fixture, "preview-text"));
+            assert!(
+                fixture.press(Key::j, ModifierType::empty()),
+                "source text is a document"
+            );
+            assert!(focused_has_class(&fixture, "preview-text"));
+            assert!(!fixture.press(Key::a, ModifierType::CONTROL_MASK));
+            fixture.press(Key::h, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
+            assert!(fixture.preview.is_open());
+            assert_eq!(focused_name(&browser), "short.txt");
         },
     );
 }
@@ -342,6 +427,11 @@ fn tenxer_interactive_previews_keep_a_defined_key_owner() {
             assert!(
                 !fixture.preview.archive_at_root(),
                 "l opens the archive folder"
+            );
+            assert!(archive_has_focus(&fixture));
+            assert!(
+                owner_bar(&fixture),
+                "rebuilt archive rows keep the owner bar"
             );
             for key in [Key::l, Key::Return, Key::o, Key::space, Key::j, Key::G] {
                 let modifiers = if key == Key::G {
@@ -379,6 +469,37 @@ fn tenxer_interactive_previews_keep_a_defined_key_owner() {
             fixture.press(Key::i, ModifierType::empty());
             wait_until(|| fixture.view.item_view_has_focus());
             assert!(!fixture.preview.is_enabled(), "i closes the archive drawer");
+
+            move_to_named(&fixture, &browser, "long.txt");
+            fixture.press(Key::i, ModifierType::empty());
+            wait_until(|| fixture.preview.is_open());
+            assert!(
+                fixture.view.item_view_has_focus(),
+                "i leaves focus in the list"
+            );
+            fixture.press(Key::k, ModifierType::empty());
+            assert_eq!(focused_name(&browser), "locked.zip");
+            wait_until(|| password_has_focus(&fixture));
+            assert!(
+                owner_bar(&fixture),
+                "a password prompt that takes focus owns the keys"
+            );
+            assert!(
+                !fixture.press(Key::i, ModifierType::empty()),
+                "i is typed into the password"
+            );
+            assert!(fixture.preview.is_enabled());
+            assert!(password_has_focus(&fixture));
+            fixture.press(Key::Escape, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
+            assert!(!owner_bar(&fixture));
+
+            move_to_named(&fixture, &browser, "locked.zip");
+            fixture.press(Key::i, ModifierType::empty());
+            wait_until(|| password_has_focus(&fixture));
+            assert!(owner_bar(&fixture));
+            fixture.press(Key::Escape, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
 
             move_to_named(&fixture, &browser, "locked.zip");
             fixture.press(Key::l, ModifierType::empty());
