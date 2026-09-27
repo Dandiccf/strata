@@ -75,6 +75,7 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
     let preferences = dispatcher.type_to_search.preferences.clone();
     release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
     clear_find_on_mode_exit(window, &dispatcher, &weak_browser);
+    bind_footer_filter(&dispatcher);
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         let Some(browser) = weak_browser.upgrade() else {
             return Propagation::Proceed;
@@ -133,8 +134,35 @@ fn release_preview_keys_on_mode_exit(
     );
 }
 
-/// Leaving 10xer mode forgets the find and hands a focused prompt's keys back to
-/// the listing.
+/// The **f** prompt filters as it is typed, and the footer reports the focused
+/// listing's filter while the mode is on.
+fn bind_footer_filter(dispatcher: &Dispatcher) {
+    let view = dispatcher.view.downgrade();
+    dispatcher
+        .shortcuts
+        .connect_prompt_changed(move |kind, text| {
+            if kind == crate::ui::tenxer_mode::Prompt::Filter
+                && let Some(view) = view.upgrade()
+            {
+                view.set_listing_filter(&text);
+            }
+        });
+    let view = dispatcher.view.downgrade();
+    dispatcher.shortcuts.observe_filter(move || {
+        if !crate::ui::tenxer_mode::chrome_suppressed() {
+            return Some(None);
+        }
+        view.upgrade()
+            .map_or(Some(None), |view| view.filter_status())
+    });
+    let shortcuts = dispatcher.shortcuts.clone();
+    dispatcher
+        .view
+        .connect_filter_results_changed(Rc::new(move || shortcuts.refresh_filter()));
+}
+
+/// Leaving 10xer mode forgets the find and footer filters and hands a focused
+/// prompt's keys back to the listing.
 fn clear_find_on_mode_exit(
     window: &gtk::ApplicationWindow,
     dispatcher: &Dispatcher,
@@ -148,11 +176,14 @@ fn clear_find_on_mode_exit(
         crate::ui::preferences::PreferenceManager::tenxer_mode,
         move |window, enabled| {
             if enabled {
+                shortcuts.refresh_filter();
                 return;
             }
             if let Some(view) = view.upgrade() {
                 view.clear_find();
+                view.clear_hidden_filters();
             }
+            shortcuts.refresh_filter();
             let focus = window.root().and_then(|root| root.focus());
             let prompt_focused = shortcuts.prompt_has_focus();
             shortcuts.dismiss_prompt();
@@ -541,7 +572,7 @@ impl Dispatcher {
         {
             return Some(result);
         }
-        if let Some(result) = self.tenxer_find_keys(key, modifiers) {
+        if let Some(result) = self.tenxer_prompt_keys(key, modifiers) {
             return Some(result);
         }
         let icons = self.view.view_mode() == crate::ui::browser_modes::BrowserMode::Icons;

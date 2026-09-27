@@ -520,3 +520,47 @@ def test_tenxer_footer_find_moves_the_cursor_without_hiding_rows(strata, mode, r
     )
     strata.wait_for_focused_entry("readme.md")
     assert strata.entry_names(root) == ROOT_ENTRIES
+
+
+@pytest.mark.preferences(
+    tenxer_mode=True,
+    type_to_search=False,
+    single_click_previews=False,
+    filter_include_subfolders=False,
+)
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_tenxer_footer_filter_commits_reopens_and_clears(strata, mode, root):
+    strata.select_entry("readme.md", directory=root)
+
+    strata.keyboard.press("f")
+    field = strata.editable_field()
+    strata.keyboard.type_text("do")
+    strata.wait(lambda: field.text == "do", "the filter query to stay in the footer prompt")
+    strata.wait(
+        lambda: strata.matches(root) == ["documents", "todo.txt"],
+        "the filter to hide non-matches while typing",
+    )
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: strata.window.find(role="text", states={"editable", "focused"}) is None
+        and strata.window.find(role="label", name="filter: do") is not None,
+        "Enter to commit the filter into the footer",
+    )
+    strata.wait(
+        lambda: strata.focused_name() in ("documents", "todo.txt"),
+        "focus to return to the filtered results",
+    )
+
+    strata.keyboard.press("f")
+    field = strata.editable_field()
+    strata.wait(lambda: field.text == "do", "f to pre-fill the committed query")
+    strata.keyboard.press("Escape")
+    strata.wait(
+        lambda: strata.entry_names(root) == ROOT_ENTRIES,
+        "Escape in the prompt to clear the filter",
+    )
+    strata.wait(
+        lambda: strata.window.find(role="label", name="filter: do") is None,
+        "the footer to drop the filter mark",
+    )
+    strata.wait_for_selection(["readme.md"], root)

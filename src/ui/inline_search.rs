@@ -48,6 +48,8 @@ pub(super) struct SearchCollectionOptions {
     pub(super) single_click: Rc<dyn Fn(FileEntry)>,
     pub(super) selection_changed: SearchSelectionChanged,
     pub(super) focus_items: Rc<dyn Fn()>,
+    /// Runs after the displayed results (or the return to the directory) change.
+    pub(super) results_changed: Rc<dyn Fn()>,
 }
 
 enum Publication {
@@ -72,6 +74,7 @@ struct State {
     context_menu_trigger: RefCell<Option<super::browser::ContextMenuTrigger>>,
     activate: Rc<dyn Fn(FileEntry)>,
     selection_callbacks: RefCell<Vec<SearchSelectionChanged>>,
+    results_changed: Rc<dyn Fn()>,
 }
 
 impl State {
@@ -402,6 +405,75 @@ impl InlineSearch {
             show_directory_listing(state);
         }
     }
+
+    /// Whether a nonempty filter shows results instead of filtering the listing.
+    pub(super) fn replaces_listing(&self) -> bool {
+        self.state.is_some()
+    }
+
+    fn showing_results(&self) -> Option<&Rc<State>> {
+        self.state
+            .as_ref()
+            .filter(|state| state.stack.visible_child_name().as_deref() == Some("search"))
+    }
+
+    /// Applies filter text still waiting on its debounce.
+    pub(in crate::ui) fn flush_query(&self) {
+        if let Some(state) = self.state.as_ref()
+            && let Some(binding) = state.query_binding.borrow().as_ref()
+        {
+            binding.flush();
+        }
+    }
+
+    /// The displayed results, in display order, while they replace the
+    /// directory listing.
+    pub(in crate::ui) fn results(&self) -> Option<Vec<SearchItem>> {
+        Some(self.showing_results()?.collection.items())
+    }
+
+    pub(in crate::ui) fn results_view(&self) -> Option<gtk::Widget> {
+        Some(self.showing_results()?.collection.view.clone())
+    }
+
+    pub(in crate::ui) fn invert_selection(&self) -> bool {
+        let Some(state) = self.showing_results() else {
+            return false;
+        };
+        let selection = &state.collection.selection;
+        let count = selection.n_items();
+        if count == 0 {
+            return false;
+        }
+        let inverted = gtk::Bitset::new_range(0, count);
+        inverted.subtract(&selection.selection());
+        selection.set_selection(&inverted, &gtk::Bitset::new_range(0, count));
+        true
+    }
+
+    /// Moves the result cursor `steps` rows; `usize::MAX` jumps to an end. The
+    /// prompt keeps keyboard focus unless `take_focus`.
+    pub(in crate::ui) fn step(&self, direction: i32, steps: usize, take_focus: bool) -> bool {
+        let Some(state) = self.showing_results() else {
+            return false;
+        };
+        let collection = &state.collection;
+        let Some(target) = super::browser::results_step_target(
+            collection.current_position(),
+            collection.selection.n_items(),
+            direction,
+            steps,
+        ) else {
+            return true;
+        };
+        if take_focus {
+            collection.focus(target, true);
+        } else {
+            collection.selection.select_item(target, true);
+            super::browser::scroll_results_to(&collection.view, target, gtk::ListScrollFlags::NONE);
+        }
+        true
+    }
 }
 
 fn show_directory_listing(state: &State) {
@@ -415,6 +487,7 @@ fn show_directory_listing(state: &State) {
     state.stack.set_visible_child_name("files");
     state.updating.set(false);
     state.emit_selection_changed();
+    (state.results_changed)();
 }
 
 fn install_marquee(
@@ -480,6 +553,7 @@ pub(super) fn wrap(
         single_click,
         selection_changed,
         focus_items,
+        results_changed,
     } = options;
     let stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
     stack.add_named(content, Some("files"));
@@ -518,6 +592,7 @@ pub(super) fn wrap(
         context_menu_trigger: RefCell::new(None),
         activate,
         selection_callbacks: RefCell::new(vec![selection_changed]),
+        results_changed,
     });
     let weak_state = Rc::downgrade(&state);
     state
@@ -686,6 +761,7 @@ fn update_results(state: &State, items: Vec<SearchItem>, recursive: bool) {
     state.collection.update(&items, recursive);
     state.updating.set(false);
     state.emit_selection_changed();
+    (state.results_changed)();
 }
 
 pub(super) fn eligible_results(

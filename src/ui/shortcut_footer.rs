@@ -9,12 +9,15 @@ use std::{
 use gtk::{gdk, glib, prelude::*};
 
 use super::{
+    browser::FilterStatus,
     browser_modes::BrowserMode,
     tenxer_mode::{Chord, Prompt},
 };
 
 type Shortcut = (&'static str, &'static str);
 type ChordListener = Box<dyn Fn(Option<Chord>)>;
+/// `None` while the view is busy rebuilding; the footer then retries on idle.
+type FilterSource = Rc<RefCell<Option<Rc<dyn Fn() -> Option<Option<FilterStatus>>>>>>;
 
 #[derive(Clone)]
 pub(super) struct ShortcutFooter {
@@ -37,6 +40,10 @@ pub(super) struct ShortcutFooter {
     prompt: PromptBar,
     chords: ChordIndicator,
     visual: gtk::Label,
+    filter: gtk::Label,
+    filter_source: FilterSource,
+    filter_retry: Rc<Cell<bool>>,
+    observed: Rc<RefCell<std::rc::Weak<crate::app::Browser>>>,
     view_mode: Rc<Cell<BrowserMode>>,
 }
 
@@ -128,14 +135,20 @@ impl PromptBar {
                 })
     }
 
-    fn open(&self, stack: &gtk::Stack, kind: Prompt) -> bool {
+    fn open(&self, stack: &gtk::Stack, kind: Prompt, text: &str) -> bool {
+        // Replacing an open prompt must not hand its text to the new kind.
+        self.kind.set(None);
+        self.entry.set_text("");
         self.kind.set(Some(kind));
         self.label.set_text(kind.label());
         super::accessibility::set_label(&self.entry, kind.name());
-        self.entry.set_text("");
+        self.entry.set_text(text);
         self.bar.set_visible(true);
         stack.set_visible_child(&self.bar);
-        self.entry.grab_focus()
+        // A pre-filled query stays unselected so typing extends it.
+        let focused = self.entry.grab_focus_without_selecting();
+        self.entry.set_position(-1);
+        focused
     }
 
     /// Clears the typed text so nothing lingers. Callers own where focus goes.
@@ -193,11 +206,17 @@ impl ShortcutFooter {
         let visual = gtk::Label::new(None);
         visual.add_css_class("shortcut-footer-chord");
         visual.set_visible(false);
+        let filter = gtk::Label::new(None);
+        filter.add_css_class("shortcut-footer-chord");
+        filter.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        filter.set_max_width_chars(40);
+        filter.set_visible(false);
         let prompt = PromptBar::new();
         let feedback = gtk::Label::new(None);
         feedback.add_css_class("shortcut-footer-feedback");
         feedback.set_visible(false);
         status.append(&paste);
+        status.append(&filter);
         status.append(&visual);
         status.append(&chord);
         status.append(&chord_hint);
@@ -339,6 +358,7 @@ impl ShortcutFooter {
             chord.clone().upcast(),
             chord_hint.clone().upcast(),
             visual.clone().upcast(),
+            filter.clone().upcast(),
             prompt.bar.clone().upcast(),
             feedback.clone().upcast(),
         ]));
@@ -365,6 +385,10 @@ impl ShortcutFooter {
             prompt,
             chords,
             visual,
+            filter,
+            filter_source: Rc::new(RefCell::new(None)),
+            filter_retry: Rc::new(Cell::new(false)),
+            observed: Rc::new(RefCell::new(std::rc::Weak::new())),
             view_mode: Rc::new(Cell::new(mode)),
         };
         let keys = gtk::EventControllerKey::new();
@@ -497,9 +521,9 @@ impl ShortcutFooter {
     }
 
     pub fn observe_browser(&self, browser: &Rc<crate::app::Browser>) {
-        update_item_count(&self.count, browser);
+        self.observed.replace(Rc::downgrade(browser));
+        self.refresh_filter();
         update_visual_mode(&self.visual, browser);
-        let label = self.count.downgrade();
         let visual = self.visual.downgrade();
         let weak_browser = Rc::downgrade(browser);
         let footer = self.clone();
@@ -514,13 +538,59 @@ impl ShortcutFooter {
             let Some(browser) = weak_browser.upgrade() else {
                 return;
             };
-            if let Some(label) = label.upgrade() {
-                update_item_count(&label, &browser);
-            }
+            footer.refresh_filter();
             if let Some(visual) = visual.upgrade() {
                 update_visual_mode(&visual, &browser);
             }
         });
+    }
+
+    fn retry_filter_refresh(&self) {
+        if self.filter_retry.replace(true) {
+            return;
+        }
+        let footer = self.clone();
+        glib::idle_add_local_once(move || {
+            footer.filter_retry.set(false);
+            footer.refresh_filter();
+        });
+    }
+
+    /// Reports `source`'s filter in place of the directory count while one is
+    /// active. Call [`Self::refresh_filter`] when it changes.
+    pub(in crate::ui) fn observe_filter(
+        &self,
+        source: impl Fn() -> Option<Option<FilterStatus>> + 'static,
+    ) {
+        self.filter_source.replace(Some(Rc::new(source)));
+        self.refresh_filter();
+    }
+
+    /// Updates the `filter:` mark and the count from the observed filter.
+    pub(in crate::ui) fn refresh_filter(&self) {
+        let source = self.filter_source.borrow().clone();
+        let status = match source {
+            Some(source) => match source() {
+                Some(status) => status,
+                None => {
+                    self.retry_filter_refresh();
+                    return;
+                }
+            },
+            None => None,
+        };
+        match status.as_ref() {
+            Some(status) => {
+                self.filter.set_text(&format!("filter: {}", status.query));
+                self.filter.set_tooltip_text(Some(&status.query));
+                self.filter.set_visible(true);
+            }
+            None => self.filter.set_visible(false),
+        }
+        let browser = self.observed.borrow().upgrade();
+        if let Some(browser) = browser {
+            update_item_count(&self.count, &browser, status.as_ref());
+        }
     }
 
     #[cfg(test)]
@@ -574,9 +644,43 @@ impl ShortcutFooter {
 
     /// Covers the footer with `kind`'s prompt and focuses its entry.
     pub(in crate::ui) fn open_prompt(&self, kind: Prompt) -> bool {
+        self.open_prompt_with(kind, "")
+    }
+
+    /// Opens `kind`'s prompt pre-filled with `text`.
+    pub(in crate::ui) fn open_prompt_with(&self, kind: Prompt, text: &str) -> bool {
         // An armed chord must stay visible, and the prompt covers its mark.
         self.chords.set(None);
-        self.prompt.open(&self.root, kind)
+        self.prompt.open(&self.root, kind, text)
+    }
+
+    /// Runs `listener` as the open prompt's text changes, not when a prompt
+    /// opens empty or closes.
+    pub(in crate::ui) fn connect_prompt_changed(
+        &self,
+        listener: impl Fn(Prompt, String) + 'static,
+    ) {
+        let kind = self.prompt.kind.clone();
+        self.prompt.entry.connect_changed(move |entry| {
+            if let Some(kind) = kind.get() {
+                listener(kind, entry.text().to_string());
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn filter_mark(&self) -> Option<String> {
+        self.filter
+            .is_visible()
+            .then(|| self.filter.text().to_string())
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn count_text(&self) -> (String, String) {
+        (
+            self.count.text().to_string(),
+            self.count.tooltip_text().unwrap_or_default().to_string(),
+        )
     }
 
     #[cfg(test)]
@@ -835,7 +939,18 @@ impl ShortcutFooter {
     }
 }
 
-fn update_item_count(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
+fn update_item_count(
+    label: &gtk::Label,
+    browser: &Rc<crate::app::Browser>,
+    filter: Option<&FilterStatus>,
+) {
+    if let Some(filter) = filter {
+        let noun = if filter.total() == 1 { "item" } else { "items" };
+        label.set_label(&format!("{} {noun}", filter.total()));
+        label.set_tooltip_text(Some(&file_folder_breakdown(filter.files, filter.folders)));
+        label.set_visible(true);
+        return;
+    }
     let Some(depth) = browser.active_depth() else {
         label.set_visible(false);
         return;
@@ -859,18 +974,15 @@ fn update_item_count(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
         )));
     } else {
         label.set_label(&format!("{} {noun}", counts.total));
-        let files = if counts.files == 1 { "file" } else { "files" };
-        let folders = if counts.folders == 1 {
-            "folder"
-        } else {
-            "folders"
-        };
-        label.set_tooltip_text(Some(&format!(
-            "{} {files}, {} {folders}",
-            counts.files, counts.folders
-        )));
+        label.set_tooltip_text(Some(&file_folder_breakdown(counts.files, counts.folders)));
     }
     label.set_visible(true);
+}
+
+fn file_folder_breakdown(files: usize, folders: usize) -> String {
+    let file_noun = if files == 1 { "file" } else { "files" };
+    let folder_noun = if folders == 1 { "folder" } else { "folders" };
+    format!("{files} {file_noun}, {folders} {folder_noun}")
 }
 
 fn selection_details(entries: &[crate::model::FileEntry]) -> String {

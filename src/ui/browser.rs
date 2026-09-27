@@ -46,6 +46,7 @@ mod events;
 pub(in crate::ui) mod find;
 pub(super) mod fly_to_trash;
 mod inline_edit;
+mod listing_filter;
 mod location;
 mod pane_header;
 pub(in crate::ui) mod paths;
@@ -81,6 +82,9 @@ pub(super) use crate::ui::browser::entry::{
     format_file_size, icon_for_name, metadata_needs_fill, model_type_group, rounded_size_and_unit,
 };
 pub(super) use crate::ui::browser::inline_edit::{queue_rename, reveal_rename_row};
+pub(in crate::ui) use crate::ui::browser::listing_filter::{
+    FilterStatus, results_step_target, scroll_results_to,
+};
 pub(super) use crate::ui::browser::pane_header::{
     column_sort_direction_toggle, column_sort_menu, empty_trash_button, pane_new_folder_button,
     pane_refresh_button, sync_column_sort_direction,
@@ -253,6 +257,7 @@ pub(super) struct ViewState {
     suppress_scroll_after_drop: Cell<bool>,
     drop_active_depths: Cell<Option<(usize, usize)>>,
     find: RefCell<find::FindState>,
+    listing_filter: listing_filter::FilterState,
     #[cfg(test)]
     send_to_menu_test_override: RefCell<Option<SendToMenuTestOverride>>,
     browser: Rc<Browser>,
@@ -629,6 +634,7 @@ impl BrowserView {
             suppress_scroll_after_drop: Cell::new(false),
             drop_active_depths: Cell::new(None),
             find: RefCell::new(find::FindState::default()),
+            listing_filter: listing_filter::FilterState::default(),
             #[cfg(test)]
             send_to_menu_test_override: RefCell::new(None),
             browser,
@@ -644,6 +650,7 @@ impl BrowserView {
         // Columns are laid out from the start edge, so the blank strip beside the last
         // one is the natural place to begin a marquee that runs into it.
         register_cut_view(&state);
+        state.listing_filter.set_owner(&state);
         state.install_input_ownership();
         state.install_column_peek_targets();
         state.install_drag_autoscroll();
@@ -2018,6 +2025,10 @@ impl BrowserView {
         }
         self.keyboard_navigation();
         let steps = steps.max(1);
+        // Filter results replace the directory; its hidden cursor stays put.
+        if self.step_filter_results(direction, steps, true) {
+            return;
+        }
         let focused = self.state.overlay.root().and_then(|root| root.focus());
         let collection = focused
             .as_ref()

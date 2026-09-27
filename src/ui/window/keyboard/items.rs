@@ -258,7 +258,9 @@ impl Dispatcher {
         let search = self.view.selected_search_results().is_some();
         let mods = super::command_modifiers(modifiers);
         if search && !mods.is_empty() {
-            return false;
+            return mods == Modifiers::CONTROL_MASK
+                && matches!(key, Key::r | Key::R)
+                && self.view.invert_filter_results();
         }
         if mods == Modifiers::CONTROL_MASK {
             return self.tenxer_control_page(key)
@@ -283,7 +285,7 @@ impl Dispatcher {
             Key::H if !search => self.go_back(browser),
             Key::L if !search => self.go_forward(browser),
             Key::BackSpace if !search => self.go_parent(),
-            Key::o | Key::Return | Key::KP_Enter => self.activate_icons(browser),
+            Key::o | Key::Return | Key::KP_Enter => self.activate_focused(browser),
             Key::i => {
                 if !self.toggle_file_preview(browser) {
                     self.view.toggle_folder_peek();
@@ -354,19 +356,6 @@ impl Dispatcher {
         self.view.refresh_visual();
     }
 
-    fn activate_icons(&self, browser: &Rc<Browser>) {
-        self.view.keyboard_navigation();
-        if let Some(entry) = self.view.selected_search_result() {
-            if entry.is_directory() {
-                browser.navigate(entry.location);
-            } else {
-                browser.open_location(entry.location);
-            }
-            return;
-        }
-        self.view.activate_focused();
-    }
-
     pub(super) fn tenxer_listing(
         &self,
         browser: &Rc<Browser>,
@@ -395,6 +384,9 @@ impl Dispatcher {
     }
 
     fn tenxer_selection_command(&self, key: Key) -> bool {
+        if matches!(key, Key::r | Key::R) && self.view.invert_filter_results() {
+            return true;
+        }
         if self.view.selected_search_results().is_some() {
             return false;
         }
@@ -494,7 +486,7 @@ impl Dispatcher {
             Key::L => self.go_forward(browser),
             Key::h | Key::Left | Key::KP_Left | Key::BackSpace => self.go_parent(),
             Key::l | Key::Right | Key::KP_Right => self.enter_preview(browser),
-            Key::o | Key::Return | Key::KP_Enter => self.activate_focused(),
+            Key::o | Key::Return | Key::KP_Enter => self.activate_focused(browser),
             Key::g => self.shortcuts.arm_chord(Chord::Go),
             Key::i if self.toggle_file_preview(browser) => {}
             Key::i => {
@@ -541,8 +533,17 @@ impl Dispatcher {
         browser.forward();
     }
 
-    fn activate_focused(&self) {
+    /// Opens the focused result while results replace the directory.
+    fn activate_focused(&self, browser: &Rc<Browser>) {
         self.view.keyboard_navigation();
+        if let Some(entry) = self.view.selected_search_result() {
+            if entry.is_directory() {
+                browser.navigate(entry.location);
+            } else {
+                browser.open_location(entry.location);
+            }
+            return;
+        }
         self.view.activate_focused();
     }
 

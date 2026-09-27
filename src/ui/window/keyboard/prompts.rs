@@ -17,22 +17,27 @@ fn plain(modifiers: Modifiers) -> bool {
 }
 
 impl Dispatcher {
-    /// **/**, **?**, **n**, and **N** from the listing. Shift is ignored because
-    /// some layouts type **/** with it and **?** / **N** always need it.
-    pub(super) fn tenxer_find_keys(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+    /// **/**, **?**, **n**, **N**, **f**, and the filter's **Esc** step from the
+    /// listing. Shift is ignored because some layouts type **/** with it and
+    /// **?** / **N** always need it.
+    pub(super) fn tenxer_prompt_keys(&self, key: Key, modifiers: Modifiers) -> KeyResult {
         if !plain(modifiers) || !self.view.item_view_has_focus() {
             return None;
         }
-        let prompt = match key {
-            Key::slash | Key::KP_Divide => Prompt::Find,
-            Key::question => Prompt::FindBackward,
+        match key {
+            Key::slash | Key::KP_Divide => self.shortcuts.open_prompt(Prompt::Find),
+            Key::question => self.shortcuts.open_prompt(Prompt::FindBackward),
             Key::n | Key::N => {
                 self.repeat_find(key == Key::N);
                 return Some(Propagation::Stop);
             }
+            Key::f => {
+                let query = self.view.listing_filter().unwrap_or_default();
+                self.shortcuts.open_prompt_with(Prompt::Filter, &query)
+            }
+            Key::Escape if self.view.clear_listing_filter() => return Some(Propagation::Stop),
             _ => return None,
         };
-        self.shortcuts.open_prompt(prompt);
         Some(Propagation::Stop)
     }
 
@@ -66,6 +71,13 @@ impl Dispatcher {
         }
         match key {
             Key::Escape => {
+                if self.shortcuts.open_prompt_kind() == Some(Prompt::Filter) {
+                    self.shortcuts.dismiss_prompt();
+                    if !self.view.clear_listing_filter() {
+                        browser.focus_active();
+                    }
+                    return Propagation::Stop;
+                }
                 self.view.dismiss_find_highlight();
                 self.return_to_listing(browser);
             }
@@ -80,6 +92,11 @@ impl Dispatcher {
     fn submit_prompt(&self, browser: &Browser) {
         let text = self.shortcuts.prompt_text();
         let found = match self.shortcuts.open_prompt_kind() {
+            Some(Prompt::Filter) => {
+                self.shortcuts.dismiss_prompt();
+                self.view.commit_listing_filter(&text);
+                return;
+            }
             _ if text.is_empty() => true,
             Some(kind @ (Prompt::Find | Prompt::FindBackward)) => {
                 self.view.find(&text, kind == Prompt::FindBackward, false)

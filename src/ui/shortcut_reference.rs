@@ -379,6 +379,18 @@ const TENXER_SETTINGS: &[Binding] = &[
         keys: "Esc",
     },
     Binding {
+        category: "Find",
+        action: "Filter this listing",
+        note: "Hides non-matches; follows Include subfolders",
+        keys: "f",
+    },
+    Binding {
+        category: "Find",
+        action: "Clear the filter",
+        note: "In the listing or the filter prompt",
+        keys: "Esc",
+    },
+    Binding {
         category: "Navigation",
         action: "Move half a page",
         note: "",
@@ -955,6 +967,8 @@ const TENXER_TOOLS: &[(&str, &str)] = &[
     ("↑ / ↓ in a prompt", "Move through the listing"),
     ("Enter / Esc in a prompt", "Apply / cancel it"),
     ("Esc after a find", "Dismiss the find highlights"),
+    ("f", "Filter this listing"),
+    ("Esc after a filter", "Clear the filter"),
     ("Tab", "Focus the window header"),
     (
         "Enter / Space in the header",

@@ -310,3 +310,298 @@ fn leaving_tenxer_mode_clears_find_in_every_window() {
         },
     );
 }
+
+/// Adds alpha-report.txt, beta.txt, gamma-report.md, and a reports folder
+/// holding deep-report.txt. "report" names two files and the folder here, and
+/// the nested file only with Include subfolders on.
+fn seed_filter_tree(fixture: &KeyboardFixture) {
+    let root = fixture._directory.path();
+    for name in ["alpha-report.txt", "beta.txt", "gamma-report.md"] {
+        std::fs::write(root.join(name), b"filter").expect("fixture file");
+    }
+    std::fs::create_dir(root.join("reports")).expect("fixture folder");
+    std::fs::write(root.join("reports/deep-report.txt"), b"filter").expect("nested file");
+    let browser = fixture.view.browser();
+    fixture.view.refresh();
+    wait_loaded(&browser, 0);
+    wait_until(|| entry_count(&browser) == 7);
+    fixture.shortcuts.observe_browser(&browser);
+}
+
+const IMMEDIATE_REPORTS: [&str; 3] = ["alpha-report.txt", "gamma-report.md", "reports"];
+const ALL_REPORTS: [&str; 4] = [
+    "alpha-report.txt",
+    "deep-report.txt",
+    "gamma-report.md",
+    "reports",
+];
+
+fn result_names(fixture: &KeyboardFixture) -> Vec<String> {
+    let mut names = fixture.view.filter_result_names();
+    names.sort();
+    names
+}
+
+fn wait_results(fixture: &KeyboardFixture, expected: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while result_names(fixture) != expected {
+        assert!(
+            Instant::now() < deadline,
+            "filter results {:?} never became {expected:?}",
+            result_names(fixture)
+        );
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn selected_result_names(fixture: &KeyboardFixture) -> Vec<String> {
+    let mut names: Vec<_> = fixture
+        .view
+        .selected_search_results()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.display_name)
+        .collect();
+    names.sort();
+    names
+}
+
+fn revealed_filter_funnels(widget: &gtk::Widget) -> usize {
+    let own = widget
+        .downcast_ref::<gtk::Revealer>()
+        .is_some_and(|revealer| {
+            revealer.has_css_class("tenxer-filter-revealer") && revealer.reveals_child()
+        });
+    let mut count = usize::from(own);
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        count += revealed_filter_funnels(&current);
+        child = current.next_sibling();
+    }
+    count
+}
+
+fn commit_filter(fixture: &KeyboardFixture, text: &str) {
+    type_and_submit(fixture, Key::f, text);
+    wait_until(|| fixture.view.item_view_has_focus());
+}
+
+#[test]
+fn tenxer_filter_commits_results_without_touching_the_hidden_directory() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::footer_prompt::tenxer_filter_commits_results_without_touching_the_hidden_directory",
+        || {
+            let fixture = KeyboardFixture::new();
+            seed_filter_tree(&fixture);
+            let preferences = enable_tenxer(&fixture);
+            preferences.set_filter_include_subfolders(false);
+            let browser = fixture.view.browser();
+            let none = ModifierType::empty();
+
+            for mode in [BrowserMode::Columns, BrowserMode::List, BrowserMode::Icons] {
+                fixture.view.set_view_mode(mode);
+                wait_loaded(&browser, 0);
+                select_named(&fixture, "beta.txt");
+                let cursor = browser
+                    .focused_item()
+                    .map(|(depth, position, _)| (depth, position));
+                let directory_count = fixture.shortcuts.count_text();
+
+                assert!(fixture.press(Key::f, none), "{mode:?}");
+                assert_eq!(fixture.shortcuts.open_prompt_kind(), Some(Prompt::Filter));
+                assert_eq!(fixture.shortcuts.prompt_label().as_deref(), Some("filter:"));
+                fixture.shortcuts.prompt().set_text("report");
+                wait_results(&fixture, &IMMEDIATE_REPORTS);
+                assert!(
+                    fixture.shortcuts.prompt_has_focus(),
+                    "{mode:?}: typing filters live and stays in the prompt"
+                );
+
+                assert!(fixture.press(Key::Return, none));
+                assert_eq!(fixture.shortcuts.open_prompt_kind(), None);
+                wait_until(|| {
+                    fixture.view.item_view_has_focus()
+                        && fixture.view.selected_search_result().is_some()
+                });
+                assert_eq!(
+                    fixture.shortcuts.filter_mark().as_deref(),
+                    Some("filter: report"),
+                    "{mode:?}"
+                );
+                wait_until(|| {
+                    fixture.shortcuts.count_text()
+                        == ("3 items".to_owned(), "2 files, 1 folder".to_owned())
+                });
+                assert_eq!(revealed_filter_funnels(&fixture.view.widget()), 0);
+                assert_eq!(fill_names(&browser), ["beta.txt"], "{mode:?}");
+
+                let first = selected_result_names(&fixture);
+                assert!(fixture.press(Key::j, none), "{mode:?}");
+                pump(40);
+                let second = selected_result_names(&fixture);
+                assert_eq!(second.len(), 1, "{mode:?}");
+                assert_ne!(first, second, "{mode:?}: j moves among the results");
+                assert!(fixture.press(Key::r, ModifierType::CONTROL_MASK));
+                pump(20);
+                let inverted = selected_result_names(&fixture);
+                assert_eq!(inverted.len(), 2, "{mode:?}: Ctrl+R inverts the results");
+                assert!(!inverted.contains(&second[0]), "{mode:?}");
+                assert_eq!(
+                    fill_names(&browser),
+                    ["beta.txt"],
+                    "{mode:?}: the hidden directory fill is untouched"
+                );
+                assert_eq!(
+                    browser
+                        .focused_item()
+                        .map(|(depth, position, _)| (depth, position)),
+                    cursor,
+                    "{mode:?}: the hidden directory cursor is untouched"
+                );
+
+                assert!(fixture.press(Key::f, none));
+                assert_eq!(
+                    fixture.shortcuts.prompt().text(),
+                    "report",
+                    "{mode:?}: f pre-fills the committed query"
+                );
+                assert!(fixture.press(Key::Escape, none));
+                assert_eq!(fixture.shortcuts.open_prompt_kind(), None);
+                wait_until(|| fixture.view.selected_search_results().is_none());
+                assert_eq!(
+                    fixture.view.listing_filter(),
+                    None,
+                    "{mode:?}: prompt Esc clears"
+                );
+                assert_eq!(fixture.shortcuts.filter_mark(), None);
+                assert_eq!(fixture.shortcuts.count_text(), directory_count, "{mode:?}");
+                assert!(fixture.view.item_view_has_focus(), "{mode:?}");
+
+                commit_filter(&fixture, "report");
+                assert!(fixture.press(Key::Escape, none));
+                wait_until(|| fixture.view.selected_search_results().is_none());
+                assert_eq!(
+                    fixture.view.listing_filter(),
+                    None,
+                    "{mode:?}: listing Esc clears"
+                );
+                assert_eq!(fill_names(&browser), ["beta.txt"], "{mode:?}");
+
+                commit_filter(&fixture, "report");
+                commit_filter(&fixture, "");
+                wait_until(|| fixture.view.selected_search_results().is_none());
+                assert_eq!(
+                    fixture.view.listing_filter(),
+                    None,
+                    "{mode:?}: empty Enter clears"
+                );
+
+                commit_filter(&fixture, "zzz");
+                wait_until(|| fixture.shortcuts.count_text().0 == "0 items");
+                assert_eq!(
+                    fixture.shortcuts.filter_mark().as_deref(),
+                    Some("filter: zzz")
+                );
+                assert!(
+                    fixture.view.item_view_has_focus(),
+                    "{mode:?}: zero results keep focus"
+                );
+                assert!(fixture.press(Key::Escape, none));
+                wait_until(|| fixture.view.listing_filter().is_none());
+
+                commit_filter(&fixture, "reports");
+                wait_until(|| {
+                    fixture
+                        .view
+                        .selected_search_result()
+                        .is_some_and(|entry| entry.display_name == "reports")
+                });
+                assert!(
+                    location_ends_with(browser.active_location(), fixture_name(&fixture)),
+                    "{mode:?}: committing opens nothing"
+                );
+                assert!(fixture.press(Key::Return, none));
+                wait_until(|| location_ends_with(browser.active_location(), "reports"));
+                browser.back();
+                wait_until(|| {
+                    location_ends_with(browser.active_location(), fixture_name(&fixture))
+                });
+                wait_loaded(&browser, 0);
+                fixture.view.clear_listing_filter();
+            }
+        },
+    );
+}
+
+fn fixture_name(fixture: &KeyboardFixture) -> &str {
+    fixture
+        ._directory
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("fixture name")
+}
+
+#[test]
+fn tenxer_filter_follows_live_scope_and_survives_view_rebuilds() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::footer_prompt::tenxer_filter_follows_live_scope_and_survives_view_rebuilds",
+        || {
+            let first = KeyboardFixture::new();
+            let second = KeyboardFixture::new();
+            let preferences = enable_tenxer(&first);
+            second.shortcuts.bind_preferences(&preferences);
+            preferences.set_filter_include_subfolders(false);
+            for fixture in [&first, &second] {
+                seed_filter_tree(fixture);
+                focus_files(fixture);
+                commit_filter(fixture, "report");
+                wait_results(fixture, &IMMEDIATE_REPORTS);
+            }
+
+            preferences.set_filter_include_subfolders(true);
+            for fixture in [&first, &second] {
+                wait_results(fixture, &ALL_REPORTS);
+                wait_until(|| fixture.shortcuts.count_text().0 == "4 items");
+            }
+            preferences.set_filter_include_subfolders(false);
+            for fixture in [&first, &second] {
+                wait_results(fixture, &IMMEDIATE_REPORTS);
+            }
+
+            // The rebuild lands while the typed query still waits on its debounce.
+            assert!(first.press(Key::f, ModifierType::empty()));
+            first.shortcuts.prompt().set_text("gamma");
+            assert!(first.press(Key::Return, ModifierType::empty()));
+            for mode in [BrowserMode::List, BrowserMode::Icons, BrowserMode::Columns] {
+                first.view.set_view_mode(mode);
+                wait_results(&first, &["gamma-report.md"]);
+                assert_eq!(
+                    first.view.listing_filter().as_deref(),
+                    Some("gamma"),
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    first.shortcuts.filter_mark().as_deref(),
+                    Some("filter: gamma"),
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    revealed_filter_funnels(&first.view.widget()),
+                    0,
+                    "{mode:?}: a rebuild keeps the funnel closed"
+                );
+            }
+
+            preferences.set_tenxer_mode(false);
+            pump(50);
+            for fixture in [&first, &second] {
+                wait_until(|| fixture.view.listing_filter().is_none());
+                wait_until(|| fixture.view.selected_search_results().is_none());
+                assert_eq!(fixture.shortcuts.filter_mark(), None);
+                assert_eq!(revealed_filter_funnels(&fixture.view.widget()), 0);
+            }
+        },
+    );
+}

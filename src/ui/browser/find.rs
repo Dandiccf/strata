@@ -231,6 +231,9 @@ impl BrowserView {
     /// Moves the cursor by `direction` in the displayed listing without taking
     /// keyboard focus, for **Up** / **Down** in a footer prompt.
     pub(in crate::ui) fn step_cursor_unfocused(&self, direction: i32) {
+        if self.step_filter_results(direction, 1, false) {
+            return;
+        }
         let Some(depth) = self.focused_listing_depth() else {
             return;
         };

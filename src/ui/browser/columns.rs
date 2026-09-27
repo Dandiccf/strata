@@ -252,6 +252,13 @@ pub(super) struct ColumnView {
 }
 
 impl ColumnView {
+    /// Applies filter text still waiting on its debounce.
+    pub(super) fn flush_filter_query(&self) {
+        if let Some(binding) = self.query_binding.borrow().as_ref() {
+            binding.flush();
+        }
+    }
+
     pub(super) fn context_menu_target(
         &self,
         position: Option<usize>,
@@ -1041,6 +1048,9 @@ impl ViewState {
                         &filtered_model_for_search,
                         &model_for_search,
                     );
+                    if let Some(state) = weak_state_for_search.upgrade() {
+                        state.notify_filter_results_changed();
+                    }
                     return;
                 }
                 let Some(state) = weak_state_for_search.upgrade() else {
@@ -1065,6 +1075,7 @@ impl ViewState {
                         &filter_query_for_search,
                         fold_for_search(&text),
                     );
+                    state.notify_filter_results_changed();
                     return;
                 };
                 *filter_query_for_search.borrow_mut() = fold_for_search(&text);
@@ -1116,6 +1127,7 @@ impl ViewState {
                         if search::update_results(&sm, &results, &selection, &syncing, items) {
                             state.notify_search_selection_changed();
                         }
+                        state.notify_filter_results_changed();
                     }),
                 );
             },

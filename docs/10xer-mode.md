@@ -335,11 +335,16 @@ A miss reports `No matches for “…”` and leaves the cursor where it was. Mo
 focus out of the prompt (clicking a row, another pane) discards it; the
 committed query is per window and forgotten when the mode is left.
 
-Enter on **f** commits the filter, closes the prompt, and returns keyboard focus
-to the filtered listing without opening an item. A following **Enter** opens the
+**f** filters as you type. Enter on **f** commits the filter, closes the prompt,
+and returns keyboard focus to the filtered listing (its first result once the
+results arrive) without opening an item. A following **Enter** opens the
 focused item. Opening **f** again pre-fills the current query. Empty Enter,
-**Esc** from the prompt, or **Esc** from the list clears it. View rebuilds keep
-the funnel collapsed.
+**Esc** from the prompt, or **Esc** from the list clears it. Moving focus out of
+the prompt keeps what was typed. View rebuilds keep the filter and the funnel
+collapsed. While a filter is active, the footer count is the displayed result
+count, including zero, with a file/folder breakdown in its tooltip; motion,
+**Enter**, and **Ctrl+R** act on the results, never on the hidden directory's
+cursor or fill.
 
 **f** follows the saved **Include subfolders** preference. **s** always searches
 the current folder tree, not every indexed root, and adds no full-name find

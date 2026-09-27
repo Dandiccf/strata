@@ -112,6 +112,8 @@ pub(crate) enum Prompt {
     Find,
     /// **?**: find backward in this listing.
     FindBackward,
+    /// **f**: filter this listing as you type.
+    Filter,
 }
 
 impl Prompt {
@@ -119,6 +121,7 @@ impl Prompt {
         match self {
             Self::Find => "/",
             Self::FindBackward => "?",
+            Self::Filter => "filter:",
         }
     }
 
@@ -126,6 +129,7 @@ impl Prompt {
         match self {
             Self::Find => "Find in this listing",
             Self::FindBackward => "Find backward in this listing",
+            Self::Filter => "Filter this listing",
         }
     }
 }

@@ -249,7 +249,8 @@ pub(crate) fn restore_filter_controls(
         entry.set_text("");
         return;
     }
-    button.set_active(true);
+    // A 10xer footer filter never revealed the funnel, so a rebuild keeps it hidden.
+    button.set_active(filter.revealed);
     entry.set_text(&filter.query);
 }
 
@@ -282,10 +283,28 @@ pub(crate) fn debounce_filter_entry(entry: &gtk::Entry, on_settled: impl Fn(Stri
     });
 }
 
+type FilterQueryCallback = dyn Fn(String, bool, bool);
+
 pub(in crate::ui) struct FilterQueryBinding {
     entry: glib::WeakRef<gtk::Entry>,
     changed: Option<glib::SignalHandlerId>,
     pending: Rc<RefCell<Option<glib::SourceId>>>,
+    callback: Weak<FilterQueryCallback>,
+    scope: Rc<Cell<bool>>,
+}
+
+impl FilterQueryBinding {
+    /// Applies typed text still waiting on the debounce now, so a committed
+    /// footer filter shows its results before focus returns to the listing.
+    pub(in crate::ui) fn flush(&self) {
+        let Some(source) = self.pending.borrow_mut().take() else {
+            return;
+        };
+        source.remove();
+        if let (Some(entry), Some(callback)) = (self.entry.upgrade(), self.callback.upgrade()) {
+            callback(entry.text().to_string(), self.scope.get(), false);
+        }
+    }
 }
 
 impl Drop for FilterQueryBinding {
@@ -307,7 +326,7 @@ pub(in crate::ui) fn bind_filter_query(
     on_query: impl Fn(String, bool, bool) + 'static,
 ) -> FilterQueryBinding {
     let pending = Rc::new(RefCell::new(None));
-    let callback = Rc::new(on_query);
+    let callback: Rc<FilterQueryCallback> = Rc::new(on_query);
     let scope = Rc::new(Cell::new(true));
     let weak_callback = Rc::downgrade(&callback);
     let pending_for_binding = pending.clone();
@@ -327,6 +346,8 @@ pub(in crate::ui) fn bind_filter_query(
         },
     );
     let pending_for_drop = pending.clone();
+    let callback_for_flush = Rc::downgrade(&callback);
+    let scope_for_flush = scope.clone();
     let session = session.clone();
     let changed = entry.connect_changed(move |entry| {
         session.expect_query(entry.text().as_str());
@@ -347,6 +368,8 @@ pub(in crate::ui) fn bind_filter_query(
         entry: entry.downgrade(),
         changed: Some(changed),
         pending: pending_for_drop,
+        callback: callback_for_flush,
+        scope: scope_for_flush,
     }
 }
 
