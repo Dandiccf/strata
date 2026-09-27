@@ -16,6 +16,26 @@ mod tests;
 
 const FILE_PROGRESS_DELAY: Duration = Duration::from_millis(350);
 
+#[cfg(test)]
+thread_local! {
+    static FILE_PROGRESS_DELAY_OVERRIDE: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+fn file_progress_delay() -> Duration {
+    #[cfg(test)]
+    if let Some(delay) = FILE_PROGRESS_DELAY_OVERRIDE.with(Cell::get) {
+        return delay;
+    }
+    FILE_PROGRESS_DELAY
+}
+
+/// Tests of fast-operation feedback must not depend on how quickly a loaded
+/// CI filesystem finishes a small copy.
+#[cfg(test)]
+pub(super) fn set_file_progress_delay_for_test(delay: Duration) {
+    FILE_PROGRESS_DELAY_OVERRIDE.with(|cell| cell.set(Some(delay)));
+}
+
 const INDETERMINATE_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const STALLED_CANCEL_DELAY: Duration = Duration::from_secs(8);
 
@@ -155,7 +175,7 @@ impl ViewState {
         let icon = icon.to_owned();
         let title_text = title_text.to_owned();
         let subtitle_text = subtitle_text.to_owned();
-        let source = glib::timeout_add_local_once(FILE_PROGRESS_DELAY, move || {
+        let source = glib::timeout_add_local_once(file_progress_delay(), move || {
             let Some(state) = weak.upgrade() else {
                 return;
             };
