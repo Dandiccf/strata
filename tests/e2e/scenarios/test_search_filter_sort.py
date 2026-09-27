@@ -478,3 +478,45 @@ def test_global_search_reveal(strata, mode, directory, route):
     strata.wait_for_selection([target.name], directory=parent.name)
     strata.wait_for_focused_entry(target.name)
     assert strata.window.find(role="text", states={"editable"}) is None
+
+
+@pytest.mark.preferences(tenxer_mode=True, type_to_search=False, single_click_previews=False)
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_tenxer_footer_find_moves_the_cursor_without_hiding_rows(strata, mode, root):
+    strata.keyboard.press("Home")
+    strata.wait_for_focused_entry("archive")
+
+    strata.keyboard.press("/")
+    field = strata.editable_field()
+    strata.keyboard.type_text("do")
+    strata.wait(lambda: field.text == "do", "the find query to stay in the footer prompt")
+    assert strata.entry_names(root) == ROOT_ENTRIES
+    strata.keyboard.press("Return")
+    strata.wait_for_focused_entry("documents")
+
+    for key, expected in (("n", "todo.txt"), ("n", "documents"), ("N", "todo.txt")):
+        strata.keyboard.press(key)
+        strata.wait_for_focused_entry(expected)
+    assert strata.entry_names(root) == ROOT_ENTRIES
+
+    strata.keyboard.press("?")
+    strata.keyboard.type_text("zzz")
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: strata.window.find(role="label", name="No matches for “zzz”")
+        is not None,
+        "a miss to be reported",
+    )
+    strata.wait_for_focused_entry("todo.txt")
+
+    strata.keyboard.press("/")
+    strata.editable_field()
+    strata.keyboard.type_text("j")
+    strata.click_entry("readme.md", root)
+    strata.wait_for_selection(["readme.md"], root)
+    strata.wait(
+        lambda: strata.window.find(role="text", states={"editable", "focused"}) is None,
+        "clicking a row to close the prompt",
+    )
+    strata.wait_for_focused_entry("readme.md")
+    assert strata.entry_names(root) == ROOT_ENTRIES

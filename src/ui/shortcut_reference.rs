@@ -355,6 +355,30 @@ const TENXER_SETTINGS: &[Binding] = &[
         keys: "Esc",
     },
     Binding {
+        category: "Find",
+        action: "Find the next / previous name in this listing",
+        note: "Highlights matches without hiding rows",
+        keys: "/ / ?",
+    },
+    Binding {
+        category: "Find",
+        action: "Repeat the last find / in reverse",
+        note: "",
+        keys: "n / N",
+    },
+    Binding {
+        category: "Find",
+        action: "Move through the listing from the prompt",
+        note: "",
+        keys: "↑ / ↓",
+    },
+    Binding {
+        category: "Find",
+        action: "Dismiss find highlights",
+        note: "In the listing",
+        keys: "Esc",
+    },
+    Binding {
         category: "Navigation",
         action: "Move half a page",
         note: "",
@@ -926,6 +950,11 @@ const DEFAULT_TOOLS: &[(&str, &str)] = &[
 ];
 
 const TENXER_TOOLS: &[(&str, &str)] = &[
+    ("/ / ?", "Find the next / previous name in this listing"),
+    ("n / N", "Repeat the last find / in reverse"),
+    ("↑ / ↓ in a prompt", "Move through the listing"),
+    ("Enter / Esc in a prompt", "Apply / cancel it"),
+    ("Esc after a find", "Dismiss the find highlights"),
     ("Tab", "Focus the window header"),
     (
         "Enter / Space in the header",

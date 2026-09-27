@@ -12,6 +12,7 @@ use super::super::*;
 use crate::services::{
     LoadHandle, Preview, PreviewContent, PreviewEvent, PreviewProvider, PreviewRequest,
 };
+mod footer_prompt;
 mod place_chords;
 mod preview_ownership;
 
@@ -1330,17 +1331,23 @@ fn hidden_shortcut_button_keeps_prompt_chord_and_feedback_usable() {
                 .expect("shortcuts button");
             assert!(!button.is_visible());
             assert!(fixture.shortcuts.tag_visible());
-            fixture.shortcuts.show_prompt();
             fixture
                 .shortcuts
                 .arm_chord(crate::ui::tenxer_mode::Chord::Go);
             fixture.shortcuts.show_feedback("Copied");
-            assert!(gtk::prelude::WidgetExt::is_visible(
-                fixture.shortcuts.prompt()
-            ));
-            assert!(fixture.shortcuts.prompt().is_sensitive());
             assert_eq!(fixture.shortcuts.chord().text(), "g-");
             assert!(fixture.shortcuts.chord().is_visible());
+            assert!(
+                fixture
+                    .shortcuts
+                    .open_prompt(crate::ui::tenxer_mode::Prompt::Find)
+            );
+            assert!(fixture.shortcuts.prompt().is_sensitive());
+            assert_eq!(
+                fixture.shortcuts.armed_chord(),
+                None,
+                "the prompt covers the chord mark, so it cancels the chord"
+            );
             fixture.shortcuts.prompt().set_text("keep");
             assert!(fixture.shortcuts.prompt().grab_focus());
             let names = directory_names(fixture._directory.path());
@@ -1353,8 +1360,6 @@ fn hidden_shortcut_button_keeps_prompt_chord_and_feedback_usable() {
                     .is_some_and(|popover| popover.is_visible())
             });
             assert_eq!(fixture.shortcuts.prompt().text(), "keep");
-            assert!(fixture.shortcuts.chord().is_visible());
-            assert_eq!(fixture.shortcuts.chord().text(), "g-");
             fixture.press(Key::Escape, ModifierType::empty());
             wait_until(|| {
                 widget_with_class(fixture.window.upcast_ref(), "shortcut-popover")
@@ -1363,15 +1368,16 @@ fn hidden_shortcut_button_keeps_prompt_chord_and_feedback_usable() {
             assert_eq!(fixture.shortcuts.prompt().text(), "keep");
             assert!(fixture.shortcuts.prompt().grab_focus());
             assert!(fixture.press(Key::Escape, ModifierType::empty()));
-            assert!(!gtk::prelude::WidgetExt::is_visible(
-                fixture.shortcuts.prompt()
-            ));
+            assert_eq!(fixture.shortcuts.prompt_label(), None);
             assert!(fixture.shortcuts.prompt().text().is_empty());
             fixture.shortcuts.dismiss_feedback();
             assert!(!widget_text_visible(
                 fixture.shortcuts.widget().upcast_ref(),
                 "Copied"
             ));
+            fixture
+                .shortcuts
+                .arm_chord(crate::ui::tenxer_mode::Chord::Go);
             assert!(fixture.shortcuts.chord().is_visible());
             preferences.set_tenxer_mode(false);
             pump(50);

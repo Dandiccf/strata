@@ -104,3 +104,28 @@ impl Chord {
         }
     }
 }
+
+/// A footer text prompt. Its label replaces the footer while it is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Prompt {
+    /// **/**: find forward in this listing.
+    Find,
+    /// **?**: find backward in this listing.
+    FindBackward,
+}
+
+impl Prompt {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Find => "/",
+            Self::FindBackward => "?",
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Find => "Find in this listing",
+            Self::FindBackward => "Find backward in this listing",
+        }
+    }
+}

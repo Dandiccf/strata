@@ -322,12 +322,18 @@ listing row closes the prompt and keeps that selection.
 | **r** | Rename |
 | **Tab** / **Shift+Tab** | Cycle matching folders in the go prompt |
 
-**/** is a cursor jump; **f** hides non-matches. The prompt stays focused while
-you type. Matching substrings stay highlighted after Enter in Columns, Icons,
-and List. **Esc** from the listing dismisses those highlights without hiding rows.
-Empty **/** with Enter does nothing. **Esc** from the prompt cancels without
-leaving highlights. Pressing **/** again shows the prompt. **n** repeats the
-last query, including multi-character input.
+**/** is a cursor jump; **f** hides non-matches. The prompt covers the footer and
+stays focused while you type. Matching is a case-insensitive substring of the
+name, searched in display order from the cursor and wrapping at either end.
+Matching substrings stay highlighted in the theme's accent color after Enter in
+Columns, Icons, and List. **Esc** from the listing dismisses those highlights without hiding rows.
+Empty **/** with Enter closes the prompt and changes nothing. **Esc** from the
+prompt cancels without leaving highlights. Pressing **/** again shows the
+prompt. **n** repeats the last query, including multi-character input, in its
+original direction; **N** reverses it, and either shows the highlights again.
+A miss reports `No matches for “…”` and leaves the cursor where it was. Moving
+focus out of the prompt (clicking a row, another pane) discards it; the
+committed query is per window and forgotten when the mode is left.
 
 Enter on **f** commits the filter, closes the prompt, and returns keyboard focus
 to the filtered listing without opening an item. A following **Enter** opens the

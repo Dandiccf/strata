@@ -336,6 +336,8 @@ pub struct ModeViews {
     /// Page Up/Down scrolls the viewport itself; skip the follow-up `scroll_to`
     /// that `FocusChanged` would otherwise schedule from stale GridView estimates.
     suppress_focus_scroll: Cell<bool>,
+    /// Set while a footer prompt moves the cursor; the prompt keeps the keys.
+    cursor_keeps_focus: Cell<bool>,
 }
 
 impl ModeViews {
@@ -410,6 +412,7 @@ impl ModeViews {
             icons_thumbnail_size: Rc::new(Cell::new(DEFAULT_ICONS_THUMBNAIL_SIZE)),
             focus_before_header: RefCell::new(None),
             suppress_focus_scroll: Cell::new(false),
+            cursor_keeps_focus: Cell::new(false),
         }
     }
 
@@ -1378,6 +1381,38 @@ impl ModeViews {
 
     pub fn suppress_focus_scroll(&self) {
         self.suppress_focus_scroll.set(true);
+    }
+
+    pub(in crate::ui) fn set_cursor_keeps_focus(&self, keep: bool) {
+        self.cursor_keeps_focus.set(keep);
+    }
+
+    /// The visible collection view showing `source` of pane `depth`, and its
+    /// position there.
+    pub(in crate::ui) fn cursor_view(
+        &self,
+        depth: usize,
+        source: usize,
+    ) -> Option<(gtk::Widget, u32)> {
+        let panes = self.visible_panes();
+        let pane = panes.iter().find(|pane| pane.depth == depth)?;
+        pane.item_sections().into_iter().find_map(|section| {
+            let position = section.source_to_view(&pane.model, source)?;
+            (position < section.view_model.n_items()).then_some((section.view, position))
+        })
+    }
+
+    /// Calls `visit` with the name label of every bound Icons and List item.
+    pub(in crate::ui) fn visit_name_labels(&self, visit: impl Fn(&gtk::Widget)) {
+        for pane in self.all_panes() {
+            for section in pane.item_sections() {
+                for bound in section.bound_items.borrow().iter() {
+                    if let Some(label) = bound.rename_label.upgrade() {
+                        visit(&label);
+                    }
+                }
+            }
+        }
     }
 
     pub fn view_position_in(&self, view: &gtk::Widget, depth: usize, source: usize) -> Option<u32> {
@@ -4478,6 +4513,10 @@ fn apply_icons_entry(
     if label.text().as_deref() != Some(shown_name) {
         label.set_text(Some(shown_name));
     }
+    super::browser::find::highlight_name(
+        label.upcast_ref(),
+        state.and_then(|state| state.find_highlight()).as_deref(),
+    );
     super::thumbnail::set_thumbnail_or_icon(
         &icon,
         entry,

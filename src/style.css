@@ -2215,6 +2215,11 @@ paned > separator {
   outline: none;
 }
 
+/* The header bar above already marks the drawer that owns the keys. */
+.preview-pane.preview-keyboard-owner :focus-visible {
+  outline: none;
+}
+
 .preview-title {
   color: @theme_text;
   font-weight: 700;
@@ -2961,30 +2966,25 @@ entry.preview-command-entry selection {
   font-weight: normal;
 }
 
-.shortcut-footer-prompt {
-  color: @theme_text;
-  background: @theme_surface;
-  border: 1px solid @theme_border;
-  border-radius: 4px;
+.shortcut-footer-prompt-label {
+  color: @theme_accent;
+  font-weight: bold;
+}
+
+/* Fits the shared entry style into the footer row so opening a prompt never
+   resizes the footer. */
+entry.form-control.shortcut-footer-prompt {
   min-height: 20px;
   padding: 0 6px;
 }
 
-.shortcut-footer-prompt:hover {
-  border-color: @theme_accent;
-}
-
-.shortcut-footer-prompt:focus,
-.shortcut-footer-prompt:focus-visible {
-  outline: 2px solid @theme_accent;
-  outline-offset: -2px;
-  border-color: @theme_accent;
-}
-
-.shortcut-footer-prompt:disabled {
-  color: @theme_dim_text;
-  background: @theme_bg;
-  border-color: @theme_border;
+/* The prompt is the only thing in the footer while open; its caret marks focus. */
+entry.form-control.shortcut-footer-prompt:focus,
+entry.form-control.shortcut-footer-prompt:focus-visible,
+entry.form-control.shortcut-footer-prompt:focus-within {
+  border-color: alpha(@theme_border, 0.54);
+  box-shadow: none;
+  outline: none;
 }
 
 .tenxer-tag {
@@ -3080,6 +3080,11 @@ entry.preview-command-entry selection {
 .shortcut-popover scrolledwindow:focus-visible {
   outline: 2px solid @theme_accent;
   outline-offset: -2px;
+}
+
+.shortcut-popover.tenxer-active scrolledwindow:focus,
+.shortcut-popover.tenxer-active scrolledwindow:focus-visible {
+  outline: none;
 }
 
 .columns {

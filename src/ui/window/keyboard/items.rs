@@ -48,7 +48,8 @@ impl Dispatcher {
     }
 
     pub(super) fn dismiss_preview_or_selection(&self, browser: &Browser) -> KeyResult {
-        if self.type_to_search.preferences.tenxer_mode() && self.view.leave_visual() {
+        let tenxer = self.type_to_search.preferences.tenxer_mode();
+        if tenxer && (self.view.dismiss_find_highlight() || self.view.leave_visual()) {
             return Some(Propagation::Stop);
         }
         if self.preview.is_enabled() {

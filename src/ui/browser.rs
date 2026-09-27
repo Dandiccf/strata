@@ -43,6 +43,7 @@ mod dissolve_delete;
 mod entry;
 mod entry_animation;
 mod events;
+pub(in crate::ui) mod find;
 pub(super) mod fly_to_trash;
 mod inline_edit;
 mod location;
@@ -180,6 +181,8 @@ pub(super) struct ViewState {
     pointer_owns_selection: Cell<bool>,
     horizontal_scroll_generation: Rc<Cell<u64>>,
     suppress_focus_scroll: Cell<bool>,
+    /// Set while a footer prompt moves the cursor; the prompt keeps the keys.
+    cursor_keeps_focus: Cell<bool>,
     pending_mirror: RefCell<Option<glib::SourceId>>,
     source_generation: Rc<Cell<u64>>,
     refreshing_source_filter: Cell<bool>,
@@ -249,6 +252,7 @@ pub(super) struct ViewState {
     drag_source_depth: Cell<Option<usize>>,
     suppress_scroll_after_drop: Cell<bool>,
     drop_active_depths: Cell<Option<(usize, usize)>>,
+    find: RefCell<find::FindState>,
     #[cfg(test)]
     send_to_menu_test_override: RefCell<Option<SendToMenuTestOverride>>,
     browser: Rc<Browser>,
@@ -561,6 +565,7 @@ impl BrowserView {
             pointer_owns_selection: Cell::new(false),
             horizontal_scroll_generation: Rc::new(Cell::new(0)),
             suppress_focus_scroll: Cell::new(false),
+            cursor_keeps_focus: Cell::new(false),
             pending_mirror: RefCell::new(None),
             source_generation,
             refreshing_source_filter: Cell::new(false),
@@ -623,6 +628,7 @@ impl BrowserView {
             drag_source_depth: Cell::new(None),
             suppress_scroll_after_drop: Cell::new(false),
             drop_active_depths: Cell::new(None),
+            find: RefCell::new(find::FindState::default()),
             #[cfg(test)]
             send_to_menu_test_override: RefCell::new(None),
             browser,
