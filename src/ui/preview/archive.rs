@@ -201,6 +201,10 @@ impl ArchiveBrowser {
         &self.list
     }
 
+    pub(super) fn at_root(&self) -> bool {
+        self.path.borrow().is_empty()
+    }
+
     pub(super) fn move_cursor(&self, delta: isize) -> bool {
         let count = self.model.n_items() as usize;
         if count == 0 {

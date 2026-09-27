@@ -821,10 +821,10 @@ pub(super) fn build_appearance_menu(
             );
             shortcut_label.set_text(text);
             shortcut_label.set_visible(!text.is_empty());
-            tooltip_toggle.set_tooltip_text(Some(if text.is_empty() {
-                "Toggle preview panel while browsing"
+            tooltip_toggle.set_tooltip_text(Some(&if text.is_empty() {
+                "Toggle preview panel while browsing".to_owned()
             } else {
-                "Toggle preview panel while browsing (Space)"
+                format!("Toggle preview panel while browsing ({text})")
             }));
         },
     );

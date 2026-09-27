@@ -197,6 +197,10 @@ fn context_hints_follow_the_active_map() {
             assert!(!hints.iter().any(|hint| hint == "Y"), "{hints:?}");
             assert!(hints.iter().any(|hint| hint == "F2"), "{hints:?}");
             assert!(hints.iter().any(|hint| hint == "Ctrl+C"), "{hints:?}");
+            assert!(
+                hints.iter().any(|hint| hint == "I"),
+                "GTK renders the i accelerator as I: {hints:?}"
+            );
             menu.popdown();
             view.browser().clear_observer();
             window.destroy();

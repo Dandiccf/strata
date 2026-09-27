@@ -103,8 +103,13 @@ def test_tenxer_icons_stay_on_tiles_at_edges_in_search_and_peek(strata):
     strata.wait(lambda: strata.peek() is None, "a second i to close the folder peek")
     strata.select_entry("readme.md")
     strata.keyboard.press("i")
+    strata.wait(lambda: strata.preview() is not None, "i to open the file preview")
     assert strata.peek() is None
     assert strata.current_directory() == root
+    assert strata.focused_name() == "readme.md", "i keeps focus on the tile"
+    strata.keyboard.press("i")
+    strata.wait(lambda: strata.preview() is None, "a second i to close the preview")
+    strata.wait_for_focused_entry("readme.md")
 
     strata.keyboard.press("ctrl+shift+m")
     strata.wait(

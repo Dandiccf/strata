@@ -2205,6 +2205,16 @@ paned > separator {
   padding: 0 6px 0 12px;
 }
 
+/* 10xer: the drawer, not the listing, receives keys. Matches the Miller
+   column's three-pixel destination bar without shifting the header. */
+.preview-pane.preview-keyboard-owner .preview-header {
+  box-shadow: inset 0 3px 0 @theme_accent;
+}
+
+.preview-content:focus-visible {
+  outline: none;
+}
+
 .preview-title {
   color: @theme_text;
   font-weight: 700;
@@ -2929,7 +2939,6 @@ entry.preview-command-entry selection {
 }
 
 .shortcut-footer-count,
-.tenxer-tag,
 .tenxer-experimental,
 .shortcut-footer-chord,
 .shortcut-footer-feedback {
@@ -2961,6 +2970,17 @@ entry.preview-command-entry selection {
   color: @theme_dim_text;
   background: @theme_bg;
   border-color: @theme_border;
+}
+
+.tenxer-tag {
+  color: @theme_accent;
+  background-color: alpha(@theme_accent, 0.14);
+  border: 1px solid alpha(@theme_accent, 0.4);
+  border-radius: 999px;
+  margin: 2px 0;
+  padding: 0 8px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
 }
 
 .shortcut-footer-paste {

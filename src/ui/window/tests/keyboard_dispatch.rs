@@ -12,8 +12,12 @@ use super::super::*;
 use crate::services::{
     LoadHandle, Preview, PreviewContent, PreviewEvent, PreviewProvider, PreviewRequest,
 };
+mod preview_ownership;
+
 use crate::ui::{
-    preview::PreviewDrawer, shortcut_footer::ShortcutFooter, top_bar_navigation::TopBarNavigation,
+    preview::{DocumentScroll, PreviewDrawer},
+    shortcut_footer::ShortcutFooter,
+    top_bar_navigation::TopBarNavigation,
 };
 
 struct TextPreview;
@@ -1268,9 +1272,9 @@ fn tenxer_file_list_skips_conflicting_defaults_and_keeps_bound_shortcuts() {
 }
 
 #[test]
-fn appearance_menu_hides_space_preview_while_tenxer_is_on() {
+fn appearance_menu_shows_i_preview_while_tenxer_is_on() {
     crate::test_support::gtk_test(
-        "ui::window::tests::keyboard_dispatch::appearance_menu_hides_space_preview_while_tenxer_is_on",
+        "ui::window::tests::keyboard_dispatch::appearance_menu_shows_i_preview_while_tenxer_is_on",
         || {
             let preferences = PreferenceManager::shared();
             preferences.set_tenxer_mode(false);
@@ -1290,10 +1294,10 @@ fn appearance_menu_hides_space_preview_while_tenxer_is_on() {
                 Some("Toggle preview panel while browsing (Space)")
             );
             preferences.set_tenxer_mode(true);
-            assert_eq!(preview_shortcut(&toggle), "");
+            assert_eq!(preview_shortcut(&toggle), "i");
             assert_eq!(
                 toggle.tooltip_text().as_deref(),
-                Some("Toggle preview panel while browsing")
+                Some("Toggle preview panel while browsing (i)")
             );
             preferences.set_tenxer_mode(false);
             assert_eq!(preview_shortcut(&toggle), "Space");
@@ -1780,12 +1784,22 @@ fn tenxer_list_and_columns_move_enter_and_traverse_history() {
             assert!(!fixture.preview.is_open());
             select_named(&fixture, "a.txt");
             fixture.press(Key::i, ModifierType::empty());
-            pump(200);
+            wait_until(|| fixture.preview.is_open());
             assert!(
                 browser.column_snapshot(1).is_none(),
-                "i on a file opens nothing"
+                "i on a file opens no column"
             );
-            assert!(!fixture.preview.is_open());
+            assert!(
+                fixture.view.item_view_has_focus(),
+                "i leaves focus in the list"
+            );
+            assert!(!preview_has_focus(&fixture));
+            fixture.press(Key::i, ModifierType::empty());
+            assert!(
+                !fixture.preview.is_enabled(),
+                "a second i closes the preview"
+            );
+            assert!(fixture.view.item_view_has_focus());
             select_named(&fixture, "nest");
             fixture.press(Key::i, ModifierType::empty());
             wait_loaded(&browser, 1);
@@ -1909,7 +1923,8 @@ fn tenxer_list_and_columns_move_enter_and_traverse_history() {
                 "plain l / Right must not launch a file"
             );
             assert_eq!(browser.active_location(), stayed);
-            assert!(!fixture.preview.is_open());
+            fixture.press(Key::Escape, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
             fixture.press(Key::o, ModifierType::empty());
             assert!(
                 opened
@@ -2048,7 +2063,9 @@ fn tenxer_icons_move_spatially_open_explicitly_and_peek() {
                     .map(|location| location.display_path())
             );
             assert!(opened.borrow().is_empty());
-            assert!(!preview_has_focus(&fixture));
+            wait_until(|| preview_has_focus(&fixture));
+            fixture.press(Key::Escape, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
             fixture.view.set_view_mode(BrowserMode::Icons);
             wait_loaded(&browser, 0);
             let names = source_names(&browser);
@@ -2176,9 +2193,15 @@ fn tenxer_icons_move_spatially_open_explicitly_and_peek() {
             pump(40);
             focus_icon(&fixture, &browser, "tile-02.txt");
             fixture.press(Key::i, ModifierType::empty());
-            pump(40);
+            wait_until(|| fixture.preview.is_open());
             assert!(!fixture.view.widget().has_css_class("peek-open"));
+            assert!(
+                fixture.view.item_view_has_focus(),
+                "Icons i leaves focus on the tile"
+            );
             assert_eq!(browser.active_location(), origin);
+            fixture.press(Key::i, ModifierType::empty());
+            assert!(!fixture.preview.is_enabled());
             focus_icon(&fixture, &browser, "nest");
             fixture.press(Key::j, ModifierType::empty());
             fixture.press(Key::k, ModifierType::empty());

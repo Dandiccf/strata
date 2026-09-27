@@ -181,7 +181,7 @@ pub(super) fn install_item(
                 Action::Preview,
                 crate::assets::icons::EYE,
                 "Quick preview",
-                ContextHint::Preview,
+                ContextHint::ChooserPreview,
                 true,
                 false,
             ));

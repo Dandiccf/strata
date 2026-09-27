@@ -24,6 +24,7 @@ use super::{SidebarState, SidebarView, TypeToSearch, visible_modal_layer};
 mod commands;
 mod focus;
 mod items;
+mod preview;
 mod sidebar;
 
 pub(in crate::ui) use sidebar::{
@@ -58,7 +59,9 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
             previous: RefCell::new(None),
         },
     };
+    dispatcher.preview.bind_keyboard_view(&dispatcher.view);
     let preferences = dispatcher.type_to_search.preferences.clone();
+    release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         let Some(browser) = weak_browser.upgrade() else {
             return Propagation::Proceed;
@@ -93,6 +96,28 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
         )
     });
     window.add_controller(wheel);
+}
+
+/// Leaving 10xer mode ends preview key ownership but keeps the drawer open.
+fn release_preview_keys_on_mode_exit(
+    window: &gtk::ApplicationWindow,
+    preview: &PreviewDrawer,
+    browser: &std::rc::Weak<Browser>,
+) {
+    let preview = preview.clone();
+    let browser = browser.clone();
+    crate::ui::preferences::PreferenceManager::shared().bind_preference(
+        window,
+        crate::ui::preferences::PreferenceManager::tenxer_mode,
+        move |window, enabled| {
+            if !enabled
+                && preview.owns_focus(window.root().and_then(|root| root.focus()).as_ref())
+                && let Some(browser) = browser.upgrade()
+            {
+                browser.focus_active();
+            }
+        },
+    );
 }
 
 /// Accumulates fractional scroll deltas into whole text-size steps so smooth
@@ -305,7 +330,7 @@ impl Dispatcher {
             preferences.set_text_size(size);
             return Propagation::Stop;
         }
-        if let Some(result) = self.input_owner(key, modifiers) {
+        if let Some(result) = self.input_owner(browser, key, modifiers) {
             return result;
         }
         if let Some(result) = self.tenxer_keys(browser, key, modifiers) {
@@ -374,7 +399,7 @@ impl Dispatcher {
             .unwrap_or(Propagation::Proceed)
     }
 
-    fn input_owner(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+    fn input_owner(&self, browser: &Browser, key: Key, modifiers: Modifiers) -> KeyResult {
         if let Some(layer) = visible_modal_layer(&self.window) {
             let focus_is_inside = gtk::prelude::RootExt::focus(&self.window)
                 .is_some_and(|focus| focus == layer || focus.is_ancestor(&layer));
@@ -392,6 +417,9 @@ impl Dispatcher {
                 return Some(result);
             }
             return Some(Propagation::Proceed);
+        }
+        if let Some(result) = self.tenxer_preview_text(browser, key, modifiers) {
+            return Some(result);
         }
         if !self.inline_editing_active()
             && let Some(result) = self.shortcuts.handle_key(key, modifiers)
@@ -448,6 +476,9 @@ impl Dispatcher {
         if key == Key::Q && modifiers.contains(Modifiers::SHIFT_MASK) && !command {
             self.window.close();
             return Some(Propagation::Stop);
+        }
+        if let Some(result) = self.tenxer_preview(browser, key, modifiers) {
+            return Some(result);
         }
         let focus = gtk::prelude::RootExt::focus(&self.window);
         if self.sidebar.contains(&focus)

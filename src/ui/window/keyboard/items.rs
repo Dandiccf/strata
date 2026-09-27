@@ -282,7 +282,11 @@ impl Dispatcher {
             Key::L if !search => self.go_forward(browser),
             Key::BackSpace if !search => self.go_parent(),
             Key::o | Key::Return | Key::KP_Enter => self.activate_icons(browser),
-            Key::i => self.view.toggle_folder_peek(),
+            Key::i => {
+                if !self.toggle_file_preview(browser) {
+                    self.view.toggle_folder_peek();
+                }
+            }
             Key::Page_Up | Key::KP_Page_Up if !search => self.view.page_displayed_cursor(-1, false),
             Key::Page_Down | Key::KP_Page_Down if !search => {
                 self.view.page_displayed_cursor(1, false)
@@ -471,6 +475,7 @@ impl Dispatcher {
             Key::G => self.jump_displayed(1),
             Key::H => self.go_back(browser),
             Key::L => self.go_forward(browser),
+            Key::J | Key::K => self.scroll_open_preview(key),
             _ => return false,
         }
         true
@@ -485,8 +490,9 @@ impl Dispatcher {
             Key::H => self.go_back(browser),
             Key::L => self.go_forward(browser),
             Key::h | Key::Left | Key::KP_Left | Key::BackSpace => self.go_parent(),
-            Key::l | Key::Right | Key::KP_Right => self.enter_focused_directory(browser),
+            Key::l | Key::Right | Key::KP_Right => self.enter_preview(browser),
             Key::o | Key::Return | Key::KP_Enter => self.activate_focused(),
+            Key::i if self.toggle_file_preview(browser) => {}
             Key::i => {
                 if self.view.view_mode() != BrowserMode::Columns {
                     return false;
@@ -534,16 +540,6 @@ impl Dispatcher {
     fn activate_focused(&self) {
         self.view.keyboard_navigation();
         self.view.activate_focused();
-    }
-
-    fn enter_focused_directory(&self, browser: &Rc<Browser>) {
-        self.view.keyboard_navigation();
-        if browser
-            .focused_entry()
-            .is_some_and(|entry| entry.is_directory())
-        {
-            self.view.activate_focused();
-        }
     }
 
     fn open_miller_child(&self, browser: &Rc<Browser>) {

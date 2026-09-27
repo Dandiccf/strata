@@ -276,7 +276,7 @@ fn tenxer_reference_follows_the_active_map() {
             settle();
             let phrase = crate::ui::shortcut_reference::EXPERIMENTAL_LABEL;
             let none = gdk::ModifierType::empty();
-            assert!(!footer.tag_note.is_visible());
+            assert!(!footer.tag.is_visible());
             assert!(
                 reference_labels(&footer)
                     .iter()
@@ -287,8 +287,21 @@ fn tenxer_reference_follows_the_active_map() {
 
             manager.set_tenxer_mode(true);
             settle();
-            assert!(footer.tag_note.is_visible());
-            assert_eq!(footer.tag_note.text(), phrase);
+            assert!(footer.tag.is_visible());
+            assert_eq!(footer.tag.text(), crate::ui::tenxer_mode::TAG_TEXT);
+            assert!(
+                footer
+                    .root
+                    .observe_children()
+                    .into_iter()
+                    .flatten()
+                    .all(|child| {
+                        child
+                            .downcast_ref::<gtk::Label>()
+                            .is_none_or(|label| !label.is_visible() || label.text() != phrase)
+                    }),
+                "the footer shows only the pill"
+            );
             assert!(
                 footer
                     .tag
@@ -394,7 +407,7 @@ fn tenxer_reference_follows_the_active_map() {
             );
             manager.set_tenxer_mode(false);
             settle();
-            assert!(!footer.tag_note.is_visible());
+            assert!(!footer.tag.is_visible());
             assert!(
                 footer
                     .tag

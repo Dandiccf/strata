@@ -26,7 +26,6 @@ pub(super) struct ShortcutFooter {
     focus_before: Rc<RefCell<Option<glib::WeakRef<gtk::Widget>>>>,
     status_widgets: Rc<RefCell<Vec<gtk::Widget>>>,
     tag: gtk::Label,
-    tag_note: gtk::Label,
     experimental: gtk::Label,
     feedback: gtk::Label,
     feedback_epoch: Rc<Cell<u64>>,
@@ -52,12 +51,6 @@ impl ShortcutFooter {
         tag.set_tooltip_text(Some(crate::ui::tenxer_mode::TAG_NAME));
         super::accessibility::set_label(&tag, crate::ui::tenxer_mode::TAG_NAME);
         tag.set_visible(false);
-        let tag_note = gtk::Label::new(None);
-        tag_note.add_css_class("tenxer-experimental");
-        tag_note.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        tag_note.set_max_width_chars(28);
-        tag_note.set_tooltip_text(Some(super::shortcut_reference::EXPERIMENTAL_LABEL));
-        tag_note.set_visible(false);
         let chord = gtk::Label::new(None);
         chord.add_css_class("shortcut-footer-chord");
         chord.set_visible(false);
@@ -76,7 +69,6 @@ impl ShortcutFooter {
         feedback.set_visible(false);
         root.append(&paste);
         root.append(&tag);
-        root.append(&tag_note);
         root.append(&visual);
         root.append(&chord);
         root.append(&prompt);
@@ -211,7 +203,6 @@ impl ShortcutFooter {
             count.clone().upcast(),
             more.clone().upcast(),
             tag.clone().upcast(),
-            tag_note.clone().upcast(),
             chord.clone().upcast(),
             visual.clone().upcast(),
             prompt.clone().upcast(),
@@ -233,7 +224,6 @@ impl ShortcutFooter {
             focus_before,
             status_widgets,
             tag,
-            tag_note,
             experimental,
             feedback,
             feedback_epoch: Rc::new(Cell::new(0)),
@@ -268,7 +258,6 @@ impl ShortcutFooter {
 
     pub fn bind_preferences(&self, manager: &super::preferences::PreferenceManager) {
         let tag = self.tag.downgrade();
-        let tag_note = self.tag_note.downgrade();
         let experimental = self.experimental.downgrade();
         let reference = self.reference.downgrade();
         let view_mode = self.view_mode.clone();
@@ -283,9 +272,6 @@ impl ShortcutFooter {
                 let Some(tag) = tag.upgrade() else {
                     return;
                 };
-                let Some(tag_note) = tag_note.upgrade() else {
-                    return;
-                };
                 let Some(experimental) = experimental.upgrade() else {
                     return;
                 };
@@ -293,7 +279,7 @@ impl ShortcutFooter {
                     return;
                 };
                 let starting = !primed.replace(true);
-                apply_experimental_label(&tag, &tag_note, &experimental, enabled);
+                apply_experimental_label(&tag, &experimental, enabled);
                 if !starting
                     && !enabled
                     && let Some(feedback) = feedback.upgrade()
@@ -609,17 +595,12 @@ fn rebuild_reference(reference: &gtk::Box, mode: BrowserMode) {
     }
 }
 
-fn apply_experimental_label(
-    tag: &gtk::Label,
-    tag_note: &gtk::Label,
-    reference_note: &gtk::Label,
-    enabled: bool,
-) {
+/// The footer shows only the pill; the experimental note lives in its tooltip,
+/// accessible description, and the shortcut reference.
+fn apply_experimental_label(tag: &gtk::Label, reference_note: &gtk::Label, enabled: bool) {
     tag.set_text(crate::ui::tenxer_mode::TAG_TEXT);
     tag.set_visible(enabled);
     let phrase = super::shortcut_reference::EXPERIMENTAL_LABEL;
-    tag_note.set_text(if enabled { phrase } else { "" });
-    tag_note.set_visible(enabled);
     reference_note.set_text(if enabled { phrase } else { "" });
     reference_note.set_visible(enabled);
     let announced = if enabled {

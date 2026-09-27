@@ -169,6 +169,8 @@ pub(super) struct ViewState {
     mode: Cell<BrowserMode>,
     columns: RefCell<Vec<ColumnView>>,
     hovered_column: Cell<Option<usize>>,
+    // The preview drawer holds the keys, so no column is the keyboard destination.
+    preview_owns_keys: Cell<bool>,
     context_menu_column: Cell<Option<usize>>,
     context_menu_generation: Cell<u64>,
     context_menu_focus: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
@@ -551,6 +553,7 @@ impl BrowserView {
             mode_views: RefCell::new(mode_views),
             columns: RefCell::new(Vec::new()),
             hovered_column: Cell::new(None),
+            preview_owns_keys: Cell::new(false),
             context_menu_column: Cell::new(None),
             context_menu_generation: Cell::new(0),
             context_menu_focus: RefCell::new(None),
@@ -1388,6 +1391,12 @@ impl BrowserView {
                 .map(|location| (depth, location))
         }) {
             self.state.begin_new_entry(depth, location, true);
+        }
+    }
+
+    pub(in crate::ui) fn set_preview_owns_keys(&self, owned: bool) {
+        if self.state.preview_owns_keys.replace(owned) != owned {
+            self.state.refresh_destination_style();
         }
     }
 
@@ -2399,7 +2408,11 @@ impl ViewState {
     }
 
     fn refresh_destination_style(&self) {
-        let destination = self.destination_depth();
+        let destination = if self.preview_owns_keys.get() {
+            None
+        } else {
+            self.destination_depth()
+        };
         let focused_column = self.focused_column_depth();
         let focused_item = self
             .browser

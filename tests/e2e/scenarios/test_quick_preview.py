@@ -678,3 +678,62 @@ def test_narrow_window_prioritizes_the_last_column_and_restores_the_latest_previ
     strata.wait(last_column_visible, "the last column beside the resumed preview")
     resize(1200)
     strata.wait(lambda: strata.preview().screen_bounds().width == preferred, "the preferred preview width to return")
+
+
+LONG_DOCUMENT = {
+    "long.txt": "".join(f"document line {line}\n" for line in range(400)),
+    "notes.txt": "the quick brown fox\n",
+    "package.deb": "!<arch>\n",
+    "empty": {},
+}
+
+
+@pytest.mark.parametrize("fixture_tree", [LONG_DOCUMENT], indirect=True)
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("List", marks=pytest.mark.preferences(browser_mode="list"), id="list"),
+        pytest.param("Columns", marks=pytest.mark.preferences(browser_mode="columns"), id="columns"),
+    ],
+)
+@pytest.mark.preferences(tenxer_mode=True, type_to_search=False, single_click_previews=False)
+def test_tenxer_l_enters_the_preview_and_h_returns_without_navigating(strata, fixture_tree, mode):
+    root = strata.current_directory()
+    strata.select_entry_with_keyboard("long.txt")
+    names = strata.entry_names()
+    selection = strata.selected_names()
+
+    strata.keyboard.press("l")
+    strata.wait(lambda: strata.preview_shows("document line 0"), "l to open the preview")
+    strata.wait(lambda: strata.focused_name() is None, "the preview to own the keys")
+    for key in ("l", "Right", "Return", "j", "End", "ctrl+u", "Page_Down", "Home", "space"):
+        strata.keyboard.press(key)
+    assert strata.preview_shows("document line 0")
+    assert strata.focused_name() is None, "preview keys stayed in the preview"
+    assert strata.current_directory() == root
+    assert strata.selected_names() == selection
+    assert strata.entry_names() == names
+
+    strata.keyboard.press("h")
+    strata.wait_for_focused_entry("long.txt")
+    assert strata.preview_shows("document line 0"), "h keeps the preview open"
+    assert strata.current_directory() == root
+    strata.keyboard.press("J")
+    assert strata.focused_name() == "long.txt", "J scrolls without taking focus"
+
+    strata.keyboard.press("Right")
+    strata.wait(lambda: strata.focused_name() is None, "Right to re-enter the preview")
+    strata.keyboard.press("Escape")
+    strata.wait(lambda: strata.preview() is None, "Escape to close the preview")
+    strata.wait_for_focused_entry("long.txt")
+    strata.keyboard.press("l")
+    strata.wait(lambda: strata.focused_name() is None, "l to re-enter the preview")
+    strata.keyboard.press("i")
+    strata.wait(lambda: strata.preview() is None, "i to close the focused preview")
+    strata.wait_for_focused_entry("long.txt")
+
+    strata.select_entry_with_keyboard("package.deb")
+    strata.keyboard.press("l")
+    strata.wait(lambda: strata.window.find(name="Nothing to preview") is not None, "the unpreviewable file hint")
+    assert strata.preview() is None
+    assert strata.focused_name() == "package.deb"

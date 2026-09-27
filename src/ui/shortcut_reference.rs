@@ -21,6 +21,8 @@ pub(crate) struct ReferenceSection {
 pub(crate) enum ContextHint {
     None,
     Preview,
+    /// The file chooser previews with Space only; it has no 10xer `i` preview.
+    ChooserPreview,
     CopyPath,
     CopyPaths,
     Rename,
@@ -276,14 +278,14 @@ const TENXER_SETTINGS: &[Binding] = &[
     },
     Binding {
         category: "Navigation",
-        action: "Open directory",
+        action: "Open directory or enter file preview",
         note: "List and Columns",
         keys: "l / →",
     },
     Binding {
         category: "Navigation",
         action: "Open next column",
-        note: "Columns; focus stays in place",
+        note: "Columns directory; focus stays in place",
         keys: "i",
     },
     Binding {
@@ -295,7 +297,7 @@ const TENXER_SETTINGS: &[Binding] = &[
     Binding {
         category: "Navigation",
         action: "Toggle folder peek",
-        note: "Icons",
+        note: "List and Icons directory",
         keys: "i",
     },
     Binding {
@@ -455,6 +457,54 @@ const TENXER_SETTINGS: &[Binding] = &[
         keys: "Ctrl + 0",
     },
     Binding {
+        category: "Preview",
+        action: "Toggle the preview",
+        note: "On a file; focus stays in the listing",
+        keys: "i",
+    },
+    Binding {
+        category: "Preview",
+        action: "Scroll the open preview",
+        note: "Focus stays in the listing",
+        keys: "J / K",
+    },
+    Binding {
+        category: "Preview",
+        action: "Scroll the document",
+        note: "While the preview has the keys",
+        keys: "j / k / ↑ / ↓ / Ctrl + U / Ctrl + D / PgUp / PgDn",
+    },
+    Binding {
+        category: "Preview",
+        action: "Top / bottom of the document",
+        note: "While the preview has the keys",
+        keys: "Home / G / End",
+    },
+    Binding {
+        category: "Preview",
+        action: "Move through an archive",
+        note: "h at the archive root returns to the listing",
+        keys: "j / k / h / l / Enter",
+    },
+    Binding {
+        category: "Preview",
+        action: "Play, seek, volume, mute",
+        note: "Media preview with the keys",
+        keys: "Space / ← → / ↑ ↓ / m",
+    },
+    Binding {
+        category: "Preview",
+        action: "Return to the listing",
+        note: "h / ← in documents and media; the preview stays open",
+        keys: "h / ← / Shift + Tab",
+    },
+    Binding {
+        category: "Preview",
+        action: "Close the preview",
+        note: "Keys return to the listing; i is typed in a text field",
+        keys: "Esc / i",
+    },
+    Binding {
         category: "Preview media",
         action: "Play / pause",
         note: "",
@@ -596,6 +646,10 @@ fn tenxer_sections(mode: BrowserMode) -> Vec<ReferenceSection> {
             rows: TENXER_FILES.to_vec(),
         },
         ReferenceSection {
+            title: "Preview",
+            rows: tenxer_preview(mode),
+        },
+        ReferenceSection {
             title: "10xer mode",
             rows: TENXER_MODE.to_vec(),
         },
@@ -687,6 +741,10 @@ fn tenxer_listing_navigation(mode: BrowserMode) -> Vec<(&'static str, &'static s
         ("j / k / ↑ / ↓", "Next / previous item"),
         ("h / ← / Backspace / Alt+↑", "Go to the parent folder"),
         ("l / →", "Open the focused directory"),
+        (
+            "l / → on a file",
+            "Enter its preview; keys move into the drawer",
+        ),
     ];
     if mode == BrowserMode::Columns {
         shortcuts.push(("i", "Open the next column for the focused directory"));
@@ -703,6 +761,48 @@ fn tenxer_listing_navigation(mode: BrowserMode) -> Vec<(&'static str, &'static s
     ]);
     shortcuts
 }
+
+fn tenxer_preview(mode: BrowserMode) -> Vec<(&'static str, &'static str)> {
+    let mut shortcuts = vec![
+        ("i on a file", "Toggle the preview without taking focus"),
+        ("J / K", "Scroll the open preview without taking focus"),
+    ];
+    if mode != BrowserMode::Icons {
+        shortcuts.extend_from_slice(TENXER_PREVIEW_OWNED);
+    }
+    shortcuts
+}
+
+const TENXER_PREVIEW_OWNED: &[(&str, &str)] = &[
+    ("j / k / ↑ / ↓ in the preview", "Scroll the document"),
+    ("Ctrl+U / Ctrl+D in the preview", "Scroll half a page"),
+    (
+        "Ctrl+B / Ctrl+F / PgUp / PgDn in the preview",
+        "Scroll one page",
+    ),
+    (
+        "Home / G / End in the preview",
+        "Top / bottom of the document",
+    ),
+    (
+        "j / k / l / Enter in an archive",
+        "Move / open an archive folder",
+    ),
+    (
+        "h in an archive",
+        "Archive parent; at the root, back to the listing",
+    ),
+    ("Space / ← → / ↑ ↓ / m in media", "Play, seek, volume, mute"),
+    (
+        "h / ← in the preview",
+        "Return to the listing; the preview stays open",
+    ),
+    ("Shift+Tab in any preview", "Return to the listing"),
+    (
+        "Esc / i in the preview",
+        "Close the preview and return to the listing",
+    ),
+];
 
 const DEFAULT_FILES: &[(&str, &str)] = &[
     ("Enter", "Open the current item"),
@@ -810,7 +910,7 @@ const MEDIA: &[(&str, &str)] = &[
 fn default_hint(hint: ContextHint) -> &'static str {
     match hint {
         ContextHint::None => "",
-        ContextHint::Preview => "Space",
+        ContextHint::Preview | ContextHint::ChooserPreview => "Space",
         ContextHint::CopyPath | ContextHint::CopyPaths => "Y",
         ContextHint::Rename => "F2 / Ctrl+R",
         ContextHint::Cut => "Ctrl+X",
@@ -833,8 +933,9 @@ fn default_hint(hint: ContextHint) -> &'static str {
 
 fn tenxer_hint(hint: ContextHint) -> &'static str {
     match hint {
+        ContextHint::Preview => "i",
         ContextHint::None
-        | ContextHint::Preview
+        | ContextHint::ChooserPreview
         | ContextHint::CopyPath
         | ContextHint::CopyPaths
         | ContextHint::Duplicate

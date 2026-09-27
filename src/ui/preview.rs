@@ -25,6 +25,7 @@ use crate::{
 use super::{blur::BlurBin, controls::form_password_entry, controls::modal_layout};
 
 mod archive;
+mod keyboard;
 mod layout;
 mod media_layout;
 #[cfg(test)]
@@ -172,7 +173,10 @@ struct PreviewState {
     enabled_action: gio::SimpleAction,
     animating: Cell<bool>,
     animation_generation: Rc<Cell<u64>>,
+    keyboard_view: RefCell<Option<super::browser::WeakBrowserView>>,
 }
+
+pub(in crate::ui) use keyboard::{DocumentScroll, PreviewSurface};
 
 pub(super) const PREVIEW_LABEL: &str = "Preview";
 
@@ -355,6 +359,7 @@ impl PreviewDrawer {
             ),
             animating: Cell::new(false),
             animation_generation: Rc::new(Cell::new(0)),
+            keyboard_view: RefCell::new(None),
         });
         let weak = Rc::downgrade(&state);
         state.enabled_action.connect_activate(move |_, _| {
@@ -374,6 +379,7 @@ impl PreviewDrawer {
             }
         });
         install_preview_drag(&header_handle, &state);
+        state.install_keyboard_ownership();
         let weak = Rc::downgrade(&state);
         document_view_button.connect_clicked(move |_| {
             let Some(state) = weak.upgrade() else {
@@ -531,59 +537,7 @@ impl PreviewDrawer {
         {
             return false;
         }
-        let media = match self.state.media.borrow().as_ref() {
-            Some(m) => m.clone(),
-            None => return false,
-        };
-        let preferences = super::preferences::PreferenceManager::shared();
-        let slider = self.state.media_volume_slider.borrow().clone();
-        let icon = self.state.media_volume_icon.borrow().clone();
-        let fallback = gtk::Image::new();
-        let icon = icon.as_ref().unwrap_or(&fallback);
-        match key {
-            gtk::gdk::Key::space => {
-                if media.is_playing() {
-                    media.pause();
-                } else {
-                    media.play();
-                }
-                true
-            }
-            gtk::gdk::Key::Up | gtk::gdk::Key::Down => {
-                let delta = if matches!(key, gtk::gdk::Key::Up) {
-                    0.1
-                } else {
-                    -0.1
-                };
-                let current_vol = if preferences.preview_muted() {
-                    0.0
-                } else {
-                    preferences.preview_volume()
-                };
-                let volume = (current_vol + delta).clamp(0.0, 1.0);
-                set_preview_volume(&media, &preferences, &slider, icon, volume);
-                true
-            }
-            gtk::gdk::Key::m | gtk::gdk::Key::M => {
-                if let Some(toggle_volume) = self.state.media_toggle_mute.borrow().as_ref() {
-                    toggle_volume();
-                    true
-                } else {
-                    false
-                }
-            }
-            gtk::gdk::Key::Left | gtk::gdk::Key::Right if media.is_seekable() => {
-                let delta: i64 = if matches!(key, gtk::gdk::Key::Right) {
-                    5_000_000
-                } else {
-                    -5_000_000
-                };
-                let target = (media.timestamp() + delta).max(0);
-                media.seek(target);
-                true
-            }
-            _ => false,
-        }
+        self.state.media_command(key)
     }
 
     pub fn show(&self, entry: FileEntry, depth: Option<usize>) {
@@ -643,6 +597,62 @@ impl Drop for PreviewState {
 }
 
 impl PreviewState {
+    fn media_command(&self, key: gtk::gdk::Key) -> bool {
+        let media = match self.media.borrow().as_ref() {
+            Some(m) => m.clone(),
+            None => return false,
+        };
+        let preferences = super::preferences::PreferenceManager::shared();
+        let slider = self.media_volume_slider.borrow().clone();
+        let icon = self.media_volume_icon.borrow().clone();
+        let fallback = gtk::Image::new();
+        let icon = icon.as_ref().unwrap_or(&fallback);
+        match key {
+            gtk::gdk::Key::space => {
+                if media.is_playing() {
+                    media.pause();
+                } else {
+                    media.play();
+                }
+                true
+            }
+            gtk::gdk::Key::Up | gtk::gdk::Key::Down => {
+                let delta = if matches!(key, gtk::gdk::Key::Up) {
+                    0.1
+                } else {
+                    -0.1
+                };
+                let current_vol = if preferences.preview_muted() {
+                    0.0
+                } else {
+                    preferences.preview_volume()
+                };
+                let volume = (current_vol + delta).clamp(0.0, 1.0);
+                set_preview_volume(&media, &preferences, &slider, icon, volume);
+                true
+            }
+            gtk::gdk::Key::m | gtk::gdk::Key::M => {
+                if let Some(toggle_volume) = self.media_toggle_mute.borrow().as_ref() {
+                    toggle_volume();
+                    true
+                } else {
+                    false
+                }
+            }
+            gtk::gdk::Key::Left | gtk::gdk::Key::Right if media.is_seekable() => {
+                let delta: i64 = if matches!(key, gtk::gdk::Key::Right) {
+                    5_000_000
+                } else {
+                    -5_000_000
+                };
+                let target = (media.timestamp() + delta).max(0);
+                media.seek(target);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn cancel_pending_show(&self) {
         if let Some(source) = self.pending_show.borrow_mut().take() {
             source.remove();
@@ -1394,6 +1404,8 @@ impl PreviewState {
         self.archive_browser.replace(Some(browser));
         if focus_tree {
             list.grab_focus();
+        } else {
+            self.hand_keys_to(&list);
         }
     }
 
@@ -2382,6 +2394,7 @@ impl PreviewState {
     }
 
     fn clear_content(&self) {
+        let owned = self.content_owns_keys();
         self.source_preview.cancel();
         self.source_preview.scroll.borrow_mut().take();
         self.source_preview.virtual_state.borrow_mut().take();
@@ -2399,6 +2412,7 @@ impl PreviewState {
         self.set_archive_preview_active(false);
         self.clear_password_entry();
         clear_box(&self.content);
+        self.keep_keys_in_content(owned);
     }
 
     fn apply_text_wrap(&self, wrapped: bool) {
