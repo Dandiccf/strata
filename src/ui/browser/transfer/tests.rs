@@ -3008,3 +3008,105 @@ fn move_conflicts_do_not_offer_a_rename() {
         },
     );
 }
+
+#[test]
+fn focusing_the_rename_entry_selects_the_stem() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::focusing_the_rename_entry_selects_the_stem",
+        || {
+            let fixture = tempfile::tempdir().expect("conflict fixture");
+            let source_dir = fixture.path().join("source");
+            let destination = fixture.path().join("destination");
+            std::fs::create_dir_all(&source_dir).expect("source dir");
+            std::fs::create_dir_all(&destination).expect("destination dir");
+            std::fs::write(source_dir.join("photo.jpg"), b"new photo").expect("source file");
+            std::fs::write(destination.join("photo.jpg"), b"old photo").expect("destination file");
+
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.set_operation_provider(Rc::new(crate::adapters::LocalOperationProvider));
+            let browser_widget = view.widget();
+            let root = crate::ui::blur::BlurBin::new(&browser_widget);
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&root));
+            let window = gtk::Window::builder().child(&overlay).build();
+            window.present();
+
+            view.state.start_transfer(
+                Location::local(&destination),
+                vec![Location::local(source_dir.join("photo.jpg"))],
+                false,
+            );
+            assert!(
+                wait_for_modal_layer(&overlay),
+                "conflict dialog modal did not appear"
+            );
+            let entry = modal_entry(&overlay).expect("the rename entry");
+            assert_eq!(entry.text().as_str(), "photo.jpg");
+            // The entry is prefilled with the stem selected.
+            let (start, end) = entry.selection_bounds().expect("a selection");
+            assert_eq!(
+                (start, end),
+                (0, 5),
+                "the stem is selected, not the whole name"
+            );
+            window.destroy();
+        },
+    );
+}
+
+#[test]
+fn accepting_a_non_utf8_self_copy_name_does_not_write_a_mangled_copy() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::accepting_a_non_utf8_self_copy_name_does_not_write_a_mangled_copy",
+        || {
+            let fixture = tempfile::tempdir().expect("conflict fixture");
+            let folder = fixture.path().join("folder");
+            std::fs::create_dir_all(&folder).expect("folder");
+            let raw_name = <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(vec![
+                b'p', 0xff, b'h', b'o', b't', b'.', b'j', b'p', b'g',
+            ]);
+            let original = folder.join(&raw_name);
+            std::fs::write(&original, b"photo").expect("original file");
+
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.set_operation_provider(Rc::new(crate::adapters::LocalOperationProvider));
+            let browser_widget = view.widget();
+            let root = crate::ui::blur::BlurBin::new(&browser_widget);
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&root));
+            let window = gtk::Window::builder().child(&overlay).build();
+            window.present();
+
+            view.state.start_transfer(
+                Location::local(&folder),
+                vec![Location::local(&original)],
+                false,
+            );
+            assert!(
+                wait_for_modal_layer(&overlay),
+                "same-folder paste must open the conflict dialog"
+            );
+            let entry = modal_entry(&overlay).expect("the rename entry");
+            // Accept the prefilled (lossy) name without editing it.
+            entry.emit_by_name::<()>("activate", &[]);
+
+            let lossy_name = entry.text().to_string();
+            assert!(
+                !folder.join(&lossy_name).exists(),
+                "accepting the lossy name must not write a U+FFFD copy"
+            );
+            assert!(original.exists(), "the original is left in place");
+            assert!(
+                visible_field_error(&overlay).is_some(),
+                "keeping the original name is rejected"
+            );
+            window.destroy();
+        },
+    );
+}

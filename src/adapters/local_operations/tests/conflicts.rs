@@ -437,3 +437,45 @@ fn pasting_with_a_target_name_lands_under_the_custom_name() -> Result<(), Box<dy
     assert!(source.exists());
     Ok(())
 }
+
+#[test]
+fn a_target_name_that_escapes_the_destination_fails_safely() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let root = tempfile::tempdir()?;
+    let source_dir = root.path().join("source");
+    let source = source_dir.join("report.txt");
+    let destination = root.path().join("dest");
+    fs::create_dir_all(&source_dir)?;
+    fs::create_dir_all(&destination)?;
+    fs::write(&source, b"incoming")?;
+
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let emitted = events.clone();
+    let _operation = LocalOperationProvider.paste(
+        PasteRequest {
+            id: OperationRequestId(83),
+            destination: Location::local(&destination),
+            items: vec![PasteItem {
+                source: Location::local(&source),
+                conflict: TransferConflict::FailIfExists,
+                target_name: Some(OsString::from("../escape.txt")),
+            }],
+            move_sources: false,
+        },
+        Rc::new(move |event| emitted.borrow_mut().push(event)),
+    );
+
+    wait_for_operation(&events, |event| {
+        matches!(event, OperationEvent::Failed { .. })
+    });
+
+    assert!(
+        !root.path().join("escape.txt").exists(),
+        "an escaping target name must not write outside the destination"
+    );
+    assert!(!destination.join("escape.txt").exists());
+    assert!(source.exists());
+    Ok(())
+}

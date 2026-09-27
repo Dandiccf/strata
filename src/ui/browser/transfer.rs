@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::adapters::gio_file_for_location;
+use crate::adapters::local_operations::{duplicate_candidate_name, parse_copy_suffix};
 use crate::app::Browser;
 use crate::model::{FileEntry, Location};
 use crate::services::{
@@ -28,7 +29,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -158,6 +159,37 @@ fn transfer_collision(source: &Location, destination: &Location) -> Option<Trans
         mergeable: !self_copy && is_directory(&source_file) && is_directory(&target),
         self_copy,
     })
+}
+
+/// The name Keep Both would allocate for a collision.
+fn first_duplicate_candidate(
+    destination: &gio::File,
+    source: &Location,
+    name: &OsStr,
+) -> Option<OsString> {
+    let is_directory = gio_file_for_location(source).query_file_type(
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        None::<&gio::Cancellable>,
+    ) == gio::FileType::Directory;
+    let (stem, extension) = if is_directory {
+        (name, None)
+    } else {
+        let path = Path::new(name);
+        let extension = path.extension().filter(|extension| !extension.is_empty());
+        (path.file_stem().unwrap_or(name), extension)
+    };
+    let (base_stem, copy_num) = parse_copy_suffix(stem);
+    let start_index = copy_num.map_or(1, |number| number + 1);
+    for index in start_index..=u64::MAX {
+        let candidate = duplicate_candidate_name(base_stem, extension, index);
+        if !destination
+            .child(&candidate)
+            .query_exists(None::<&gio::Cancellable>)
+        {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn cross_volume_drop_description(volume: VolumeRelation) -> &'static str {
@@ -618,6 +650,11 @@ impl ViewState {
         let skip = !accepted.is_empty() || !collisions.is_empty();
         let validate_rename = (!move_sources).then(|| {
             let destination_file = gio_file_for_location(&destination);
+            // Keep raw bytes for non-UTF-8 source names.
+            let source_display = source.display_name();
+            let source_raw = gio_file_for_location(&source)
+                .basename()
+                .map(|base| base.into_os_string());
             let mut batch_targets = HashSet::new();
             for item in &accepted {
                 if let Some(target) = &item.target_name {
@@ -628,22 +665,35 @@ impl ViewState {
             }
             for remaining in &collisions {
                 if let Some(base) = gio_file_for_location(&remaining.source).basename() {
+                    if let Some(candidate) = first_duplicate_candidate(
+                        &destination_file,
+                        &remaining.source,
+                        base.as_os_str(),
+                    ) {
+                        batch_targets.insert(candidate);
+                    }
                     batch_targets.insert(base.into_os_string());
                 }
             }
             Rc::new(move |name: &str| -> Result<OsString, String> {
                 validate_basename(name).map_err(|err| err.to_string())?;
-                let os_name = OsString::from(name);
-                if batch_targets.contains(&os_name) {
+                // Map a lossy display name back to raw bytes.
+                let resolved: OsString = match &source_raw {
+                    Some(raw) if name == source_display && raw.as_os_str() != OsStr::new(name) => {
+                        raw.clone()
+                    }
+                    _ => OsString::from(name),
+                };
+                if batch_targets.contains(&resolved) {
                     return Err("That name is already used in this transfer".to_string());
                 }
-                let target = destination_file.child(name);
+                let target = destination_file.child(&resolved);
                 if target.query_exists(None::<&gio::Cancellable>) {
                     return Err(format!(
                         "An item named \u{201c}{name}\u{201d} already exists in this folder"
                     ));
                 }
-                Ok(os_name)
+                Ok(resolved)
             }) as RenameValidator
         });
         self.confirm_replace_conflict(
@@ -919,6 +969,15 @@ impl ViewState {
         let apply_all = form_check_button("Apply to All");
         apply_all.set_visible(actions.apply_to_all);
         layout.actions.prepend(&apply_all);
+        // Rename applies to one item; uncheck the box for the next dialog.
+        let inner_choice = on_choice.clone();
+        let apply_all_for_rename = apply_all.clone();
+        let on_choice = Rc::new(move |choice, apply_to_all| {
+            if matches!(choice, ConflictChoice::Rename(_)) {
+                apply_all_for_rename.set_active(false);
+            }
+            inner_choice(choice, apply_to_all);
+        });
         let skip = gtk::Button::with_label("Skip");
         skip.add_css_class("action-dialog-cancel");
         skip.set_visible(actions.skip);
@@ -996,6 +1055,20 @@ impl ViewState {
             crate::ui::accessibility::set_label(&rename_entry, "New name");
             let stem_end = rename_stem_end(name);
             rename_entry.select_region(0, stem_end);
+            // GTK selects the whole name on focus; restore the stem once.
+            {
+                let restored = std::sync::atomic::AtomicBool::new(false);
+                let focus = gtk::EventControllerFocus::new();
+                focus.connect_enter(move |controller| {
+                    if restored.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    if let Some(entry) = controller.widget().and_downcast::<gtk::Entry>() {
+                        entry.select_region(0, stem_end);
+                    }
+                });
+                rename_entry.add_controller(focus);
+            }
 
             let rename_button = gtk::Button::with_label("Rename");
             rename_button.add_css_class("action-dialog-cancel");

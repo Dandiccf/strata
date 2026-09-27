@@ -6,7 +6,7 @@ mod gio_location;
 mod local_actions;
 mod local_files;
 mod local_jobs;
-mod local_operations;
+pub(crate) mod local_operations;
 mod local_preview;
 pub(crate) mod trash;
 pub(crate) mod trash_restore;
