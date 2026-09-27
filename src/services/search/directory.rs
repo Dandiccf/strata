@@ -67,8 +67,7 @@ pub(super) fn build_index(
                 MetadataValue::Unknown
             } else {
                 use std::os::unix::fs::MetadataExt;
-                // DirEntry::metadata is the link's own mode for a symlink;
-                // the executable check needs the target's mode.
+                // Executability follows the target, not DirEntry's symlink mode.
                 let metadata = if file_type.is_symlink() {
                     std::fs::metadata(&path).ok()
                 } else {

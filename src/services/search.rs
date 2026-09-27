@@ -967,7 +967,8 @@ fn build_index(
             return;
         }
         let overrides = root_overrides.get(&directory.root).expect("root overrides");
-        let mut walker = directory_walker(&directory, overrides, boundaries.clone(), show_hidden);
+        let mut walker =
+            directory_walker(&directory, overrides, boundaries.clone(), show_hidden).peekable();
         let entry_depth = directory.depth.saturating_add(1);
         let mut seen_entries = 0;
         let mut processed_entries = 0;
@@ -982,7 +983,8 @@ fn build_index(
                 break 'walk;
             }
             if processed_entries >= directory.batch_size.max(directory_batch_limit) {
-                break false;
+                // An empty continuation would outrank children and waste their next turn.
+                break walker.peek().is_none();
             }
             let Some(result) = walker.next() else {
                 break true;
@@ -1022,8 +1024,7 @@ fn build_index(
                 MetadataValue::Unknown
             } else {
                 use std::os::unix::fs::MetadataExt;
-                // The walker reports the link's own mode (0777) for a symlink;
-                // the executable check needs the target's mode.
+                // Executability follows the target, not the walker's symlink mode.
                 let metadata = if file_type.is_some_and(|kind| kind.is_symlink()) {
                     std::fs::metadata(entry.path()).ok()
                 } else {
@@ -1071,9 +1072,8 @@ fn build_index(
             }
         };
         drop(walker);
-        // Children share this slice's final ordering key so the continuation
-        // stays ahead of every descendant via the depth tie-break while still
-        // accruing work against sibling subtrees.
+        // Within a branch, depth puts the continuation ahead of this slice's
+        // children, but earlier slices' children retain their lower work keys.
         let resume_work = directory.virtual_work.saturating_add(slice_work);
         for path in discovered_children {
             let child = ScheduledDirectory {
