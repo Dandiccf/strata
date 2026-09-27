@@ -11,6 +11,10 @@ impl PreviewDrawer {
         self.state.sizing.is_suspended()
     }
 
+    pub(in crate::ui) fn reserves_empty_preview(&self) -> bool {
+        self.state.reserves_empty_preview()
+    }
+
     pub(in crate::ui) fn action(&self) -> gio::SimpleAction {
         self.state.enabled_action.clone()
     }
@@ -66,7 +70,8 @@ impl PreviewState {
         self.cancel_loading();
         self.pdf_loads.borrow_mut().clear();
         self.clear_content();
-        if self.reserves_empty_preview()
+        let reserves_empty_preview = self.reserves_empty_preview();
+        if reserves_empty_preview
             && self
                 .split
                 .borrow()
@@ -76,7 +81,9 @@ impl PreviewState {
             self.show_placeholder();
         } else {
             self.hide_panel();
-            self.release_sidebar_rail();
+            if !reserves_empty_preview {
+                self.release_sidebar_rail();
+            }
         }
     }
 

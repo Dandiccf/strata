@@ -435,7 +435,7 @@ impl PreviewState {
             let full = if sidebar.is_none() {
                 0
             } else if is_railed || !visible {
-                saved_width
+                saved_width.max(preferred_sidebar_width())
             } else {
                 // A manually narrowed sidebar must not prevent railing.
                 content.position().max(preferred_sidebar_width())
@@ -518,12 +518,13 @@ impl PreviewState {
             }
         }
         if self.current.borrow().is_none() {
-            if !self.reserves_empty_preview() || !geometry.can_show_preview() {
+            let reserves_empty_preview = self.reserves_empty_preview();
+            if !reserves_empty_preview || !geometry.can_show_preview() {
                 if self.revealer.reveals_child() {
                     self.hide_panel();
                 }
-                self.release_sidebar_rail();
-                if !self.reserves_empty_preview() {
+                if !reserves_empty_preview {
+                    self.release_sidebar_rail();
                     self.sizing.suspended.set(false);
                 }
                 return;
