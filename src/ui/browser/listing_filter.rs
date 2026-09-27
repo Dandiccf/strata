@@ -6,12 +6,13 @@
 
 use std::{
     cell::{Cell, RefCell},
+    path::{Path, PathBuf},
     rc::{Rc, Weak},
 };
 
 use gtk::{glib, prelude::*};
 
-use super::{BrowserView, ViewState, columns::ColumnView};
+use super::{BrowserView, FilterQueryBinding, ViewState, columns::ColumnView};
 use crate::{
     services::SearchItem,
     ui::{browser_modes::BrowserMode, inline_search::InlineSearch},
@@ -37,6 +38,10 @@ impl FilterState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::ui) struct FilterStatus {
     pub query: String,
+    /// Recursive **s** hits rather than an **f** filter.
+    pub search: bool,
+    /// The search hit under the cursor, relative to the searched folder.
+    pub current: Option<PathBuf>,
     pub files: usize,
     pub folders: usize,
 }
@@ -84,7 +89,7 @@ pub(in crate::ui) fn scroll_results_to(
 }
 
 /// Where the focused listing keeps its filter.
-enum Target {
+pub(super) enum Target {
     Column(Box<ColumnView>),
     Pane {
         entry: gtk::Entry,
@@ -94,11 +99,57 @@ enum Target {
 }
 
 impl Target {
-    fn entry(&self) -> &gtk::Entry {
+    pub(super) fn entry(&self) -> &gtk::Entry {
         match self {
             Self::Column(column) => &column.filter_entry,
             Self::Pane { entry, .. } => entry,
         }
+    }
+
+    fn with_binding<T>(&self, apply: impl FnOnce(&FilterQueryBinding) -> T) -> Option<T> {
+        match self {
+            Self::Column(column) => column.with_query_binding(apply),
+            Self::Pane { search, .. } => search.with_query_binding(apply),
+        }
+    }
+
+    /// List and Icons panes have none without a local folder.
+    pub(super) fn has_query_binding(&self) -> bool {
+        self.with_binding(|_| ()).is_some()
+    }
+
+    /// Whether an **s** search forces this field to include subfolders.
+    pub(super) fn forced_recursive(&self) -> bool {
+        self.with_binding(FilterQueryBinding::forced_recursive)
+            .unwrap_or(false)
+    }
+
+    /// Applies text still waiting on its debounce, dropping the previous
+    /// query's rows so focus lands on rows that belong to the new one.
+    pub(super) fn settle(&self) {
+        if self.with_binding(FilterQueryBinding::settle).is_none() {
+            self.flush();
+        }
+    }
+
+    /// Whether this field shows **s** hits.
+    pub(super) fn searching(&self) -> bool {
+        self.forced_recursive() && !self.entry().text().trim().is_empty()
+    }
+
+    /// Shows `query` in the field's own scope, or in its subfolders when
+    /// `forced`. Returns `false` when this listing cannot search subfolders.
+    pub(super) fn apply(&self, query: &str, forced: bool) -> bool {
+        let rescoped = self.with_binding(|binding| binding.force_recursive(forced));
+        if forced && rescoped.is_none() {
+            return false;
+        }
+        if self.entry().text() != query {
+            set_filter_text(self, query);
+        } else if rescoped == Some(true) {
+            self.with_binding(FilterQueryBinding::requery);
+        }
+        true
     }
 
     fn button(&self) -> &gtk::ToggleButton {
@@ -108,7 +159,7 @@ impl Target {
         }
     }
 
-    fn flush(&self) {
+    pub(super) fn flush(&self) {
         match self {
             Self::Column(column) => column.flush_filter_query(),
             Self::Pane { search, .. } => search.flush_query(),
@@ -116,7 +167,7 @@ impl Target {
     }
 
     /// The view showing results in place of the directory, if any.
-    fn results_view(&self) -> Option<gtk::Widget> {
+    pub(super) fn results_view(&self) -> Option<gtk::Widget> {
         match self {
             Self::Column(column) => column
                 .recursive_search_active
@@ -126,7 +177,7 @@ impl Target {
         }
     }
 
-    fn results(&self) -> Option<Vec<SearchItem>> {
+    pub(super) fn results(&self) -> Option<Vec<SearchItem>> {
         match self {
             Self::Column(column) => column
                 .recursive_search_active
@@ -136,7 +187,24 @@ impl Target {
         }
     }
 
-    fn step(&self, direction: i32, steps: usize, take_focus: bool) -> bool {
+    pub(super) fn current_result(&self) -> Option<SearchItem> {
+        match self {
+            Self::Column(column) => {
+                if !column.recursive_search_active.get() {
+                    return None;
+                }
+                let position = column_cursor(column)?;
+                column
+                    .search_results
+                    .borrow()
+                    .get(position as usize)
+                    .cloned()
+            }
+            Self::Pane { search, .. } => search.current_result(),
+        }
+    }
+
+    pub(super) fn step(&self, direction: i32, steps: usize, take_focus: bool) -> bool {
         match self {
             Self::Column(column) => step_column_results(column, direction, steps, take_focus),
             Self::Pane { search, .. } => search.step(direction, steps, take_focus),
@@ -210,21 +278,28 @@ fn step_column_results(
     true
 }
 
-fn filter_status(target: &Target) -> Option<FilterStatus> {
+fn filter_status(target: &Target, root: Option<&Path>) -> Option<FilterStatus> {
     let query = target.entry().text();
     if query.trim().is_empty() {
         return None;
     }
     let results = target.results().unwrap_or_default();
     let folders = results.iter().filter(|item| item.is_directory).count();
+    let search = target.searching();
+    let current = search
+        .then(|| target.current_result())
+        .flatten()
+        .and_then(|item| Some(item.path.strip_prefix(root?).ok()?.to_path_buf()));
     Some(FilterStatus {
         query: query.to_string(),
+        search,
+        current,
         files: results.len() - folders,
         folders,
     })
 }
 
-fn set_filter_text(target: &Target, query: &str) {
+pub(super) fn set_filter_text(target: &Target, query: &str) {
     if query.is_empty() {
         // Closing a funnel that 10xer hides clears nothing; the text is cleared below.
         target.button().set_active(false);
@@ -235,7 +310,7 @@ fn set_filter_text(target: &Target, query: &str) {
 }
 
 impl ViewState {
-    fn filter_target(&self) -> Option<Target> {
+    pub(super) fn filter_target(&self) -> Option<Target> {
         self.try_filter_target().flatten()
     }
 
@@ -244,10 +319,7 @@ impl ViewState {
     fn try_filter_target(&self) -> Option<Option<Target>> {
         if self.mode.get() == BrowserMode::Columns {
             let columns = self.columns.try_borrow().ok()?;
-            let depth = self
-                .focused_column_depth()
-                .or_else(|| self.browser.active_depth());
-            return Some(depth.and_then(|depth| {
+            return Some(self.filter_depth().and_then(|depth| {
                 columns
                     .get(depth)
                     .cloned()
@@ -265,17 +337,32 @@ impl ViewState {
                 }),
         )
     }
+
+    /// The folder whose listing [`Self::filter_target`] filters.
+    fn filter_depth(&self) -> Option<usize> {
+        if self.mode.get() == BrowserMode::Columns {
+            self.focused_column_depth()
+                .or_else(|| self.browser.active_depth())
+        } else {
+            self.browser.active_depth()
+        }
+    }
 }
 
 impl BrowserView {
-    fn filter_target(&self) -> Option<Target> {
+    pub(super) fn filter_target(&self) -> Option<Target> {
         self.state.filter_target()
     }
 
     /// The focused listing's filter text, whether or not its funnel is shown.
     pub(in crate::ui) fn listing_filter(&self) -> Option<String> {
-        let text = self.filter_target()?.entry().text();
-        (!text.trim().is_empty()).then(|| text.to_string())
+        let target = self.filter_target()?;
+        let text = if target.searching() {
+            self.saved_listing_filter(&target)
+        } else {
+            target.entry().text().to_string()
+        };
+        (!text.trim().is_empty()).then_some(text)
     }
 
     /// Filters the focused listing by `query` (an empty query clears it) and
@@ -284,25 +371,32 @@ impl BrowserView {
         let Some(target) = self.filter_target() else {
             return;
         };
-        if let Target::Column(column) = &target {
-            // Columns filter one pane at a time.
-            let others: Vec<_> = self
-                .state
-                .columns
-                .borrow()
-                .iter()
-                .filter(|other| other.filter_entry != column.filter_entry)
-                .map(|other| Target::Column(Box::new(other.clone())))
-                .collect();
-            for other in others
-                .iter()
-                .filter(|other| !other.entry().text().is_empty())
-            {
-                set_filter_text(other, "");
-            }
-        }
-        set_filter_text(&target, query);
+        self.clear_other_column_filters(&target);
+        // A filter replaces a showing search rather than narrowing its hits.
+        self.end_listing_search_for_filter();
+        target.apply(query, false);
         self.state.notify_filter_results_changed();
+    }
+
+    /// Columns filter one pane at a time.
+    pub(super) fn clear_other_column_filters(&self, target: &Target) {
+        let Target::Column(column) = target else {
+            return;
+        };
+        let others: Vec<_> = self
+            .state
+            .columns
+            .borrow()
+            .iter()
+            .filter(|other| other.filter_entry != column.filter_entry)
+            .map(|other| Target::Column(Box::new(other.clone())))
+            .collect();
+        for other in others
+            .iter()
+            .filter(|other| !other.entry().text().is_empty())
+        {
+            set_filter_text(other, "");
+        }
     }
 
     /// Applies `query` at once and returns keyboard focus to the filtered
@@ -313,13 +407,21 @@ impl BrowserView {
             return;
         };
         target.flush();
+        self.focus_filter_results(&target);
+    }
+
+    /// Returns keyboard focus to the results replacing the listing, on the
+    /// first result once one arrives, or to the directory without results.
+    /// The rows showing may still be a previous query's, so arriving rows
+    /// take focus again until it moves elsewhere.
+    pub(super) fn focus_filter_results(&self, target: &Target) {
         self.keyboard_navigation();
         let Some(view) = target.results_view() else {
             self.state.browser.focus_active();
             return;
         };
+        self.state.listing_filter.focus_on_arrival.set(true);
         if target.selection_is_empty() {
-            self.state.listing_filter.focus_on_arrival.set(true);
             view.grab_focus();
         } else {
             target.step(1, 0, true);
@@ -363,11 +465,19 @@ impl BrowserView {
     /// The focused listing's filter; `None` while a rebuild holds the views,
     /// so callers retry rather than report a stale listing.
     pub(in crate::ui) fn filter_status(&self) -> Option<Option<FilterStatus>> {
-        Some(
-            self.state
-                .try_filter_target()?
-                .and_then(|target| filter_status(&target)),
-        )
+        let target = self.state.try_filter_target()?;
+        let root = self
+            .state
+            .filter_depth()
+            .and_then(|depth| self.state.browser.location_at(depth));
+        let root = root.as_ref().and_then(|location| location.native_path());
+        Some(target.and_then(|target| filter_status(&target, root)))
+    }
+
+    /// Whether filter or search results stand in for the focused directory.
+    pub(in crate::ui) fn results_replace_listing(&self) -> bool {
+        self.filter_target()
+            .is_some_and(|target| target.results_view().is_some())
     }
 
     /// Moves among filter results instead of the hidden directory cursor.
@@ -384,10 +494,13 @@ impl BrowserView {
 
     /// Inverts the selection among filter results. Returns whether results are
     /// showing.
+    /// Recursive **s** hits claim the key without inverting.
     pub(in crate::ui) fn invert_filter_results(&self) -> bool {
         self.filter_target().is_some_and(|target| {
             target.results_view().is_some() && {
-                target.invert();
+                if !target.searching() {
+                    target.invert();
+                }
                 true
             }
         })
@@ -414,7 +527,7 @@ impl BrowserView {
 }
 
 impl Target {
-    fn selection_is_empty(&self) -> bool {
+    pub(super) fn selection_is_empty(&self) -> bool {
         match self {
             Self::Column(column) => column.selection.n_items() == 0,
             Self::Pane { search, .. } => search.results().is_none_or(|results| results.is_empty()),
@@ -453,16 +566,16 @@ impl ViewState {
             self.listing_filter.focus_on_arrival.set(false);
             return;
         };
+        // Replacing the focused row leaves focus on a container of the results.
         let focus = self.overlay.root().and_then(|root| root.focus());
-        let still_waiting = focus
-            .as_ref()
-            .is_none_or(|focus| focus == &results || focus.is_ancestor(&results));
+        let still_waiting = focus.as_ref().is_none_or(|focus| {
+            focus == &results || focus.is_ancestor(&results) || results.is_ancestor(focus)
+        });
         if !still_waiting {
             self.listing_filter.focus_on_arrival.set(false);
             return;
         }
         if !target.selection_is_empty() {
-            self.listing_filter.focus_on_arrival.set(false);
             target.step(1, 0, true);
         }
     }

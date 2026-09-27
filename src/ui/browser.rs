@@ -47,6 +47,7 @@ pub(in crate::ui) mod find;
 pub(super) mod fly_to_trash;
 mod inline_edit;
 mod listing_filter;
+mod listing_search;
 mod location;
 mod pane_header;
 pub(in crate::ui) mod paths;
@@ -258,6 +259,7 @@ pub(super) struct ViewState {
     drop_active_depths: Cell<Option<(usize, usize)>>,
     find: RefCell<find::FindState>,
     listing_filter: listing_filter::FilterState,
+    listing_search: listing_search::SearchState,
     #[cfg(test)]
     send_to_menu_test_override: RefCell<Option<SendToMenuTestOverride>>,
     browser: Rc<Browser>,
@@ -635,6 +637,7 @@ impl BrowserView {
             drop_active_depths: Cell::new(None),
             find: RefCell::new(find::FindState::default()),
             listing_filter: listing_filter::FilterState::default(),
+            listing_search: listing_search::SearchState::default(),
             #[cfg(test)]
             send_to_menu_test_override: RefCell::new(None),
             browser,
@@ -1036,6 +1039,7 @@ impl BrowserView {
         }
         // The rebuilt view has a different displayed order for the same anchor.
         self.state.browser.leave_visual();
+        let searching = self.state.listing_search_showing();
         self.state.mode.set(mode);
         let filter = match previous {
             BrowserMode::Columns => self.state.capture_active_column_filter(),
@@ -1062,6 +1066,7 @@ impl BrowserView {
                 .borrow_mut()
                 .clear_inactive_mode(previous),
         }
+        self.state.carry_listing_search(searching);
         if mode == BrowserMode::Columns {
             self.state.focus_rebuilt_active_column();
         } else if let Some(depth) = self.state.browser.active_depth() {

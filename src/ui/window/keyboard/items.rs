@@ -484,6 +484,9 @@ impl Dispatcher {
             Key::End | Key::KP_End | Key::G => self.jump_displayed(1),
             Key::H => self.go_back(browser),
             Key::L => self.go_forward(browser),
+            Key::h | Key::Left | Key::KP_Left if self.view.listing_search_active() => {
+                self.view.dismiss_listing_search();
+            }
             Key::h | Key::Left | Key::KP_Left | Key::BackSpace => self.go_parent(),
             Key::l | Key::Right | Key::KP_Right => self.enter_preview(browser),
             Key::o | Key::Return | Key::KP_Enter => self.activate_focused(browser),
@@ -533,7 +536,8 @@ impl Dispatcher {
         browser.forward();
     }
 
-    /// Opens the focused result while results replace the directory.
+    /// Opens the focused result while results replace the directory, and
+    /// nothing when there is none rather than the hidden directory's cursor.
     fn activate_focused(&self, browser: &Rc<Browser>) {
         self.view.keyboard_navigation();
         if let Some(entry) = self.view.selected_search_result() {
@@ -542,6 +546,9 @@ impl Dispatcher {
             } else {
                 browser.open_location(entry.location);
             }
+            return;
+        }
+        if self.view.results_replace_listing() {
             return;
         }
         self.view.activate_focused();

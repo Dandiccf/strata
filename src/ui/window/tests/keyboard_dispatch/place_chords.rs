@@ -171,6 +171,7 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             for (key, feedback) in [
                 (Key::z, "Unknown chord"),
                 (Key::q, "Unknown chord"),
+                (Key::f, "Nothing to reveal"),
                 (Key::k, "No Documents folder"),
                 (Key::v, "No Videos folder"),
                 (Key::_3, "No pin 3"),

@@ -134,17 +134,20 @@ fn release_preview_keys_on_mode_exit(
     );
 }
 
-/// The **f** prompt filters as it is typed, and the footer reports the focused
-/// listing's filter while the mode is on.
+/// The **f** and **s** prompts filter and search as they are typed, and the
+/// footer reports the focused listing's filter or search while the mode is on.
 fn bind_footer_filter(dispatcher: &Dispatcher) {
     let view = dispatcher.view.downgrade();
     dispatcher
         .shortcuts
         .connect_prompt_changed(move |kind, text| {
-            if kind == crate::ui::tenxer_mode::Prompt::Filter
-                && let Some(view) = view.upgrade()
-            {
-                view.set_listing_filter(&text);
+            let Some(view) = view.upgrade() else {
+                return;
+            };
+            match kind {
+                crate::ui::tenxer_mode::Prompt::Filter => view.set_listing_filter(&text),
+                crate::ui::tenxer_mode::Prompt::Search => view.set_listing_search(&text),
+                _ => {}
             }
         });
     let view = dispatcher.view.downgrade();
@@ -159,9 +162,13 @@ fn bind_footer_filter(dispatcher: &Dispatcher) {
     dispatcher
         .view
         .connect_filter_results_changed(Rc::new(move || shortcuts.refresh_filter()));
+    let shortcuts = dispatcher.shortcuts.clone();
+    dispatcher
+        .view
+        .connect_search_selection_changed(Rc::new(move || shortcuts.schedule_filter_refresh()));
 }
 
-/// Leaving 10xer mode forgets the find and footer filters and hands a focused
+/// Leaving 10xer mode forgets the find, footer filters, and search, and hands a focused
 /// prompt's keys back to the listing.
 fn clear_find_on_mode_exit(
     window: &gtk::ApplicationWindow,
@@ -181,6 +188,7 @@ fn clear_find_on_mode_exit(
             }
             if let Some(view) = view.upgrade() {
                 view.clear_find();
+                view.forget_listing_search();
                 view.clear_hidden_filters();
             }
             shortcuts.refresh_filter();

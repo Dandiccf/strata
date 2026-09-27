@@ -52,6 +52,7 @@ impl ViewState {
         match event {
             BrowserEvent::SelectionSynced { .. } => return,
             BrowserEvent::NavigationStarting => {
+                self.forget_listing_search();
                 self.suppress_scroll_after_drop.set(false);
                 self.drop_active_depths.set(None);
             }

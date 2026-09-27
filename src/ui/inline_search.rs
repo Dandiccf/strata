@@ -426,10 +426,30 @@ impl InlineSearch {
         }
     }
 
+    /// Runs `apply` on the field's query binding, if results can replace the
+    /// listing.
+    pub(in crate::ui) fn with_query_binding<T>(
+        &self,
+        apply: impl FnOnce(&super::browser::FilterQueryBinding) -> T,
+    ) -> Option<T> {
+        self.state
+            .as_ref()?
+            .query_binding
+            .borrow()
+            .as_ref()
+            .map(apply)
+    }
+
     /// The displayed results, in display order, while they replace the
     /// directory listing.
     pub(in crate::ui) fn results(&self) -> Option<Vec<SearchItem>> {
         Some(self.showing_results()?.collection.items())
+    }
+
+    /// The result under the cursor while results replace the listing.
+    pub(in crate::ui) fn current_result(&self) -> Option<SearchItem> {
+        let collection = &self.showing_results()?.collection;
+        collection.item(collection.current_position()?)
     }
 
     pub(in crate::ui) fn results_view(&self) -> Option<gtk::Widget> {
@@ -700,6 +720,10 @@ pub(super) fn wrap(
                 return;
             };
             state.stack.set_visible_child_name("search");
+            if restart {
+                // As in Columns, a restarted query drops the previous query's hits.
+                update_results(state, Vec::new(), is_recursive);
+            }
             if state.collection.sorted.n_items() == 0 {
                 state.status.set_text("Searching…");
                 state.status.set_visible(true);

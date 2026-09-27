@@ -290,7 +290,21 @@ pub(in crate::ui) struct FilterQueryBinding {
     changed: Option<glib::SignalHandlerId>,
     pending: Rc<RefCell<Option<glib::SourceId>>>,
     callback: Weak<FilterQueryCallback>,
-    scope: Rc<Cell<bool>>,
+    scope: FilterScope,
+}
+
+/// The saved **Include subfolders** preference, which a 10xer **s** search
+/// overrides without changing it.
+#[derive(Clone, Default)]
+struct FilterScope {
+    include_subfolders: Rc<Cell<bool>>,
+    forced: Rc<Cell<bool>>,
+}
+
+impl FilterScope {
+    fn recursive(&self) -> bool {
+        self.include_subfolders.get() || self.forced.get()
+    }
 }
 
 impl FilterQueryBinding {
@@ -302,7 +316,38 @@ impl FilterQueryBinding {
         };
         source.remove();
         if let (Some(entry), Some(callback)) = (self.entry.upgrade(), self.callback.upgrade()) {
-            callback(entry.text().to_string(), self.scope.get(), false);
+            let text = entry.text().to_string();
+            if text.trim().is_empty() {
+                self.scope.forced.set(false);
+            }
+            callback(text, self.scope.recursive(), false);
+        }
+    }
+
+    /// Searches subfolders regardless of **Include subfolders** until the
+    /// field is emptied. Returns whether the scope changed; text typed from
+    /// then on uses it, and [`Self::requery`] applies it to the current text.
+    pub(in crate::ui) fn force_recursive(&self, forced: bool) -> bool {
+        self.scope.forced.replace(forced) != forced
+    }
+
+    pub(in crate::ui) fn forced_recursive(&self) -> bool {
+        self.scope.forced.get()
+    }
+
+    /// Like [`Self::flush`], but restarts the query so the previous query's
+    /// rows are dropped rather than shown until the new ones arrive.
+    pub(in crate::ui) fn settle(&self) {
+        if self.pending.borrow().is_some() {
+            self.requery();
+        }
+    }
+
+    /// Restarts the query for the current text in the current scope.
+    pub(in crate::ui) fn requery(&self) {
+        cancel_source(&self.pending);
+        if let (Some(entry), Some(callback)) = (self.entry.upgrade(), self.callback.upgrade()) {
+            callback(entry.text().to_string(), self.scope.recursive(), true);
         }
     }
 }
@@ -327,7 +372,10 @@ pub(in crate::ui) fn bind_filter_query(
 ) -> FilterQueryBinding {
     let pending = Rc::new(RefCell::new(None));
     let callback: Rc<FilterQueryCallback> = Rc::new(on_query);
-    let scope = Rc::new(Cell::new(true));
+    let scope = FilterScope {
+        include_subfolders: Rc::new(Cell::new(true)),
+        forced: Rc::default(),
+    };
     let weak_callback = Rc::downgrade(&callback);
     let pending_for_binding = pending.clone();
     let scope_for_binding = scope.clone();
@@ -335,13 +383,17 @@ pub(in crate::ui) fn bind_filter_query(
         entry,
         crate::ui::preferences::PreferenceManager::filter_include_subfolders,
         move |entry, recursive| {
-            scope_for_binding.set(recursive);
+            scope_for_binding.include_subfolders.set(recursive);
             cancel_source(&pending_for_binding);
             if let Some(callback) = weak_callback.upgrade() {
                 let entry = entry
                     .downcast_ref::<gtk::Entry>()
                     .expect("filter entry anchor");
-                callback(entry.text().to_string(), recursive, true);
+                callback(
+                    entry.text().to_string(),
+                    scope_for_binding.recursive(),
+                    true,
+                );
             }
         },
     );
@@ -355,12 +407,18 @@ pub(in crate::ui) fn bind_filter_query(
         let slot = pending.clone();
         let callback = callback.clone();
         let text = entry.text().to_string();
-        let recursive = scope.get();
+        let scope = scope.clone();
         *pending.borrow_mut() = Some(glib::timeout_add_local_once(
             FILTER_DEBOUNCE_DELAY,
             move || {
                 slot.borrow_mut().take();
-                callback(text, recursive, false);
+                // Clearing the field, including by navigation, ends a forced
+                // search. Replacing text passes through empty, so only settled
+                // text counts.
+                if text.trim().is_empty() {
+                    scope.forced.set(false);
+                }
+                callback(text, scope.recursive(), false);
             },
         ));
     });

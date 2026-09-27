@@ -326,6 +326,12 @@ const TENXER_SETTINGS: &[Binding] = &[
     },
     Binding {
         category: "Places",
+        action: "Folder holding the search hit",
+        note: "Selects the hit and ends the search",
+        keys: "g f",
+    },
+    Binding {
+        category: "Places",
         action: "Home / ~/.config",
         note: "",
         keys: "g h / g c",
@@ -389,6 +395,18 @@ const TENXER_SETTINGS: &[Binding] = &[
         action: "Clear the filter",
         note: "In the listing or the filter prompt",
         keys: "Esc",
+    },
+    Binding {
+        category: "Find",
+        action: "Search this folder and its subfolders",
+        note: "Names only; up to 100 hits",
+        keys: "s",
+    },
+    Binding {
+        category: "Find",
+        action: "Dismiss the search",
+        note: "In the hits; restores an earlier filter",
+        keys: "Esc / h",
     },
     Binding {
         category: "Navigation",
@@ -903,6 +921,7 @@ const DEFAULT_FILES: &[(&str, &str)] = &[
 
 const TENXER_PLACES: &[(&str, &str)] = &[
     ("g g", "First item"),
+    ("g f", "Folder holding the search hit"),
     ("g h / g c", "Home / ~/.config"),
     (
         "g d / g k / g p / g v",
@@ -969,6 +988,8 @@ const TENXER_TOOLS: &[(&str, &str)] = &[
     ("Esc after a find", "Dismiss the find highlights"),
     ("f", "Filter this listing"),
     ("Esc after a filter", "Clear the filter"),
+    ("s", "Search this folder and its subfolders"),
+    ("Esc / h after a search", "Dismiss the hits"),
     ("Tab", "Focus the window header"),
     (
         "Enter / Space in the header",

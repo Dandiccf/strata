@@ -97,8 +97,8 @@ impl Chord {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             Self::Go => {
-                "g first · h home · d downloads · c config · t trash · n network · r recent · \
-                 k documents · p pictures · v videos · 1–9 pins"
+                "g first · f hit's folder · h home · d downloads · c config · t trash · n network · \
+                 r recent · k documents · p pictures · v videos · 1–9 pins"
             }
             Self::PreviewTop => "g top",
         }
@@ -114,6 +114,8 @@ pub(crate) enum Prompt {
     FindBackward,
     /// **f**: filter this listing as you type.
     Filter,
+    /// **s**: search names below this folder as you type.
+    Search,
 }
 
 impl Prompt {
@@ -122,6 +124,7 @@ impl Prompt {
             Self::Find => "/",
             Self::FindBackward => "?",
             Self::Filter => "filter:",
+            Self::Search => "search:",
         }
     }
 
@@ -130,6 +133,7 @@ impl Prompt {
             Self::Find => "Find in this listing",
             Self::FindBackward => "Find backward in this listing",
             Self::Filter => "Filter this listing",
+            Self::Search => "Search this folder and its subfolders",
         }
     }
 }

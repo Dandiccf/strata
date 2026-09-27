@@ -278,6 +278,7 @@ actions) while armed. The second key completes only that chord: **, a** /
 | Second key | Destination |
 | --- | --- |
 | **g** | First item |
+| **f** | Search results: the folder holding the hit under the cursor, with that item selected. Ends the search. Without hits: `Nothing to reveal`. |
 | **h** | Home |
 | **d** | Downloads. Missing: `No Downloads folder`. |
 | **c** | Config (`~/.config`) |
@@ -362,6 +363,15 @@ arrows move among the result icons and do not dismiss search or open an item.
 Search dismissal restores a previously committed **f** filter, or the unfiltered
 directory otherwise. Empty **Esc** cancels without retaining search results.
 The footer count is the displayed hit count, not the hidden directory's fill.
+At its left end, the footer shows the search hit under the cursor as a path
+relative to the searched folder. When space is short, an ellipsis replaces the
+end of its folder part so the file name stays readable; the tooltip has the full
+path. **f** filters show no path. Pressing **s** again while hits are showing
+pre-fills their query. A new query,
+navigation (including opening a directory hit), leaving the mode, or closing the
+window discards the previous query's pending hits; a view change keeps the
+search. A folder without a local path, such as Network, flashes
+`Nothing to search`.
 
 **z** / **Z** use Strata folder history, not a zoxide database. Empty input
 still lists candidates; **Up** / **Down** pick a row, **Enter** goes there.
@@ -378,6 +388,7 @@ While **s** results are showing:
 | **Enter** | With focus already on the results, activate the focused hit once through ordinary open. **Enter** in the **f** or **s** prompt only applies that prompt. |
 | **i** | Directory hit: open an unfocused Miller column, or toggle folder peek. File hit: toggle the preview. Neither takes preview ownership. |
 | **h** | List and Columns: leave preview keyboard ownership, or dismiss search (restoring an earlier **f** filter if present). Icons: move to the next result icon. |
+| **g f** | Open the folder holding the focused hit and select it there. Ends the search without restoring an **f** filter, so the item is visible; **H** returns. |
 
 **Space** does not preview search rows. Use **g g** / **G** to reach the first /
 last result; **Home** / **End** and paging keys are swallowed on result lists

@@ -41,10 +41,67 @@ pub(super) struct ShortcutFooter {
     chords: ChordIndicator,
     visual: gtk::Label,
     filter: gtk::Label,
+    current: CurrentHit,
     filter_source: FilterSource,
     filter_retry: Rc<Cell<bool>>,
     observed: Rc<RefCell<std::rc::Weak<crate::app::Browser>>>,
     view_mode: Rc<Cell<BrowserMode>>,
+}
+
+/// The search hit under the cursor, as its path below the searched folder.
+/// The folder part gives way to an ellipsis before the name does.
+#[derive(Clone)]
+struct CurrentHit {
+    root: gtk::Box,
+    folder: gtk::Label,
+    name: gtk::Label,
+}
+
+impl CurrentHit {
+    /// Names longer than this may be ellipsized in a narrow footer.
+    const NAME_MIN_CHARS: usize = 32;
+
+    fn new() -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root.set_visible(false);
+        let folder = gtk::Label::new(None);
+        folder.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        folder.set_max_width_chars(60);
+        let name = gtk::Label::new(None);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        for label in [&folder, &name] {
+            label.add_css_class("shortcut-footer-chord-hint");
+            root.append(label);
+        }
+        Self { root, folder, name }
+    }
+
+    fn set(&self, path: Option<&std::path::Path>) {
+        let Some(path) = path.filter(|path| path.file_name().is_some()) else {
+            self.root.set_visible(false);
+            return;
+        };
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let folder = path
+            .parent()
+            .map(|folder| folder.to_string_lossy())
+            .unwrap_or_default();
+        self.folder.set_text(&folder);
+        self.folder.set_visible(!folder.is_empty());
+        let name = if folder.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{}{name}", std::path::MAIN_SEPARATOR)
+        };
+        self.name.set_text(&name);
+        let chars = name.chars().count();
+        self.name
+            .set_width_chars(chars.min(Self::NAME_MIN_CHARS) as i32);
+        let full = path.to_string_lossy();
+        self.root.set_tooltip_text(Some(&full));
+        super::accessibility::set_label(&self.root, &full);
+        self.root.set_visible(true);
+    }
 }
 
 /// The armed chord and its footer mark. The chord is armed exactly while the
@@ -211,6 +268,7 @@ impl ShortcutFooter {
         filter.set_ellipsize(gtk::pango::EllipsizeMode::End);
         filter.set_max_width_chars(40);
         filter.set_visible(false);
+        let current = CurrentHit::new();
         let prompt = PromptBar::new();
         let feedback = gtk::Label::new(None);
         feedback.add_css_class("shortcut-footer-feedback");
@@ -236,7 +294,9 @@ impl ShortcutFooter {
         status.prepend(&more);
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
-        status.insert_child_after(&spacer, Some(&more));
+        // The hit path sits left, away from the marks and count on the right.
+        status.insert_child_after(&current.root, Some(&more));
+        status.insert_child_after(&spacer, Some(&current.root));
         let popover = gtk::Popover::builder()
             .position(gtk::PositionType::Top)
             .halign(gtk::Align::Start)
@@ -359,6 +419,7 @@ impl ShortcutFooter {
             chord_hint.clone().upcast(),
             visual.clone().upcast(),
             filter.clone().upcast(),
+            current.root.clone().upcast(),
             prompt.bar.clone().upcast(),
             feedback.clone().upcast(),
         ]));
@@ -386,6 +447,7 @@ impl ShortcutFooter {
             chords,
             visual,
             filter,
+            current,
             filter_source: Rc::new(RefCell::new(None)),
             filter_retry: Rc::new(Cell::new(false)),
             observed: Rc::new(RefCell::new(std::rc::Weak::new())),
@@ -545,7 +607,8 @@ impl ShortcutFooter {
         });
     }
 
-    fn retry_filter_refresh(&self) {
+    /// Refreshes once on idle, after focus settles on the cursor row.
+    pub(in crate::ui) fn schedule_filter_refresh(&self) {
         if self.filter_retry.replace(true) {
             return;
         }
@@ -566,14 +629,15 @@ impl ShortcutFooter {
         self.refresh_filter();
     }
 
-    /// Updates the `filter:` mark and the count from the observed filter.
+    /// Updates the `filter:` or `search:` mark, the current search hit, and
+    /// the count from the observed filter.
     pub(in crate::ui) fn refresh_filter(&self) {
         let source = self.filter_source.borrow().clone();
         let status = match source {
             Some(source) => match source() {
                 Some(status) => status,
                 None => {
-                    self.retry_filter_refresh();
+                    self.schedule_filter_refresh();
                     return;
                 }
             },
@@ -581,12 +645,15 @@ impl ShortcutFooter {
         };
         match status.as_ref() {
             Some(status) => {
-                self.filter.set_text(&format!("filter: {}", status.query));
+                let label = if status.search { "search" } else { "filter" };
+                self.filter.set_text(&format!("{label}: {}", status.query));
                 self.filter.set_tooltip_text(Some(&status.query));
                 self.filter.set_visible(true);
             }
             None => self.filter.set_visible(false),
         }
+        self.current
+            .set(status.as_ref().and_then(|status| status.current.as_deref()));
         let browser = self.observed.borrow().upgrade();
         if let Some(browser) = browser {
             update_item_count(&self.count, &browser, status.as_ref());
@@ -673,6 +740,23 @@ impl ShortcutFooter {
         self.filter
             .is_visible()
             .then(|| self.filter.text().to_string())
+    }
+
+    /// The current search hit's path as shown, and in full.
+    #[cfg(test)]
+    pub(in crate::ui) fn current_hit(&self) -> Option<(String, String)> {
+        let current = &self.current;
+        current.root.is_visible().then(|| {
+            let folder = if current.folder.is_visible() {
+                current.folder.text().to_string()
+            } else {
+                String::new()
+            };
+            (
+                format!("{folder}{}", current.name.text()),
+                current.root.tooltip_text().unwrap_or_default().to_string(),
+            )
+        })
     }
 
     #[cfg(test)]

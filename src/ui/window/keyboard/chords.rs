@@ -20,6 +20,8 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::ui::window) enum GoTarget {
     FirstItem,
+    /// The folder holding the search hit under the cursor.
+    HitFolder,
     /// `validate` routes URI places through mount-aware validation.
     Place {
         location: Location,
@@ -34,6 +36,7 @@ pub(in crate::ui::window) fn go_target(key: Key, pins: &[Location]) -> Option<Go
     let place = |location, validate| Some(GoTarget::Place { location, validate });
     match key {
         Key::g => Some(GoTarget::FirstItem),
+        Key::f => Some(GoTarget::HitFolder),
         Key::h => place(Location::local(home_directory()), false),
         Key::c => place(Location::local(home_directory().join(".config")), true),
         Key::t => place(Location::uri("trash:///"), false),
@@ -126,6 +129,11 @@ impl Dispatcher {
                     && self.view.selected_search_results().is_some();
                 if !icon_results {
                     self.view.move_displayed_cursor(-1, usize::MAX);
+                }
+            }
+            GoTarget::HitFolder => {
+                if !self.view.reveal_listing_search_hit() {
+                    self.shortcuts.show_feedback("Nothing to reveal");
                 }
             }
             GoTarget::Place { location, validate } => {

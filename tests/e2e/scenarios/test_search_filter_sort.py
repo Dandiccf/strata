@@ -564,3 +564,49 @@ def test_tenxer_footer_filter_commits_reopens_and_clears(strata, mode, root):
         "the footer to drop the filter mark",
     )
     strata.wait_for_selection(["readme.md"], root)
+
+
+@pytest.mark.preferences(
+    tenxer_mode=True,
+    type_to_search=False,
+    single_click_previews=False,
+    filter_include_subfolders=False,
+)
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_tenxer_footer_search_covers_subfolders_and_restores_the_filter(strata, mode, root):
+    strata.select_entry("readme.md", directory=root)
+    strata.keyboard.press("f")
+    strata.editable_field()
+    strata.keyboard.type_text("do")
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: strata.window.find(role="label", name="filter: do") is not None,
+        "the filter to commit",
+    )
+
+    strata.keyboard.press("s")
+    field = strata.editable_field()
+    strata.keyboard.type_text("photo")
+    strata.wait(lambda: field.text == "photo", "the search query to stay in the prompt")
+    strata.wait(
+        lambda: strata.matches(root) == ["photo.txt"],
+        "the search to list the nested match with Include subfolders off",
+    )
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: strata.window.find(role="text", states={"editable", "focused"}) is None
+        and strata.window.find(role="label", name="search: photo") is not None,
+        "Enter to apply the search into the footer",
+    )
+    strata.wait_for_focused_entry("photo.txt")
+
+    strata.keyboard.press("Escape")
+    strata.wait(
+        lambda: strata.matches(root) == ["documents", "todo.txt"],
+        "listing Escape to restore the earlier filter",
+    )
+    strata.wait(
+        lambda: strata.window.find(role="label", name="filter: do") is not None
+        and strata.window.find(role="label", name="search: photo") is None,
+        "the footer to show the restored filter",
+    )

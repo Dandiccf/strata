@@ -17,9 +17,9 @@ fn plain(modifiers: Modifiers) -> bool {
 }
 
 impl Dispatcher {
-    /// **/**, **?**, **n**, **N**, **f**, and the filter's **Esc** step from the
-    /// listing. Shift is ignored because some layouts type **/** with it and
-    /// **?** / **N** always need it.
+    /// **/**, **?**, **n**, **N**, **f**, **s**, and the filter and search
+    /// **Esc** steps from the listing. Shift is ignored because some layouts
+    /// type **/** with it and **?** / **N** always need it.
     pub(super) fn tenxer_prompt_keys(&self, key: Key, modifiers: Modifiers) -> KeyResult {
         if !plain(modifiers) || !self.view.item_view_has_focus() {
             return None;
@@ -35,10 +35,34 @@ impl Dispatcher {
                 let query = self.view.listing_filter().unwrap_or_default();
                 self.shortcuts.open_prompt_with(Prompt::Filter, &query)
             }
+            Key::s => match self.view.begin_listing_search() {
+                Some(query) => self.shortcuts.open_prompt_with(Prompt::Search, &query),
+                None => {
+                    self.shortcuts.show_feedback("Nothing to search");
+                    true
+                }
+            },
+            Key::Escape if self.view.listing_search_active() => {
+                self.dismiss_search_step();
+                return Some(Propagation::Stop);
+            }
             Key::Escape if self.view.clear_listing_filter() => return Some(Propagation::Stop),
             _ => return None,
         };
         Some(Propagation::Stop)
+    }
+
+    /// Leaves visual mode, then closes an open preview, then dismisses the hits.
+    fn dismiss_search_step(&self) {
+        if self.view.leave_visual() {
+            return;
+        }
+        if self.preview.is_enabled() {
+            self.preview.close();
+            self.view.focus_listing_search();
+            return;
+        }
+        self.view.dismiss_listing_search();
     }
 
     fn repeat_find(&self, reverse: bool) {
@@ -78,6 +102,13 @@ impl Dispatcher {
                     }
                     return Propagation::Stop;
                 }
+                if self.shortcuts.open_prompt_kind() == Some(Prompt::Search) {
+                    // A nonempty search keeps its hits; an empty one cancels.
+                    let text = self.shortcuts.prompt_text();
+                    self.shortcuts.dismiss_prompt();
+                    self.view.commit_listing_search(&text);
+                    return Propagation::Stop;
+                }
                 self.view.dismiss_find_highlight();
                 self.return_to_listing(browser);
             }
@@ -95,6 +126,11 @@ impl Dispatcher {
             Some(Prompt::Filter) => {
                 self.shortcuts.dismiss_prompt();
                 self.view.commit_listing_filter(&text);
+                return;
+            }
+            Some(Prompt::Search) => {
+                self.shortcuts.dismiss_prompt();
+                self.view.commit_listing_search(&text);
                 return;
             }
             _ if text.is_empty() => true,

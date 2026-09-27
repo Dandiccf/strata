@@ -259,6 +259,13 @@ impl ColumnView {
         }
     }
 
+    pub(super) fn with_query_binding<T>(
+        &self,
+        apply: impl FnOnce(&super::collection::FilterQueryBinding) -> T,
+    ) -> Option<T> {
+        self.query_binding.borrow().as_ref().map(apply)
+    }
+
     pub(super) fn context_menu_target(
         &self,
         position: Option<usize>,
