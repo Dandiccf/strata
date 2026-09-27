@@ -2,7 +2,7 @@
 
 > This document is the target product specification, not a completion report.
 
-10xer mode is an opt-in Yazi-style browsing map. In **Settings → General → Browsing** the row is titled **10xer mode** and its subtitle is **Opinionated keyboard-centric mode with Yazi-style navigation. Disables some features. Toggle with Ctrl-Shift-M.** The footer shows **10X** at the right, immediately before the item count, while the mode is on. It hides window Search and pane
+10xer mode is an opt-in Yazi-style browsing map. In **Settings → General → Browsing** the row is titled **10xer mode** and its subtitle is **Opinionated keyboard-centric mode with Yazi-style navigation. Disables some features. Toggle with Ctrl-Shift-M.** The footer shows a compact **10X** pill at the right, immediately before the item count, while the mode is on. It hides window Search and pane
 Close/filter/refresh/sort chrome in interactive browsers, disables
 type-to-search, and uses the footer as the typed-command surface. List column
 headings stay clickable. The portal file chooser follows the same preference:
@@ -15,7 +15,11 @@ open a peek or an extra Miller column there.
 
 Turn it on in **Settings → General → Browsing → 10xer mode**, or with
 **Ctrl+Shift+M**. The choice is saved and live-updates every window. **F1** or
-**~** opens the in-app table; **Settings → Keybindings** lists the same map.
+**~** opens the in-app table of commands that currently run; **Settings →
+Keybindings** lists that same active map as an all-view overview. While the mode
+is on, Settings and the reference show **(experimental feature, under active
+development)**. The footer shows only the **10X** pill; the experimental note is
+in its tooltip and accessible description.
 
 Paste destinations, cursor versus filled selection, and pointer ownership stay
 as in [keyboard navigation](keyboard-navigation.md).
@@ -63,7 +67,7 @@ sidebar. In Icons, **h** / **j** / **k** / **l** and arrows move among tiles.
 | **Ctrl+B** / **Ctrl+F** / **PgUp** / **PgDn** | Full page up / down |
 | **H** / **L** / **Alt+←** / **Alt+→** | Back / forward in history |
 | **Backspace** / **Alt+↑** | Parent folder |
-| **i** | Columns: open the next Miller column for the focused directory without moving focus into it. List and Icons: toggle the folder-peek popover for the focused directory. A file is not previewed. |
+| **i** | On a file: toggle the preview drawer without moving focus into it. On a directory: in Columns, open the next Miller column without moving focus into it; in List and Icons, toggle the folder-peek popover. |
 | **J** / **K** | Scroll the open preview without taking focus |
 
 Column selection mirroring stays off while the mode is on. **j** / **k** and
@@ -74,8 +78,11 @@ that column. A second press does not move focus. In List and Icons, **i** toggle
 the existing folder-peek popover for the focused directory. That popover is the
 directory peek, not the saved Folder peeking switch and not a file preview.
 Pressing **i** again, or **Esc**, closes the popover. **Esc** does not close a
-Miller column. **i** on a file or in an empty folder opens neither a column nor
-a peek.
+Miller column. **i** on a file opens the preview drawer if it is closed and
+closes it if it is open; keys stay in the listing, so **j** / **k** keep moving
+the cursor and the preview follows it. Use **l** / **→** (List and Columns) or
+**J** / **K** to read it. An unpreviewable file flashes `Nothing to preview`. In
+an empty folder **i** does nothing.
 
 In **List** and **Columns**, **l** / **→** on a previewable file opens the
 preview if it is closed and moves keys into that pane. A further **l** / **→**
@@ -85,6 +92,61 @@ stays there and does not open the file. Then **j** / **k** / arrows,
 returns to the miller column or folder without closing the preview or going to
 the parent; a following **h** still goes to the parent. Unpreviewable files and
 empty folders flash `Nothing to preview`. Icons have no preview-entry key.
+While the preview owns keys, an accent bar runs across the top of its header,
+like the Miller column destination bar, and no column shows that bar. The listing
+keeps its fill and location, and its cursor returns with the keys. Leaving the mode, clicking the listing, or
+closing the drawer releases ownership; ownership never outlives the drawer.
+
+### Preview keyboard ownership
+
+Each preview surface owns a fixed set of keys. A key a surface does not use is
+swallowed rather than passed to the listing behind it, so no key held by a
+preview can launch, move, rename, delete, paste into, or select listing items.
+Window commands that do not touch the listing (**q**, **Q**, **F1**, **F5**,
+**Ctrl+K**, **Ctrl+L**, **Ctrl+,**, **Ctrl+1**–**3**, **Ctrl+H**,
+**Ctrl+Shift+B**, **Ctrl+Shift+M**, and text size) still work. Inside a text
+field only **F1** and **Ctrl+Shift+M** still work; every other key is typed or
+edits the text.
+
+| Key | Document | Archive tree | Password field | Media |
+| --- | --- | --- | --- | --- |
+| **j** / **k** / **↑** / **↓** | Scroll | Move the member highlight | Typed / text editing | **↑** / **↓** volume; **j** / **k** swallowed |
+| **h** / **←** | Return to the listing | Archive parent; at the archive root, return to the listing | Typed / caret | **h** returns to the listing; **←** seeks −5 s |
+| **l** / **→** | Swallowed | Open the highlighted folder; a member file does nothing | Typed / caret | **→** seeks +5 s; **l** swallowed |
+| **Enter** | Swallowed | Same as **l** | Unlock | Swallowed |
+| **Space** | Swallowed | Swallowed | Typed | Play / pause |
+| **i** | Close the drawer | Close the drawer | Typed | Close the drawer |
+| **Home** / **G** / **End** | Top / bottom | First / last member | Caret (**G** typed) | Swallowed |
+| Paging keys | Scroll half / full page | Swallowed | Text editing | Swallowed |
+| **m** | Swallowed | Swallowed | Typed | Mute / unmute |
+| **J** / **K** | Scroll | Scroll | Typed | Swallowed |
+| **Shift+Tab** | Return to the listing | Return to the listing | Return to the listing | Return to the listing |
+| **Esc** | Close the drawer | Close the drawer | Close the drawer | Close the drawer |
+
+Returning to the listing keeps the drawer open and lands on the same cursor.
+Closing with **Esc** or **i** also returns the keys to the listing, so the
+Miller column regains its destination bar. **i** therefore toggles the preview
+from either side: open from the listing, closed from the preview. A
+focused preview button or slider (reached with **Tab** or the pointer) keeps
+GTK's own **Space** / **Enter** / arrow handling; **Shift+Tab** and **Esc** still
+return or close. Browsing archive members never extracts them, opens a listing
+file, or changes the listing's cursor or fill. Unlocking a password-protected
+archive hands the keys to its member tree. **Ctrl+A** / **Ctrl+C** select all
+and copy the document's text, never listing items; with **l** the keys go to the
+document itself (text, source, or PDF) once it has rendered.
+
+A password prompt takes focus as soon as it appears, including when **i** or
+cursor movement shows a locked archive. It then owns the keys like any other
+surface: the header shows the owner bar, the Miller column drops its bar, and
+**i**, **h**, **j**, **k**, and **l** are typed into the password until **Esc**,
+**Shift+Tab**, or unlocking moves focus. If the drawer is hidden for lack of room
+when **l** is pressed, it takes the keys when it reappears for the same file;
+moving the cursor first cancels that.
+
+With 10xer mode off the default map is unchanged: an archive tree keeps its
+arrow, **k** / **j** / **h** / **l**, **Enter**, **Space**, and **Esc** keys
+described in [keyboard navigation](keyboard-navigation.md#navigating-an-archive-preview),
+and media keys stay on **Ctrl+Alt**.
 
 In **Icons**, **h** / **j** / **k** / **l** and arrows (including keypad) always
 move to the next icon in that direction, including while the icons on screen are
@@ -98,8 +160,9 @@ parent.
 ## Selection
 
 **Space** toggles the keyboard cursor, not pointer hover, and does not preview.
-In List and Columns, preview is **l** / **→**. **i** opens a column or toggles
-folder peek.
+**i** toggles a file's preview without moving focus; in List and Columns,
+**l** / **→** enter it. On a directory **i** opens a column or toggles folder
+peek.
 
 | Key | Action |
 | --- | --- |
@@ -107,6 +170,7 @@ folder peek.
 | **v** / **V** | Visual select / visual unset |
 | **Ctrl+A** | Select all in the focused pane |
 | **Ctrl+R** | Invert the selection |
+| **Shift+↑** / **Shift+↓** | Extend the selection |
 | **Esc** | Dismiss the current interaction, one step per press; see the precedence below |
 
 On a cursor-only row, **Space** adds that item and moves down; it does not
@@ -114,6 +178,23 @@ deselect it. After **Space**, **Ctrl+A**, **Ctrl+R**, or leaving visual,
 **j** / **k** / **g g** / **G** / paging move the cursor without rewriting the
 fill. **v** then motion starts a new range from the cursor. **V** subtracts the
 walked span. In visual mode, **Space** toggles the cursor item without moving it.
+
+A range walks the pane in displayed order, including List type groups, and only
+rewrites the fill of that pane. Walking back toward the anchor restores the items
+the range had covered; items toggled with **Space** stay toggled. The footer shows
+**VISUAL** or **UNSET** while a range is active. Pressing the same key again or
+**Esc** leaves visual mode and keeps the fill; the other key starts a new range
+at the cursor. Opening another folder, moving to another pane, changing the view,
+a pointer selection, **Ctrl+A**, **Ctrl+R**, or leaving 10xer mode also end the
+range. In an empty folder **v** / **V**, **Space**, **Ctrl+A**, **Ctrl+R**, and
+**Shift+↑** / **Shift+↓** flash `Nothing to select`.
+
+**Shift+↑** / **Shift+↓** add the span from the cursor where the run started to
+the moved cursor on top of the kept fill, in displayed order; reversing shrinks
+the span back. In Icons they move up or down the grid. The run shows no footer
+tag and ends at the next key that is not **Shift+↑** / **Shift+↓**, keeping the
+fill; a later run starts at the new cursor. During a visual range they extend
+that range like **j** / **k**.
 
 ### Escape precedence
 
@@ -133,8 +214,9 @@ With no prompt or chord, each press takes the first applicable step:
   highlights, leave visual mode (keep the fill), close an open preview, then
   clear the selection.
 
-Unlike **h** while the preview owns keys, the preview-close step actually closes
-the drawer. Leaving visual mode or closing a preview can therefore require an
+While the preview owns keys, **Esc** closes the drawer before any other step
+and returns keys to the listing. Unlike **h** while the preview owns keys, the
+preview-close step actually closes the drawer. Leaving visual mode or closing a preview can therefore require an
 extra **Esc** before retained search results disappear.
 
 ## Files
@@ -168,8 +250,8 @@ omitted. A vacant slot flashes `No action N` and does not run a different
 action. See [custom actions](custom-actions.md).
 
 Empty folder: **y** / **x** / **d** / **r** / **Space** flash
-`Nothing to yank` / `cut` / `delete` / `rename` / `select`. **i** does not
-preview; on an empty folder or a file it opens neither a column nor a peek. In
+`Nothing to yank` / `cut` / `delete` / `rename` / `select`. **i** in an empty
+folder does nothing; on an unpreviewable file it flashes `Nothing to preview`. In
 List and Columns, empty-folder and unpreviewable-file **l** / **→** flash
 `Nothing to preview`. Empty clipboard **p** flashes `Nothing to paste`.
 
@@ -283,7 +365,7 @@ While **s** results are showing:
 | **j** / **k** | List and Columns: move the result list. Icons: move to the next result icon in that direction. |
 | **l** / **→** | List and Columns: open a directory hit, or enter a file hit's preview when possible. Icons: move to the next result icon. |
 | **Enter** | With focus already on the results, activate the focused hit once through ordinary open. **Enter** in the **f** or **s** prompt only applies that prompt. |
-| **i** | Directory hit: open an unfocused Miller column, or toggle folder peek, without taking preview ownership. A file hit is not previewed. |
+| **i** | Directory hit: open an unfocused Miller column, or toggle folder peek. File hit: toggle the preview. Neither takes preview ownership. |
 | **h** | List and Columns: leave preview keyboard ownership, or dismiss search (restoring an earlier **f** filter if present). Icons: move to the next result icon. |
 
 **Space** does not preview search rows. Use **g g** / **G** to reach the first /
@@ -294,15 +376,27 @@ map takes precedence.
 
 ## Sidebar and surrounding controls
 
-Keyboard navigation stays in the Columns, List, and Icons panes. **Tab**,
-**Shift+Tab**, and the arrow keys move among the files there. The sidebar,
-window header, footer, preview chrome, and other controls outside those panes
-stay pointer-operated. When one of those controls already has focus, the next
-**Tab** or arrow key returns to the file list.
+Arrows and **h** / **j** / **k** / **l** stay in the Columns, List, and Icons
+panes. **Tab** moves from the file list to the window header. **Shift+Tab**
+stays with the files. From the footer or other chrome outside the header and
+sidebar, the next **Tab** or arrow key returns to the file list.
 
-**Ctrl+Shift+B** stays with the file list while the mode is on. Show or hide
-the sidebar with the header toggle. **Ctrl+L** still edits the location bar.
-Menus, dialogs, text fields, and the shortcut reference keep their own keys.
+**Ctrl+Shift+B** focuses the sidebar when it is visible. A hidden sidebar stays
+hidden; the header toggle is what shows or hides it. **Ctrl+B** does not toggle
+it. Pressing **Ctrl+Shift+B** again returns to the files.
+
+In the sidebar, **j** / **k** and **Up** / **Down** move between places and
+device controls. **l**, **Enter**, and **Space** activate the focused place or
+device control. **h**, **Left**, and **Backspace** return to the files. Returning
+without activating keeps the file selection. After a place opens another folder,
+focus is on that listing.
+
+On a header control, **Enter** and **Space** activate it. **h** and **j** return
+to the files and do not change directory or run a file operation.
+
+**Ctrl+L** still edits the location bar. Menus, dialogs, text fields, and the
+shortcut reference keep their own keys. The file chooser uses these same
+round trips.
 
 ## Still bound
 
@@ -323,8 +417,9 @@ These GUI conventions stay available alongside the Yazi verbs:
 | **Ctrl++** / **Ctrl+−** / **Ctrl+0** | Text size |
 
 Context-menu shortcut hints follow this map (**x** cut, **y** yank, **p** paste,
-**d** / **D** trash / delete, **r** rename, **i** next column or folder peek).
-Default-map hints that are unbound or remapped (**Y** for copy path, **Space** for preview,
+**d** / **D** trash / delete, **r** rename, **i** quick preview, next column, or
+folder peek). The file chooser has no **i** preview, so its Quick preview item
+shows no hint. Default-map hints that are unbound or remapped (**Y** for copy path, **Space** for preview,
 **Ctrl+R** for rename) are hidden. Copy path is **c c**; Properties is
 **Alt+Enter**.
 

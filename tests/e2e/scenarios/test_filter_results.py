@@ -309,11 +309,13 @@ def test_filtered_item_menu_actions_use_the_real_location(strata, mode, trigger,
                 break
             strata.keyboard.press("Down")
         assert strata.menu_item("Properties").has_state("focused")
+        assert row.has_state("selected"), "menu navigation changed selection"
         strata.keyboard.press("Return")
     else:
         strata.choose_menu_item("Properties")
     dialog = strata.wait_for_dialog()
     assert target in dialog.dump()
+    assert row.has_state("selected"), "selection changed while Properties was opening"
     strata.keyboard.press("Escape")
     strata.wait(lambda: strata.dialog() is None, "result Properties to close")
     strata.wait(lambda: row.has_state("focused"), "Properties to restore the actual search result")
@@ -326,7 +328,8 @@ def test_filtered_item_menu_actions_use_the_real_location(strata, mode, trigger,
     strata.wait(strata.context_menu, "the restored result menu")
     strata.choose_menu_item("Quick preview")
     strata.wait(lambda: strata.preview_shows("beta source"), "preview of the nested result")
-    assert row.has_state("selected")
+    strata.wait(lambda: result(strata, target).has_state("selected"),
+                "preview to retain the selected result")
     assert field.text == query
     strata.keyboard.press("ctrl+f")
     strata.wait(lambda: field.has_state("focused"), "Ctrl+F to return from the preview")
@@ -358,6 +361,12 @@ def test_query_updates_retain_selection_focus_preview_and_background_menu(strata
     strata.pointer.click(field)
     strata.keyboard.press("space")
     strata.wait(lambda: strata.preview_shows("beta source"), "the selected preview")
+    hovered = result(strata, "alpha/match-note.txt")
+    strata.pointer.move_to(*hovered.screen_bounds().center)
+    strata.settle(hovered)
+    assert not hovered.has_state("selected")
+    assert result(strata, "beta/match-note.txt").has_state("selected")
+    assert strata.preview_shows("beta source")
     for query, count in [("match-note.t", 3), ("match-note", 4)] * 2:
         strata.keyboard.press("ctrl+a")
         strata.keyboard.type_text(query)

@@ -528,6 +528,9 @@ impl PreviewState {
                 }
             }
         }
+        if restored {
+            self.resume_keyboard_claim();
+        }
     }
 
     pub(super) fn opening_width(&self, available: i32) -> i32 {

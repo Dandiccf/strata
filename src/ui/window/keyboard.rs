@@ -24,6 +24,12 @@ use super::{SidebarState, SidebarView, TypeToSearch, visible_modal_layer};
 mod commands;
 mod focus;
 mod items;
+mod preview;
+mod sidebar;
+
+pub(in crate::ui) use sidebar::{
+    SidebarChord, activate_sidebar_focus, move_sidebar_focus, sidebar_chord,
+};
 
 // None tries the next Strata stage; Some(Proceed) gives the event to GTK instead.
 type KeyResult = Option<Propagation>;
@@ -53,7 +59,9 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
             previous: RefCell::new(None),
         },
     };
+    dispatcher.preview.bind_keyboard_view(&dispatcher.view);
     let preferences = dispatcher.type_to_search.preferences.clone();
+    release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         let Some(browser) = weak_browser.upgrade() else {
             return Propagation::Proceed;
@@ -88,6 +96,27 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
         )
     });
     window.add_controller(wheel);
+}
+
+fn release_preview_keys_on_mode_exit(
+    window: &gtk::ApplicationWindow,
+    preview: &PreviewDrawer,
+    browser: &std::rc::Weak<Browser>,
+) {
+    let preview = preview.clone();
+    let browser = browser.clone();
+    crate::ui::preferences::PreferenceManager::shared().bind_preference(
+        window,
+        crate::ui::preferences::PreferenceManager::tenxer_mode,
+        move |window, enabled| {
+            if !enabled
+                && preview.owns_focus(window.root().and_then(|root| root.focus()).as_ref())
+                && let Some(browser) = browser.upgrade()
+            {
+                browser.focus_active();
+            }
+        },
+    );
 }
 
 /// Accumulates fractional scroll deltas into whole text-size steps so smooth
@@ -300,10 +329,10 @@ impl Dispatcher {
             preferences.set_text_size(size);
             return Propagation::Stop;
         }
-        if let Some(result) = self.input_owner(key, modifiers) {
+        if let Some(result) = self.input_owner(browser, key, modifiers) {
             return result;
         }
-        if let Some(result) = self.tenxer_keys(key, modifiers) {
+        if let Some(result) = self.tenxer_keys(browser, key, modifiers) {
             return result;
         }
         let focused = gtk::prelude::RootExt::focus(&self.window);
@@ -369,7 +398,7 @@ impl Dispatcher {
             .unwrap_or(Propagation::Proceed)
     }
 
-    fn input_owner(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+    fn input_owner(&self, browser: &Browser, key: Key, modifiers: Modifiers) -> KeyResult {
         if let Some(layer) = visible_modal_layer(&self.window) {
             let focus_is_inside = gtk::prelude::RootExt::focus(&self.window)
                 .is_some_and(|focus| focus == layer || focus.is_ancestor(&layer));
@@ -381,6 +410,15 @@ impl Dispatcher {
         }
         if self.native_menu_owns_input() {
             return Some(Propagation::Proceed);
+        }
+        if self.shortcuts.prompt_has_focus() {
+            if let Some(result) = self.shortcuts.handle_key(key, modifiers) {
+                return Some(result);
+            }
+            return Some(Propagation::Proceed);
+        }
+        if let Some(result) = self.tenxer_preview_text(browser, key, modifiers) {
+            return Some(result);
         }
         if !self.inline_editing_active()
             && let Some(result) = self.shortcuts.handle_key(key, modifiers)
@@ -410,7 +448,7 @@ impl Dispatcher {
         visible_popover_menu(self.window.upcast_ref())
     }
 
-    fn tenxer_keys(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+    fn tenxer_keys(&self, browser: &Rc<Browser>, key: Key, modifiers: Modifiers) -> KeyResult {
         if visible_modal_layer(&self.window).is_some() {
             return None;
         }
@@ -422,8 +460,11 @@ impl Dispatcher {
         if !preferences.tenxer_mode() {
             return None;
         }
-        if self.text_focused() || self.focus_in_popover() {
+        if (self.text_focused() && !self.preview_document_focused()) || self.focus_in_popover() {
             return None;
+        }
+        if !items::continues_extend(key, modifiers) {
+            browser.end_extend();
         }
         let command = modifiers
             .intersects(Modifiers::CONTROL_MASK | Modifiers::ALT_MASK | Modifiers::SUPER_MASK);
@@ -433,6 +474,29 @@ impl Dispatcher {
         }
         if key == Key::Q && modifiers.contains(Modifiers::SHIFT_MASK) && !command {
             self.window.close();
+            return Some(Propagation::Stop);
+        }
+        if let Some(result) = self.tenxer_preview(browser, key, modifiers) {
+            return Some(result);
+        }
+        let focus = gtk::prelude::RootExt::focus(&self.window);
+        if self.sidebar.contains(&focus)
+            && let Some(result) = self.tenxer_sidebar(browser, key, modifiers)
+        {
+            return Some(result);
+        }
+        if self.tenxer_header_focused(&focus)
+            && let Some(result) = self.tenxer_header(browser, key, modifiers)
+        {
+            return Some(result);
+        }
+        let icons = self.view.view_mode() == crate::ui::browser_modes::BrowserMode::Icons;
+        let claimed = if icons {
+            self.tenxer_icons(browser, key, modifiers)
+        } else {
+            self.tenxer_listing(browser, key, modifiers)
+        };
+        if claimed {
             return Some(Propagation::Stop);
         }
         if claims_unbound_command(key, modifiers)
@@ -468,6 +532,72 @@ impl Dispatcher {
             .then(|| event.focused.clone())
             .flatten();
         self.sidebar.enter(&previous);
+    }
+
+    fn tenxer_sidebar(&self, browser: &Browser, key: Key, modifiers: Modifiers) -> KeyResult {
+        let chord = sidebar_chord(key, modifiers)?;
+        match chord {
+            SidebarChord::Move(delta) => {
+                move_sidebar_focus(&self.sidebar.widget, delta);
+            }
+            SidebarChord::Activate => self.activate_sidebar(browser),
+            SidebarChord::Leave => self.sidebar.restore(browser, true),
+            SidebarChord::Swallow => {}
+        }
+        Some(Propagation::Stop)
+    }
+
+    fn activate_sidebar(&self, browser: &Browser) {
+        let before = browser.active_location();
+        if !activate_sidebar_focus(&self.sidebar.widget) {
+            return;
+        }
+        if browser.active_location() != before {
+            self.sidebar.previous.replace(None);
+            if !self.view.item_view_has_focus() {
+                browser.focus_active();
+            }
+        }
+    }
+
+    fn tenxer_header_focused(&self, focus: &Option<gtk::Widget>) -> bool {
+        if self.top_bar.has_focus() || self.view.header_actions_have_focus() {
+            return true;
+        }
+        let panes = self.view.widget();
+        crate::ui::focus_navigation::contains_widget(&panes, focus.as_ref())
+            && !self.view.item_view_has_focus()
+    }
+
+    fn tenxer_header(&self, browser: &Browser, key: Key, modifiers: Modifiers) -> KeyResult {
+        if modifiers
+            .intersects(Modifiers::CONTROL_MASK | Modifiers::ALT_MASK | Modifiers::SUPER_MASK)
+        {
+            return None;
+        }
+        if modifiers.contains(Modifiers::SHIFT_MASK) && !matches!(key, Key::Tab | Key::ISO_Left_Tab)
+        {
+            return Some(Propagation::Stop);
+        }
+        match key {
+            Key::h | Key::j => {
+                self.return_from_header(browser);
+                Some(Propagation::Stop)
+            }
+            Key::Return | Key::KP_Enter | Key::space => {
+                crate::ui::focus_navigation::activate(self.window.upcast_ref());
+                Some(Propagation::Stop)
+            }
+            Key::Delete => Some(Propagation::Stop),
+            _ => None,
+        }
+    }
+
+    fn return_from_header(&self, browser: &Browser) {
+        if self.view.header_actions_have_focus() && self.view.focus_items_from_header() {
+            return;
+        }
+        browser.focus_active();
     }
 }
 

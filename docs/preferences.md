@@ -79,6 +79,7 @@ control that might be midway through synchronization.
 | Sidebar default-place visibility | Existing sidebars bind to the shared Home, Trash, Network, Recent, and standard-folder visibility and rebuild. Enabled by default; hiding removes that place from the sidebar without changing pins or devices. Recent is also omitted when GTK recent-file tracking or the runtime Recent VFS backend is unavailable, and from local-only sidebars. Toggle the location chips under General → Sidebar; existing default-place Unpin context actions remain available where supported. Re-enable a hidden place’s chip to restore it. |
 | Modified date format | Modified-time labels read the saved format at every render; already-open labels re-render live. Properties uses full absolute local timestamps for Relative, while preserving ISO 8601 and Long. |
 | Folder colors/custom icons | Icon resolution reads the manager; existing customization refreshes notify rendered icons. |
+| Recent Send-to destinations | `send_to_recent_destinations` stores up to three relative directory paths per stable removable-device ID. The selection menu validates them against the device's current canonical root when opened and again when activated; no Settings control is exposed. |
 
 Location, selection, history, each column's sort, filter query, transient theme
 catalog filters, dialogs, and preview playback position remain window-local.
@@ -218,7 +219,8 @@ Changing it refreshes active filters across windows and is saved for next launch
 
 In **Settings → General → Browsing**, **10xer mode** is off by default.
 Its subtitle is **Opinionated keyboard-centric mode with Yazi-style navigation. Disables some features. Toggle with Ctrl-Shift-M.**
-The footer shows **10X** at the right, immediately before the item count, while the mode is on.
+The footer shows a compact **10X** pill at the right, immediately before the item count, while the mode is on.
+While the mode is on, the 10xer mode row, **Settings → Keybindings**, and the F1 / `~` reference are labeled **(experimental feature, under active development)**. The footer pill shows only **10X**; the note is in its tooltip and accessible description. Those surfaces list only the commands that currently run.
 It hides window Search and pane Close/filter/refresh/sort chrome in
 interactive browsers and the portal file chooser (window Close and chooser
 Accept/Cancel stay; List column headings stay),
