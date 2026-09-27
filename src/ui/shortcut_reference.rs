@@ -326,7 +326,7 @@ const TENXER_SETTINGS: &[Binding] = &[
     },
     Binding {
         category: "Places",
-        action: "Folder holding the search hit",
+        action: "Follow search result",
         note: "Selects the hit and ends the search",
         keys: "g f",
     },
@@ -951,7 +951,7 @@ const DEFAULT_FILES: &[(&str, &str)] = &[
 
 const TENXER_PLACES: &[(&str, &str)] = &[
     ("g g", "First item"),
-    ("g f", "Folder holding the search hit"),
+    ("g f", "Follow search result"),
     ("g h / g c", "Home / ~/.config"),
     (
         "g d / g k / g p / g v",
