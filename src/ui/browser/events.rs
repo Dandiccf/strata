@@ -302,13 +302,9 @@ impl ViewState {
                         *depth,
                         &column.sort_direction_button,
                     );
-                    // Recursive hits don't come from this listing, and an s
-                    // search must outlive the monitor rescans of a busy folder.
-                    let preserve_search = column.recursive_search_active.get()
-                        && (self.refreshing_source_filter.get()
-                            || column
-                                .with_query_binding(super::FilterQueryBinding::forced_recursive)
-                                .unwrap_or(false));
+                    // Filters and searches outlive the monitor rescans of a busy
+                    // folder. Their hits come from the search, not this listing.
+                    let preserve_search = column.recursive_search_active.get();
                     if !preserve_search {
                         column.search_session.cancel();
                         super::collection::deactivate_recursive_search(
@@ -318,7 +314,6 @@ impl ViewState {
                             &column.filtered_model,
                             &column.model,
                         );
-                        column.filter_entry.set_text("");
                         column.syncing_selection.set(true);
                         column.selection.set_model(None::<&gio::ListModel>);
                     }

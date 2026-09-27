@@ -190,7 +190,6 @@ pub(super) struct ViewState {
     cursor_keeps_focus: Cell<bool>,
     pending_mirror: RefCell<Option<glib::SourceId>>,
     source_generation: Rc<Cell<u64>>,
-    refreshing_source_filter: Cell<bool>,
     peek: RefCell<Option<PeekView>>,
     pending_peek: RefCell<Option<glib::SourceId>>,
     pending_close: RefCell<Option<glib::SourceId>>,
@@ -575,7 +574,6 @@ impl BrowserView {
             cursor_keeps_focus: Cell::new(false),
             pending_mirror: RefCell::new(None),
             source_generation,
-            refreshing_source_filter: Cell::new(false),
             peek: RefCell::new(None),
             pending_peek: RefCell::new(None),
             pending_close: RefCell::new(None),
@@ -890,13 +888,11 @@ impl BrowserView {
     }
 
     pub(super) fn refresh_source_filter(&self) {
-        self.state.refreshing_source_filter.set(true);
         if let Some(last) = self.state.browser.active_depth() {
             for depth in 0..=last {
                 self.state.browser.retry_column(depth);
             }
         }
-        self.state.refreshing_source_filter.set(false);
         let columns = self.state.columns.borrow().clone();
         let mut changed = false;
         for column in &columns {

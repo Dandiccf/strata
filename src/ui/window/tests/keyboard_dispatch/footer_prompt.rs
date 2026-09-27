@@ -164,6 +164,18 @@ fn tenxer_find_moves_between_matches_and_keeps_rows_visible() {
                     assert_eq!(focused_name(&browser), expected, "{mode:?} {key:?}");
                 }
 
+                // A monitor rescan reloads the listing; the find stays live.
+                browser.reload_active();
+                wait_loaded(&browser, 0);
+                pump(100);
+                wait_until(|| highlighted_names(&fixture.view.widget()) == reports);
+                assert!(fixture.press(Key::n, none));
+                assert!(
+                    reports.contains(&focused_name(&browser)),
+                    "{mode:?}: n after reload"
+                );
+                move_to_named(&fixture, &browser, "gamma-report.md");
+
                 type_and_submit(&fixture, Key::question, "report");
                 assert_eq!(
                     focused_name(&browser),
@@ -591,6 +603,18 @@ fn tenxer_filter_follows_live_scope_and_survives_view_rebuilds() {
                     revealed_filter_funnels(&first.view.widget()),
                     0,
                     "{mode:?}: a rebuild keeps the funnel closed"
+                );
+
+                // A monitor rescan reloads the filtered folder; its filter stays.
+                let browser = first.view.browser();
+                browser.reload_active();
+                wait_loaded(&browser, 0);
+                pump(200);
+                wait_results(&first, &["gamma-report.md"]);
+                assert_eq!(
+                    first.view.listing_filter().as_deref(),
+                    Some("gamma"),
+                    "{mode:?} after reload"
                 );
             }
 
