@@ -218,7 +218,8 @@ With no prompt or chord, each press takes the first applicable step:
 While the preview owns keys, **Esc** closes the drawer before any other step
 and returns keys to the listing. Unlike **h** while the preview owns keys, the
 preview-close step actually closes the drawer. Leaving visual mode or closing a preview can therefore require an
-extra **Esc** before retained search results disappear.
+extra **Esc** before retained search results disappear. Once nothing is left to
+dismiss, **Esc** does nothing: it never closes a Miller column or the window.
 
 ## Files
 
