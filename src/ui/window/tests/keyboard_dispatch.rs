@@ -14,6 +14,7 @@ use crate::services::{
 };
 mod escape_precedence;
 mod file_commands;
+mod file_verbs;
 mod folder_jump;
 mod footer_prompt;
 mod go_prompt;
@@ -1200,9 +1201,13 @@ fn tenxer_file_list_skips_conflicting_defaults_and_keeps_bound_shortcuts() {
             wait_until(|| !modal_visible(&fixture.overlay));
             select_named(&fixture, "a.txt");
             assert!(fixture.press(Key::F2, ModifierType::empty()));
-            assert!(fixture.view.rename_is_active());
+            assert!(!fixture.view.rename_is_active(), "F2 renames in the footer");
+            assert_eq!(
+                fixture.shortcuts.open_prompt_kind(),
+                Some(crate::ui::tenxer_mode::Prompt::Rename)
+            );
             assert!(fixture.press(Key::Escape, ModifierType::empty()));
-            assert!(!fixture.view.rename_is_active());
+            assert_eq!(fixture.shortcuts.open_prompt_kind(), None);
             std::fs::write(fixture._directory.path().join("d.txt"), b"d").expect("refresh file");
             assert!(fixture.press(Key::F5, ModifierType::empty()));
             wait_until(|| rendered_name(&fixture.view.widget(), "d.txt"));
@@ -1446,7 +1451,8 @@ fn tenxer_entries_menus_and_reference_keep_their_keys() {
             preferences.set_tenxer_mode(true);
             let names = directory_names(fixture._directory.path());
             focus_files(&fixture);
-            assert!(fixture.press(Key::F2, ModifierType::empty()));
+            // F2 renames in the footer here; the context menu still renames inline.
+            assert!(fixture.view.begin_rename());
             let field = fixture.view.active_rename_field().expect("rename field");
             field.set_text("kept.txt");
             field.set_position(-1);

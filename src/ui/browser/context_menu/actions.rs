@@ -331,7 +331,7 @@ impl ActionMenuSection {
                     (state.clone(), handle.clone(), paths.clone(), parent.clone());
                 dispatch.defer(move || {
                     if let Some(state) = state.upgrade() {
-                        run_action(&state.overlay, handle, paths, parent, source);
+                        run_action(&state.overlay, handle, paths, parent, source, None);
                     }
                 });
             });

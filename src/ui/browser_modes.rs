@@ -247,7 +247,38 @@ impl PaneSection {
     }
 }
 
-type ListSorting = Rc<Cell<(SortKey, SortDirection)>>;
+type ListSorting = Rc<HeadingSort>;
+
+/// The sort List headings show and a heading click reverses.
+struct HeadingSort {
+    current: Cell<(SortKey, SortDirection)>,
+    arrows: RefCell<Vec<(SortKey, gtk::Image)>>,
+}
+
+impl HeadingSort {
+    fn get(&self) -> (SortKey, SortDirection) {
+        self.current.get()
+    }
+
+    /// Shows `key` and `direction` however they were chosen, so the next
+    /// heading click reverses what is actually applied.
+    fn show(&self, key: SortKey, direction: SortDirection) {
+        self.current.set((key, direction));
+        for (arrow_key, arrow) in self.arrows.borrow().iter() {
+            arrow.set_visible(*arrow_key == key);
+            if *arrow_key == key {
+                crate::assets::set_primary_icon(
+                    arrow,
+                    if direction == SortDirection::Ascending {
+                        crate::assets::icons::ARROW_UP
+                    } else {
+                        crate::assets::icons::ARROW_DOWN
+                    },
+                );
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Pane {
@@ -2654,11 +2685,10 @@ fn list_headings(
     let headings = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     headings.add_css_class("list-headings");
     let preferences = browser.column_preferences(depth).unwrap_or_default();
-    let sorting = Rc::new(Cell::new((
-        preferences.sort_key,
-        preferences.sort_direction,
-    )));
-    let arrows: Rc<RefCell<Vec<(SortKey, gtk::Image)>>> = Rc::new(RefCell::new(Vec::new()));
+    let sorting = Rc::new(HeadingSort {
+        current: Cell::new((preferences.sort_key, preferences.sort_direction)),
+        arrows: RefCell::default(),
+    });
 
     for (index, (text, key, width)) in [
         ("Name", Some(SortKey::Name), LIST_COLUMN_WIDTHS[0]),
@@ -2697,10 +2727,12 @@ fn list_headings(
         if let Some(key) = key {
             button.set_cursor_from_name(Some("pointer"));
             let weak_browser = Rc::downgrade(browser);
-            let sorting_for_click = sorting.clone();
-            let arrows_for_click = arrows.clone();
+            let sorting_for_click = Rc::downgrade(&sorting);
             button.connect_clicked(move |_| {
-                let (current_key, current_direction) = sorting_for_click.get();
+                let Some(sorting) = sorting_for_click.upgrade() else {
+                    return;
+                };
+                let (current_key, current_direction) = sorting.get();
                 let direction = if current_key == key {
                     match current_direction {
                         SortDirection::Ascending => SortDirection::Descending,
@@ -2709,25 +2741,12 @@ fn list_headings(
                 } else {
                     SortDirection::Ascending
                 };
-                sorting_for_click.set((key, direction));
-                for (arrow_key, arrow) in arrows_for_click.borrow().iter() {
-                    arrow.set_visible(*arrow_key == key);
-                    if *arrow_key == key {
-                        crate::assets::set_primary_icon(
-                            arrow,
-                            if direction == SortDirection::Ascending {
-                                crate::assets::icons::ARROW_UP
-                            } else {
-                                crate::assets::icons::ARROW_DOWN
-                            },
-                        );
-                    }
-                }
+                sorting.show(key, direction);
                 if let Some(browser) = weak_browser.upgrade() {
                     browser.set_sort(depth, key, direction);
                 }
             });
-            arrows.borrow_mut().push((key, arrow));
+            sorting.arrows.borrow_mut().push((key, arrow));
         }
         let button_overlay = gtk::Overlay::new();
         button_overlay.set_child(Some(&button));

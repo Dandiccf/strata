@@ -249,10 +249,24 @@ cursor or **v** then motion → **y** / **x** → **h** / **l** / **g h** / **g 
 
 Press **;**, then **1**–**9** or **0** (tenth slot) to run one of the first ten
 custom actions that match the focused item, or the filled selection when one
-exists. Matching, order, and confirmation follow the context-menu catalog:
-disabled actions, filter misses, non-native locations, and an 11th match are
-omitted. A vacant slot flashes `No action N` and does not run a different
-action. See [custom actions](custom-actions.md).
+exists. The panel over the **;-** pill lists them. Matching, order, and
+confirmation follow the context-menu catalog: top-level actions come before the
+**Actions** submenu's, and disabled or unavailable actions, filter misses,
+non-native locations, and an 11th match are omitted. A vacant slot flashes
+`No action N` and does not run a different action. The digit checks the catalog
+and targets again: if the targets changed since **;**, it flashes
+`Selection changed`, and if the slot now holds another action, `Actions changed`;
+neither runs anything. A confirming action asks first, and a run shows in Jobs
+like one started from the context menu. See [custom actions](custom-actions.md).
+
+**, a** / **, m** / **, s** / **, e** sort the focused pane by name, modified
+time, size, or type, ascending; with Shift (**, A** / **M** / **S** / **E**)
+descending. The pane keeps its cursor and fill, other open Miller columns keep
+their order, and the choice becomes the saved default like a sort chosen from
+the pane menu or a List heading. List headings show the new sort, so clicking
+one afterwards reverses what is actually applied. **.** / **Ctrl+H** /
+**Ctrl+.** change the saved hidden-files preference in every window, including
+over **f** results; clearing a filter never reveals hidden files on its own.
 
 **y** / **x** / **d** / **c c** / **c n** take the focused pane's fill, or its
 cursor item when nothing is filled, including on **f** and **s** results. A
@@ -284,6 +298,20 @@ the prompt, a clicked row, another prompt, leaving the mode, or closing the
 window discard the name. **Ctrl+Shift+N** still adds a numbered **new folder**
 and renames it in place. Trash and Recent flash `Can’t create items here`.
 
+**r** / **F2** open `rename ›` in the footer for the focused item: the cursor
+item, or the focused **f** / **s** hit, never the fill, a hovered row, or an
+open-path marker. The current name is filled in with a file's stem (or a
+folder's whole name) selected, as inline rename selects it. The item is fixed
+when the prompt opens; **Up** / **Down** do not move the cursor while it is open.
+**Enter** renames the item to exactly the typed name and keeps its contents; an
+unchanged name does nothing. An invalid name or one already taken keeps the
+prompt open with the reason, and nothing is replaced. Permission errors and
+filesystem limits leave the original name and show the usual rename error.
+**Esc**, focus leaving the prompt, a clicked row (which keeps its selection),
+another prompt, leaving the mode, or closing the window discard the typed name.
+Trash items flash `Can’t rename items here`. The context menu's **Rename** and a
+new folder from **Ctrl+Shift+N** still edit the name in place.
+
 Empty folder: **y** / **x** / **d** / **r** / **Space** flash
 `Nothing to yank` / `cut` / `delete` / `rename` / `select`, and **c c** /
 **c n** flash `Nothing to copy`. **i** in an empty
@@ -291,12 +319,15 @@ folder does nothing; on an unpreviewable file it flashes `Nothing to preview`. I
 List and Columns, empty-folder and unpreviewable-file **l** / **→** flash
 `Nothing to preview`. Empty clipboard **p** flashes `Nothing to paste`.
 
-**O** looks up file types and application choices asynchronously. For a mixed
-selection, Recommended Applications contains handlers shared by every selected
-type; Other Applications remains available for an explicit choice. A new key,
-selection/focus change, navigation, mode exit, or closed window prevents an older
-lookup from opening a chooser over the new interaction. Unreadable files and
-broken links report an error instead of guessing a type from the first item.
+**O** looks up file types and application choices asynchronously for the fill,
+or the focused item, and opens the Open With chooser without launching anything
+itself. For a mixed selection, Recommended Applications contains handlers shared
+by every selected type; Other Applications remains available for an explicit
+choice. A new key, selection/focus change, navigation, mode exit, or closed
+window prevents an older lookup from opening a chooser over the new interaction.
+Unreadable files and broken links flash an error instead of guessing a type from
+the first item, and so does a selection no application can open. An empty
+folder flashes `Nothing to open`.
 
 ## Places
 

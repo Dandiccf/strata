@@ -518,9 +518,21 @@ const TENXER_SETTINGS: &[Binding] = &[
     },
     Binding {
         category: "Files",
-        action: "Rename",
-        note: "",
-        keys: "F2",
+        action: "Rename the focused item",
+        note: "In the footer",
+        keys: "r / F2",
+    },
+    Binding {
+        category: "Files",
+        action: "Open With",
+        note: "The selection, or the focused item",
+        keys: "Shift + O",
+    },
+    Binding {
+        category: "Files",
+        action: "Run a matching custom action",
+        note: "; 0 is the tenth",
+        keys: "; 1–9 / ; 0",
     },
     Binding {
         category: "Files",
@@ -568,7 +580,13 @@ const TENXER_SETTINGS: &[Binding] = &[
         category: "View",
         action: "Toggle hidden files",
         note: "",
-        keys: "Ctrl + H / Ctrl + .",
+        keys: ". / Ctrl + H / Ctrl + .",
+    },
+    Binding {
+        category: "View",
+        action: "Sort by name / modified / size / type",
+        note: "Shift reverses",
+        keys: ", a / , m / , s / , e",
     },
     Binding {
         category: "View",
@@ -1009,7 +1027,12 @@ const TENXER_FILES: &[(&str, &str)] = &[
         "Ctrl+Z / Ctrl+Shift+Z",
         "Undo / redo the last file operation",
     ),
-    ("F2", "Rename"),
+    ("r / F2", "Rename the focused item in the footer"),
+    ("O", "Open With for the selection, or the focused item"),
+    (
+        "; 1–9 / ; 0",
+        "Run one of the first ten matching custom actions",
+    ),
     ("Ctrl+Shift+N", "Create a folder"),
     ("Space", "Toggle the focused item and move down"),
     ("v / V", "Visual select / visual unset"),
@@ -1075,7 +1098,11 @@ const TENXER_TOOLS: &[(&str, &str)] = &[
     ("Alt+Enter", "Open containing folder (global search)"),
     ("Ctrl+L", "Edit the location"),
     ("F5", "Refresh"),
-    ("Ctrl+H / Ctrl+.", "Show or hide hidden files"),
+    (". / Ctrl+H / Ctrl+.", "Show or hide hidden files"),
+    (
+        ", a / m / s / e",
+        "Sort by name / modified / size / type; Shift reverses",
+    ),
     ("Ctrl+1 / 2 / 3", "Switch to Columns, Icons, or List"),
     ("Ctrl+,", "Open Settings"),
     (
@@ -1133,7 +1160,7 @@ fn tenxer_hint(hint: ContextHint) -> &'static str {
         | ContextHint::Duplicate
         | ContextHint::Pin
         | ContextHint::Terminal => "",
-        ContextHint::Rename => "F2",
+        ContextHint::Rename => "r",
         other => default_hint(other),
     }
 }

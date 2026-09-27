@@ -121,13 +121,24 @@ struct ChordIndicator {
 
 impl ChordIndicator {
     fn set(&self, chord: Option<Chord>) {
+        let rows = chord.map(|chord| {
+            chord
+                .options()
+                .iter()
+                .map(|(key, action)| ((*key).to_owned(), (*action).to_owned()))
+                .collect::<Vec<_>>()
+        });
+        self.set_with(chord, rows.unwrap_or_default());
+    }
+
+    fn set_with(&self, chord: Option<Chord>, rows: Vec<(String, String)>) {
         let previous = self.armed.replace(chord);
         if let Some(mark) = self.mark.upgrade() {
             mark.set_text(chord.map_or("", Chord::mark));
             mark.set_visible(chord.is_some());
             match chord {
                 Some(chord) if previous != Some(chord) => {
-                    self.panel.show(&mark, chord, self.armed.clone());
+                    self.panel.show(&mark, chord, &rows, self.armed.clone());
                 }
                 Some(_) => {}
                 None => self.panel.hide(),
@@ -799,6 +810,11 @@ impl ShortcutFooter {
         self.prompt.open(&self.root, kind, text)
     }
 
+    /// Selects characters `start..end` of the open prompt's text; `-1` ends at its end.
+    pub(in crate::ui) fn select_prompt_region(&self, start: i32, end: i32) {
+        self.prompt.entry.select_region(start, end);
+    }
+
     /// Runs `listener` as the open prompt's text is edited, not when a prompt
     /// opens empty or closes, or a [`PromptSink`] replaces the text.
     pub(in crate::ui) fn connect_prompt_changed(
@@ -938,6 +954,11 @@ impl ShortcutFooter {
 
     pub(in crate::ui) fn arm_chord(&self, chord: Chord) {
         self.chords.set(Some(chord));
+    }
+
+    /// Arms `chord` with `rows` listed in its panel instead of its fixed options.
+    pub(in crate::ui) fn arm_chord_with(&self, chord: Chord, rows: Vec<(String, String)>) {
+        self.chords.set_with(Some(chord), rows);
     }
 
     pub(in crate::ui) fn armed_chord(&self) -> Option<Chord> {

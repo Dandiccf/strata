@@ -88,7 +88,9 @@ pub(super) use crate::ui::browser::entry::{
     FOLDER_TYPE_GROUP, OTHER_TYPE_GROUP, entry_filter, entry_icon, entry_model_value,
     format_file_size, icon_for_name, metadata_needs_fill, model_type_group, rounded_size_and_unit,
 };
-pub(crate) use crate::ui::browser::file_commands::{ConflictFocus, CreateRefusal, Yank};
+pub(crate) use crate::ui::browser::file_commands::{
+    ConflictFocus, CreateRefusal, Yank, can_rename,
+};
 pub(super) use crate::ui::browser::inline_edit::{queue_rename, reveal_rename_row};
 pub(in crate::ui) use crate::ui::browser::listing_filter::{
     FilterStatus, results_step_target, scroll_results_to, selected_cursor,
@@ -212,6 +214,8 @@ pub(super) struct ViewState {
     pending_rename: RefCell<Option<PendingRename>>,
     rename_generation: Cell<u64>,
     rename_reveal_generation: Cell<u64>,
+    /// A keyboard command whose republished rows should get the cursor's focus back.
+    keyboard_refocus: Cell<Option<file_commands::KeyboardRefocus>>,
     pending_click_rename: RefCell<Option<glib::SourceId>>,
     click_rename_generation: Cell<u64>,
     pending_new_entry: RefCell<Option<Rc<PendingEntryRename>>>,
@@ -597,6 +601,7 @@ impl BrowserView {
             pending_rename: RefCell::new(None),
             rename_generation: Cell::new(0),
             rename_reveal_generation: Cell::new(0),
+            keyboard_refocus: Cell::new(None),
             pending_click_rename: RefCell::new(None),
             click_rename_generation: Cell::new(0),
             pending_new_entry: RefCell::new(None),

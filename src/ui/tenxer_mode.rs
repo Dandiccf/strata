@@ -87,6 +87,10 @@ pub(crate) enum Chord {
     PreviewTop,
     /// **c** from the listing: copy paths or names.
     Copy,
+    /// **,** from the listing: sort the focused pane.
+    Sort,
+    /// **;** from the listing: run one of the first ten matching custom actions.
+    Action,
 }
 
 impl Chord {
@@ -94,10 +98,13 @@ impl Chord {
         match self {
             Self::Go | Self::PreviewTop => "g-",
             Self::Copy => "c-",
+            Self::Sort => ",-",
+            Self::Action => ";-",
         }
     }
 
-    /// The second keys this chord accepts, with what each does.
+    /// The second keys this chord accepts, with what each does. **;** lists
+    /// the actions matching its targets instead.
     pub(crate) fn options(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Go => &[
@@ -117,6 +124,14 @@ impl Chord {
             ],
             Self::PreviewTop => &[("g", "Top")],
             Self::Copy => &[("c", "Copy path"), ("n", "Copy name")],
+            Self::Sort => &[
+                ("a", "Name"),
+                ("m", "Modified"),
+                ("s", "Size"),
+                ("e", "Type"),
+                ("Shift", "Reverse"),
+            ],
+            Self::Action => &[],
         }
     }
 }
@@ -140,6 +155,8 @@ pub(crate) enum Prompt {
     Recent,
     /// **a**: create a file, or a folder with a trailing `/`.
     Create,
+    /// **r** / **F2**: rename the focused item.
+    Rename,
 }
 
 impl Prompt {
@@ -153,6 +170,7 @@ impl Prompt {
             Self::Jump => "jump \u{203a}",
             Self::Recent => "recent \u{203a}",
             Self::Create => "create \u{203a}",
+            Self::Rename => "rename \u{203a}",
         }
     }
 
@@ -171,6 +189,7 @@ impl Prompt {
             Self::Jump => "Jump to a visited folder",
             Self::Recent => "Jump to a recently visited folder",
             Self::Create => "Create a file, or a folder ending in /",
+            Self::Rename => "Rename the focused item",
         }
     }
 }

@@ -67,6 +67,9 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
         shortcuts: bindings.shortcuts,
         go: GoCompletion::new(bindings.folders),
         history: bindings.history,
+        rename_target: Rc::default(),
+        armed_actions: RefCell::default(),
+        open_with: files::OpenWithLookup::default(),
         sidebar: SidebarFocus {
             state: sidebar.state.clone(),
             widget: sidebar.widget.clone(),
@@ -84,10 +87,17 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
     // Widget::destroy signal is too late to drop a pending chord.
     let cancel_on_destroy = dispatcher.shortcuts.clone();
     let go_on_destroy = dispatcher.go.clone();
+    let open_with_on_destroy = dispatcher.open_with.clone();
     window.connect_unrealize(move |_| {
         cancel_on_destroy.cancel_chord();
         go_on_destroy.invalidate();
+        open_with_on_destroy.invalidate();
     });
+    // The rename target lives exactly as long as its prompt.
+    let rename_target = dispatcher.rename_target.clone();
+    dispatcher
+        .shortcuts
+        .connect_prompt_reset(move || drop(rename_target.take()));
     bind_go_completion(&dispatcher);
     bind_history_prompts(&dispatcher);
     let preferences = dispatcher.type_to_search.preferences.clone();
@@ -200,6 +210,9 @@ fn bind_go_completion(dispatcher: &Dispatcher) {
     let create_hint = dispatcher
         .shortcuts
         .prompt_sink(crate::ui::tenxer_mode::Prompt::Create);
+    let rename_hint = dispatcher
+        .shortcuts
+        .prompt_sink(crate::ui::tenxer_mode::Prompt::Rename);
     dispatcher
         .shortcuts
         .connect_prompt_changed(move |kind, _| match kind {
@@ -208,6 +221,7 @@ fn bind_go_completion(dispatcher: &Dispatcher) {
                 hint.show(None, None);
             }
             crate::ui::tenxer_mode::Prompt::Create => create_hint.show(None, None),
+            crate::ui::tenxer_mode::Prompt::Rename => rename_hint.show(None, None),
             _ => {}
         });
 }
@@ -245,6 +259,7 @@ fn clear_find_on_mode_exit(
 ) {
     let view = dispatcher.view.downgrade();
     let shortcuts = dispatcher.shortcuts.clone();
+    let open_with = dispatcher.open_with.clone();
     let browser = browser.clone();
     crate::ui::preferences::PreferenceManager::shared().bind_preference(
         window,
@@ -254,6 +269,7 @@ fn clear_find_on_mode_exit(
                 shortcuts.refresh_filter();
                 return;
             }
+            open_with.invalidate();
             if let Some(view) = view.upgrade() {
                 view.clear_find();
                 view.forget_listing_search();
@@ -443,6 +459,10 @@ struct Dispatcher {
     shortcuts: ShortcutFooter,
     go: GoCompletion,
     history: Rc<NavigationHistory>,
+    /// The item the open **rename ›** prompt renames.
+    rename_target: Rc<RefCell<Option<crate::model::FileEntry>>>,
+    armed_actions: RefCell<Option<files::ArmedActions>>,
+    open_with: files::OpenWithLookup,
 }
 
 struct KeyEvent {
@@ -479,6 +499,9 @@ impl KeyEvent {
 
 impl Dispatcher {
     fn handle_key(&self, browser: &Rc<Browser>, key: Key, modifiers: Modifiers) -> Propagation {
+        if !items::is_modifier_key(key) {
+            self.open_with.invalidate();
+        }
         let preferences = &self.type_to_search.preferences;
         if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
             preferences.set_text_size(size);
