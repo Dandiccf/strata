@@ -115,12 +115,6 @@ impl Geometry {
     }
 }
 
-fn rail_trace(args: std::fmt::Arguments<'_>) {
-    if std::env::var_os("STRATA_RAIL_TRACE").is_some() {
-        eprintln!("[rail] {args}");
-    }
-}
-
 fn separator(split: &gtk::Paned) -> Option<gtk::Widget> {
     let mut child = split.first_child();
     while let Some(widget) = child {
@@ -196,7 +190,6 @@ impl PreviewDrawer {
             let Some(state) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            rail_trace(format_args!("TICK enabled={}", state.is_enabled()));
             if state.is_enabled() {
                 state.sync_split(split);
             }
@@ -325,9 +318,6 @@ impl PreviewState {
                 .map_or_else(|| content.width(), |r| r.width());
             let needs_full = preferred_sidebar_width() + COLUMN_WIDTH + 1;
             let keep_railed = available > 0 && available < needs_full;
-            rail_trace(format_args!(
-                "release available={available} needs_full={needs_full} keep_railed={keep_railed}"
-            ));
             let sidebar = binding.sidebar.as_ref().and_then(Weak::upgrade);
             if let Some(sidebar) = sidebar.as_ref() {
                 sidebar.set_rail(keep_railed);
@@ -358,7 +348,6 @@ impl PreviewState {
     }
 
     pub(super) fn hide_panel(&self) {
-        // Never touches the rail: suspend must keep it, real closes release it.
         let restore_browser_focus =
             self.pane
                 .root()
@@ -405,7 +394,6 @@ impl PreviewState {
         if self.sizing.suspended.replace(true) {
             return;
         }
-        rail_trace(format_args!("suspend_panel"));
         self.animation_generation
             .set(self.animation_generation.get().saturating_add(1));
         self.animating.set(false);
@@ -423,14 +411,6 @@ impl PreviewState {
     pub(super) fn sync_split(self: &Rc<Self>, split: &gtk::Paned) {
         let mut geometry = self.geometry(split);
         let preview_present = self.current.borrow().is_some() || self.reserves_empty_preview();
-        rail_trace(format_args!(
-            "ENTER enabled={} present={preview_present} binding={} reveals={} suspended={} mapped={}",
-            self.is_enabled(),
-            self.sizing.binding.borrow().is_some(),
-            self.revealer.reveals_child(),
-            self.sizing.is_suspended(),
-            split.is_mapped(),
-        ));
         if preview_present
             && let Some(binding) = self.sizing.binding.borrow().as_ref()
             && let Some(content) = binding.content.upgrade()
@@ -457,8 +437,7 @@ impl PreviewState {
             } else if is_railed || !visible {
                 saved_width
             } else {
-                // Preferred, not position: a user-shrunk sidebar must not
-                // opt a narrow window out of rail mode.
+                // A manually narrowed sidebar must not prevent railing.
                 content.position().max(preferred_sidebar_width())
             };
             let content_sep = separator_width(&content);
@@ -468,7 +447,6 @@ impl PreviewState {
                 .is_some_and(|browser| browser.is_resizing_columns());
             let occupied = if let Some(browser) = binding.browser.upgrade() {
                 if geometry.columns {
-                    // Standard width only; wider columns scroll instead of railing.
                     browser.preview_standard_navigation_width(
                         (geometry.available
                             - full
@@ -483,7 +461,7 @@ impl PreviewState {
             } else {
                 COLUMN_WIDTH
             };
-            // A divider drag clamped below minimum leaves a stale extreme, not demand.
+            // A previously clamped manual width must not defeat the preview minimum.
             let preview_needed = self
                 .sizing
                 .manual_width
@@ -492,21 +470,18 @@ impl PreviewState {
                 .max(MIN_SPLIT_PREVIEW_WIDTH);
             let needs = full + content_sep + occupied + geometry.separator + preview_needed;
             let content_has_room = content.width() <= 0 || content.width() >= full + COLUMN_WIDTH;
-            // Parent width: the rail must not free the space it measures against.
+            // Measure outside the split so railing cannot change its own threshold.
             let available = split
                 .parent()
                 .map(|parent| parent.width())
                 .filter(|width| *width > 0)
                 .unwrap_or(geometry.available);
-            // Small dead band against pointer wiggle; engage and restore
-            // measure the same unadjusted width, so they cannot feed back.
+            // Hysteresis prevents toggling at the threshold.
             let wants_rail = if is_railed {
                 available < needs + RAIL_RELEASE_MARGIN
             } else {
                 available < needs
             };
-            // A drag rewrites widths every frame; freeze both directions until
-            // release, when the layout settles.
             let change_applies = !resizing_columns
                 && !self.sizing.resizing.get()
                 && if wants_rail {
@@ -514,14 +489,6 @@ impl PreviewState {
                 } else {
                     is_railed && content_has_room
                 };
-            rail_trace(format_args!(
-                "sync resizing={resizing_columns} avail={available} geom_avail={} split_w={} parent_w={} pos={} content_w={} full={full} occ={occupied} needs={needs} railed={is_railed} wants={wants_rail} applies={change_applies}",
-                geometry.available,
-                split.width(),
-                split.parent().map_or(-1, |parent| parent.width()),
-                content.position(),
-                content.width(),
-            ));
             if change_applies {
                 if wants_rail {
                     if visible {
@@ -547,11 +514,6 @@ impl PreviewState {
                     }
                     self.sizing.sidebar_railed.set(false);
                 }
-                rail_trace(format_args!(
-                    "sync APPLY rail={wants_rail} pos={} content_w={}",
-                    content.position(),
-                    content.width()
-                ));
                 geometry = self.geometry(split);
             }
         }
@@ -562,7 +524,6 @@ impl PreviewState {
                 }
                 self.release_sidebar_rail();
                 if !self.reserves_empty_preview() {
-                    // Nothing to resume; a stale flag would defer layout forever.
                     self.sizing.suspended.set(false);
                 }
                 return;

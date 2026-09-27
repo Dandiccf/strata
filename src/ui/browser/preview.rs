@@ -40,8 +40,6 @@ fn column_width(column: &ColumnView) -> i32 {
 }
 
 impl BrowserView {
-    /// A column resize gesture writes the focused width every frame, so the
-    /// preview layout must not treat that transient value as a settled demand.
     pub(in crate::ui) fn is_resizing_columns(&self) -> bool {
         self.state.column_resizing.get()
     }
@@ -66,7 +64,6 @@ impl BrowserView {
             })
     }
 
-    /// Rail demand counts a standard column; wider ones scroll instead.
     pub(in crate::ui) fn preview_standard_navigation_width(&self, available: i32) -> i32 {
         self.state
             .focused_column_span()

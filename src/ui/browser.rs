@@ -185,7 +185,6 @@ pub(super) struct ViewState {
     /// True only while a column row gesture is writing the selection model.
     /// Focus echoes of the cursor are not pointer-owned.
     pointer_owns_selection: Cell<bool>,
-    /// True while a column resize drag is mutating a shell's width request.
     column_resizing: Cell<bool>,
     horizontal_scroll_generation: Rc<Cell<u64>>,
     suppress_focus_scroll: Cell<bool>,

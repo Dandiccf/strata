@@ -130,9 +130,6 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
             return;
         };
         state.column_resizing.set(true);
-        if std::env::var_os("STRATA_RAIL_TRACE").is_some() {
-            eprintln!("[rail] column_resize BEGIN");
-        }
         let now = glib::monotonic_time() as u64;
         let autofit = last_press
             .borrow()
@@ -179,9 +176,6 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
         active_for_end.borrow_mut().take();
         if let Some(state) = weak_for_end.upgrade() {
             state.column_resizing.set(false);
-        }
-        if std::env::var_os("STRATA_RAIL_TRACE").is_some() {
-            eprintln!("[rail] column_resize END");
         }
     });
     let weak_for_cancel = Rc::downgrade(state);
