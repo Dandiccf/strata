@@ -356,6 +356,18 @@ const TENXER_SETTINGS: &[Binding] = &[
     },
     Binding {
         category: "Places",
+        action: "Go to a typed path or URI",
+        note: "Opens the footer go prompt",
+        keys: "g Space",
+    },
+    Binding {
+        category: "Places",
+        action: "Cycle matching folders",
+        note: "In the go prompt",
+        keys: "Tab / Shift + Tab",
+    },
+    Binding {
+        category: "Places",
         action: "Cancel a pending chord",
         note: "",
         keys: "Esc",
@@ -929,6 +941,8 @@ const TENXER_PLACES: &[(&str, &str)] = &[
     ),
     ("g t / g n / g r", "Trash / Network / Recent"),
     ("g 1–9", "Visible PINNED rows in sidebar order"),
+    ("g Space", "Go to a typed path or URI"),
+    ("Tab / Shift+Tab in go ›", "Cycle matching folders"),
     (
         "g g in the preview",
         "Top of the document or first archive member",

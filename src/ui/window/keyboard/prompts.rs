@@ -9,7 +9,14 @@ use gtk::{
 };
 
 use super::{Dispatcher, KeyResult, command_modifiers};
-use crate::{app::Browser, ui::tenxer_mode::Prompt};
+use crate::{
+    app::Browser,
+    ui::{
+        go_completion::{Context, Step},
+        shortcut_footer::PromptSink,
+        tenxer_mode::Prompt,
+    },
+};
 
 fn plain(modifiers: Modifiers) -> bool {
     !command_modifiers(modifiers)
@@ -93,7 +100,14 @@ impl Dispatcher {
         if !plain(modifiers) {
             return Propagation::Proceed;
         }
+        let kind = self.shortcuts.open_prompt_kind();
         match key {
+            Key::Tab | Key::KP_Tab | Key::ISO_Left_Tab if kind == Some(Prompt::Go) => {
+                let backward =
+                    key == Key::ISO_Left_Tab || modifiers.contains(Modifiers::SHIFT_MASK);
+                self.complete_folder(browser, backward);
+            }
+            Key::Escape if kind == Some(Prompt::Go) => self.return_to_listing(browser),
             Key::Escape => {
                 if self.shortcuts.open_prompt_kind() == Some(Prompt::Filter) {
                     self.shortcuts.dismiss_prompt();
@@ -133,6 +147,15 @@ impl Dispatcher {
                 self.view.commit_listing_search(&text);
                 return;
             }
+            Some(Prompt::Go) => {
+                // Closing clears the entry before navigation can show a dialog.
+                self.return_to_listing(browser);
+                if !text.trim().is_empty() {
+                    self.view.keyboard_navigation();
+                    self.view.open_typed_location(&text);
+                }
+                return;
+            }
             _ if text.is_empty() => true,
             Some(kind @ (Prompt::Find | Prompt::FindBackward)) => {
                 self.view.find(&text, kind == Prompt::FindBackward, false)
@@ -146,8 +169,47 @@ impl Dispatcher {
         }
     }
 
+    /// **Tab** / **Shift+Tab** in **go ›**. The prompt keeps focus and its text
+    /// whether or not a folder matches.
+    fn complete_folder(&self, browser: &Browser, backward: bool) {
+        let text = self.shortcuts.prompt_text();
+        let current = browser
+            .active_location()
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf));
+        let home = gtk::glib::home_dir();
+        let listing = || {
+            browser
+                .active_depth()
+                .map(|depth| browser.visible_folder_names(depth))
+                .unwrap_or_default()
+        };
+        let context = Context {
+            current: current.as_deref(),
+            home: &home,
+            show_hidden: browser.preferences().show_hidden,
+            listing: &listing,
+        };
+        let sink = self.shortcuts.prompt_sink(Prompt::Go);
+        let later = self.shortcuts.prompt_sink(Prompt::Go);
+        let step = self.go.step(&text, backward, &context, move |step| {
+            show_step(&later, step)
+        });
+        show_step(&sink, step);
+    }
+
     fn return_to_listing(&self, browser: &Browser) {
         self.shortcuts.dismiss_prompt();
         browser.focus_active();
+    }
+}
+
+fn show_step(sink: &PromptSink, step: Step) {
+    match step {
+        Step::Complete { text, index, count } => {
+            let position = (count > 1).then(|| format!("{} of {count}", index + 1));
+            sink.show(Some(&text), position.as_deref());
+        }
+        Step::Pending => sink.show(None, Some("Listing folders\u{2026}")),
+        Step::Hint(hint) => sink.show(None, Some(hint.text())),
     }
 }

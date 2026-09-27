@@ -1354,6 +1354,24 @@ impl BrowserView {
         self.state.cancel_location_edit();
     }
 
+    /// Opens a path or URI typed outside the location bar. A relative path
+    /// resolves against the open native folder; errors use the location bar's
+    /// dialog and leave the current folder open.
+    pub(in crate::ui) fn open_typed_location(&self, input: &str) {
+        let base = self
+            .state
+            .browser
+            .active_location()
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf));
+        if let Err(error) = self.state.open_typed_location(input, base.as_deref()) {
+            show_error_dialog(
+                &self.state.overlay,
+                "Unable to open location",
+                &error.to_string(),
+            );
+        }
+    }
+
     pub fn set_peek_enabled(&self, enabled: bool) {
         self.state.peek_enabled.set(enabled);
         if !enabled {

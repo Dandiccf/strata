@@ -13,6 +13,7 @@ use crate::services::{
     LoadHandle, Preview, PreviewContent, PreviewEvent, PreviewProvider, PreviewRequest,
 };
 mod footer_prompt;
+mod go_prompt;
 mod place_chords;
 mod preview_ownership;
 
@@ -59,6 +60,19 @@ impl KeyboardFixture {
     }
 
     fn with_provider(provider: Rc<dyn crate::services::PreviewProvider>) -> Self {
+        Self::with_parts(
+            provider,
+            Rc::new(crate::ui::go_completion::GioFolders),
+            browser_for_window,
+        )
+    }
+
+    /// `view` runs after the preferences are seeded, which it reads on creation.
+    fn with_parts(
+        provider: Rc<dyn crate::services::PreviewProvider>,
+        folders: Rc<dyn crate::ui::go_completion::FolderSource>,
+        view: impl FnOnce() -> BrowserView,
+    ) -> Self {
         PreferenceManager::seed_saved_preferences_for_test();
         let preferences = PreferenceManager::shared();
         preferences.set_sidebar_show_home(true);
@@ -67,7 +81,7 @@ impl KeyboardFixture {
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(directory.path().join(name), b"preview").expect("fixture file");
         }
-        let view = browser_for_window();
+        let view = view();
         view.set_view_mode(BrowserMode::Columns);
         let sidebar = build_sidebar(view.clone(), preferences.clone(), true);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -103,6 +117,7 @@ impl KeyboardFixture {
                     preferences,
                 },
                 shortcuts: shortcuts.clone(),
+                folders,
             },
         );
         let controllers = window.observe_controllers();
