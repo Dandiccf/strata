@@ -115,11 +115,14 @@ fn bind_update_notice(
 ) -> UpdateNoticeHandler {
     let available: AvailableUpdate = Rc::new(RefCell::new(None));
     let available_for_click = available.clone();
-    let parent = window.clone().upcast::<gtk::Window>();
+    let parent = window.upcast_ref::<gtk::Window>().downgrade();
     let guard = guard.clone();
     sidebar.update_notice.connect_clicked(move |_| {
         let Some((release, download_url, update_method)) = available_for_click.borrow().clone()
         else {
+            return;
+        };
+        let Some(parent) = parent.upgrade() else {
             return;
         };
         settings::show_update_dialog(

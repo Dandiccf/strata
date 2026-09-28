@@ -143,6 +143,7 @@ impl Dispatcher {
             GoTarget::Prompt => {
                 self.shortcuts.open_prompt(Prompt::Go);
             }
+            GoTarget::Place { location, .. } if self.refuse_remote_place(&location) => {}
             GoTarget::Place { location, validate } => {
                 self.view.keyboard_navigation();
                 if validate {

@@ -418,6 +418,17 @@ impl PreferenceManager {
         self.changes.bind(self, anchor, read, apply);
     }
 
+    /// A closed window can outlive its close while its own closures still
+    /// reference it, so its bindings end here rather than on destroy.
+    pub(in crate::ui) fn release_bindings_within(&self, root: &impl IsA<gtk::Widget>) {
+        self.changes.release_within(root.as_ref());
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn listener_count(&self) -> usize {
+        self.changes.listener_count()
+    }
+
     /// Registers a process-lifetime callback invoked after preference changes are
     /// published. Observers run before widget bindings.
     pub(in crate::ui) fn observe(&self, observer: Rc<dyn Fn()>) {

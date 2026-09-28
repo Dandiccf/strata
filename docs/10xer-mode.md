@@ -522,6 +522,38 @@ to the files and do not change directory or run a file operation.
 shortcut reference keep their own keys. The file chooser uses these same
 round trips.
 
+## File chooser
+
+The portal file chooser follows the saved preference, and live changes to it,
+without opening Settings. While the mode is on, a footer under the files carries
+the same prompts, chords, and feedback, and the pane chrome hides as in a window.
+Accept, Cancel, the header close control, and List headings stay. Turning the mode
+off hides the footer and restores the chooser's own keys.
+
+The chooser uses this map within the request's limits. A key the request does not
+allow is refused when it is pressed, not only hidden:
+
+| Key | In the chooser |
+| --- | --- |
+| **Enter** / **o** on a file | Choose the file instead of opening it. In a multiple-file request with a fill, choose the fill. In a Save request the file becomes the destination, and an existing file asks first. |
+| **Enter** / **o** on a folder | Open it. **Ctrl+Enter** or **Accept** chooses a folder in a folder request. |
+| **Esc** | Take one dismissal step from [Escape precedence](#escape-precedence), then cancel the request. The automatic first-row selection is not a step. |
+| **q** | Leave 10xer mode. The request stays open. |
+| **Space**, **v** / **V**, **Ctrl+A**, **Ctrl+R**, **Shift+↑** / **Shift+↓** | Multiple-file requests only. Otherwise `Only one item can be chosen`. |
+| **a**, **r** / **F2**, **d** / **D** / **Delete**, **,** sorts, **.**, **c c** / **c n** | As in a window. |
+| **g** places, **g Space**, **z** / **Z** | Local folders and Recent only. Trash, Network, and remote pins flash `Only local folders can be opened here`; a typed remote location shows the unsupported-location error. |
+| **y**, **x**, **p** / **P**, **Y** / **X**, **Ctrl+C** / **Ctrl+X** / **Ctrl+V**, **O**, **;**, **i**, **Q** | `Not available in the file chooser`. The chooser does not copy or move files, open them with an application, run custom actions, peek folders, or open an extra Miller column, and only **Esc** or Cancel ends the request. |
+| **Ctrl+K**, **Ctrl+Shift+K**, **Ctrl+,**, **Ctrl+Z** | Unbound. |
+
+The request takes the fill, or the cursor item when nothing is filled; the
+automatic first-row selection never counts. In a Save request, moving the cursor
+onto a file copies its name into the name field without accepting, and a folder
+changes only the destination. While the name or location field has focus, every
+key but **F1** and **Ctrl+Shift+M** is typed; **Ctrl+A** selects the text. Open
+requests start with focus in the files. **Tab** goes from the files to the
+header, from the header to the Save name, and from the name back to the files.
+Saving over an existing file asks first with Cancel focused.
+
 ## Still bound
 
 These GUI conventions stay available alongside the Yazi verbs:

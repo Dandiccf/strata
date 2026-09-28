@@ -18,6 +18,7 @@ mod file_verbs;
 mod folder_jump;
 mod footer_prompt;
 mod go_prompt;
+mod mode_exit;
 mod place_chords;
 mod preview_ownership;
 

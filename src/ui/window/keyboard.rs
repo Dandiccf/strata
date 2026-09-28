@@ -25,6 +25,7 @@ use crate::{
 
 use super::{SidebarState, SidebarView, TypeToSearch, visible_modal_layer};
 
+mod chooser;
 pub(super) mod chords;
 mod commands;
 mod escape;
@@ -35,9 +36,7 @@ mod preview;
 mod prompts;
 mod sidebar;
 
-pub(in crate::ui) use sidebar::{
-    SidebarChord, activate_sidebar_focus, move_sidebar_focus, sidebar_chord,
-};
+use sidebar::{SidebarChord, activate_sidebar_focus, move_sidebar_focus, sidebar_chord};
 
 // None tries the next Strata stage; Some(Proceed) gives the event to GTK instead.
 type KeyResult = Option<Propagation>;
@@ -54,63 +53,20 @@ pub(super) struct Bindings {
     pub history: Rc<NavigationHistory>,
 }
 
-pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bindings: Bindings) {
+pub(super) fn install(window: &impl IsA<gtk::Window>, sidebar: &SidebarView, bindings: Bindings) {
+    let window = window.upcast_ref::<gtk::Window>();
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_browser = Rc::downgrade(&bindings.view.browser());
-    let dispatcher = Dispatcher {
-        window: window.clone(),
-        view: bindings.view,
-        top_bar: bindings.top_bar,
-        preview: bindings.preview,
-        type_to_search: bindings.type_to_search,
-        shortcuts: bindings.shortcuts,
-        go: GoCompletion::new(bindings.folders),
-        history: bindings.history,
-        rename_target: Rc::default(),
-        armed_actions: RefCell::default(),
-        open_with: files::OpenWithLookup::default(),
-        sidebar: SidebarFocus {
-            state: sidebar.state.clone(),
-            widget: sidebar.widget.clone(),
-            previous: RefCell::new(None),
-        },
-    };
-    dispatcher.preview.bind_keyboard_view(&dispatcher.view);
-    let keycaps = Rc::downgrade(&sidebar.state);
-    dispatcher.shortcuts.connect_chord_changed(move |chord| {
-        if let Some(sidebar) = keycaps.upgrade() {
-            sidebar.show_place_keycaps(chord == Some(crate::ui::tenxer_mode::Chord::Go));
-        }
-    });
-    // gtk_window_destroy() unrealizes while other references still exist, so the
-    // Widget::destroy signal is too late to drop a pending chord.
-    let cancel_on_destroy = dispatcher.shortcuts.clone();
-    let go_on_destroy = dispatcher.go.clone();
-    let open_with_on_destroy = dispatcher.open_with.clone();
-    window.connect_unrealize(move |_| {
-        cancel_on_destroy.cancel_chord();
-        go_on_destroy.invalidate();
-        open_with_on_destroy.invalidate();
-    });
-    // The rename target lives exactly as long as its prompt.
-    let rename_target = dispatcher.rename_target.clone();
-    dispatcher
-        .shortcuts
-        .connect_prompt_reset(move || drop(rename_target.take()));
-    bind_go_completion(&dispatcher);
-    bind_history_prompts(&dispatcher);
-    let preferences = dispatcher.type_to_search.preferences.clone();
-    release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
-    clear_find_on_mode_exit(window, &dispatcher, &weak_browser);
-    bind_footer_filter(&dispatcher);
+    let preferences = bindings.type_to_search.preferences.clone();
+    let dispatcher = Dispatcher::bind(window, sidebar, bindings, None);
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         let Some(browser) = weak_browser.upgrade() else {
             return Propagation::Proceed;
         };
         dispatcher.handle_key(&browser, key, modifiers)
     });
-    window.add_controller(keys);
+    window.add_controller(keys.clone());
 
     // Ctrl+wheel mirrors the Ctrl +/- text-size shortcut. Capture phase so
     // scrolled windows cannot consume it first; the PDF preview's own zoom is
@@ -137,12 +93,61 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
             dy,
         )
     });
-    window.add_controller(wheel);
+    window.add_controller(wheel.clone());
+    release_controllers_on_close(window, &[keys.upcast(), wheel.upcast()]);
+}
+
+/// The dispatcher holds its window, so a closed window drops its controllers
+/// to release it.
+fn release_controllers_on_close(window: &gtk::Window, controllers: &[gtk::EventController]) {
+    let controllers: Vec<_> = controllers.iter().map(ObjectExt::downgrade).collect();
+    window.connect_unrealize(move |window| {
+        for controller in controllers.iter().filter_map(glib::WeakRef::upgrade) {
+            window.remove_controller(&controller);
+        }
+    });
+}
+
+/// A portal file chooser request's side of the 10xer map: whether its keys
+/// may fill a multiple selection, and how they finish or cancel the request.
+pub(in crate::ui) struct ChooserPolicy {
+    pub(in crate::ui) multiple: bool,
+    /// **Enter** / **o** on a file, instead of launching it.
+    pub(in crate::ui) confirm: Rc<dyn Fn(crate::model::FileEntry)>,
+    /// **Esc** once nothing is left to dismiss.
+    pub(in crate::ui) cancel: Rc<dyn Fn()>,
+}
+
+/// The chooser's own key controller asks this first; `None` leaves the key to
+/// the chooser's restricted map.
+pub(in crate::ui) struct ChooserKeys {
+    dispatcher: Dispatcher,
+    browser: std::rc::Weak<Browser>,
+}
+
+impl ChooserKeys {
+    pub(super) fn new(
+        window: &gtk::Window,
+        sidebar: &SidebarView,
+        bindings: Bindings,
+        policy: ChooserPolicy,
+    ) -> Self {
+        let browser = Rc::downgrade(&bindings.view.browser());
+        Self {
+            dispatcher: Dispatcher::bind(window, sidebar, bindings, Some(policy)),
+            browser,
+        }
+    }
+
+    pub(in crate::ui) fn handle(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+        let browser = self.browser.upgrade()?;
+        self.dispatcher.handle_chooser_key(&browser, key, modifiers)
+    }
 }
 
 /// Leaving 10xer mode ends preview key ownership but keeps the drawer open.
 fn release_preview_keys_on_mode_exit(
-    window: &gtk::ApplicationWindow,
+    window: &gtk::Window,
     preview: &PreviewDrawer,
     browser: &std::rc::Weak<Browser>,
 ) {
@@ -250,31 +255,32 @@ fn bind_history_prompts(dispatcher: &Dispatcher) {
         });
 }
 
-/// Leaving 10xer mode forgets the find, footer filters, and search, and hands a focused
-/// prompt's keys back to the listing.
+/// Leaving 10xer mode drops the footer's prompt, pending lookups, and armed
+/// **;** actions, and hands a focused prompt's keys back to the listing. The
+/// view clears its own listing state.
 fn clear_find_on_mode_exit(
-    window: &gtk::ApplicationWindow,
+    window: &gtk::Window,
     dispatcher: &Dispatcher,
     browser: &std::rc::Weak<Browser>,
 ) {
-    let view = dispatcher.view.downgrade();
     let shortcuts = dispatcher.shortcuts.clone();
     let open_with = dispatcher.open_with.clone();
+    let go = dispatcher.go.clone();
+    let armed_actions = dispatcher.armed_actions.clone();
     let browser = browser.clone();
+    let primed = Cell::new(false);
     crate::ui::preferences::PreferenceManager::shared().bind_preference(
         window,
         crate::ui::preferences::PreferenceManager::tenxer_mode,
         move |window, enabled| {
-            if enabled {
+            let starting = !primed.replace(true);
+            if enabled || starting {
                 shortcuts.refresh_filter();
                 return;
             }
             open_with.invalidate();
-            if let Some(view) = view.upgrade() {
-                view.clear_find();
-                view.forget_listing_search();
-                view.clear_hidden_filters();
-            }
+            go.invalidate();
+            armed_actions.take();
             shortcuts.refresh_filter();
             let focus = window.root().and_then(|root| root.focus());
             let prompt_focused = shortcuts.prompt_has_focus();
@@ -450,7 +456,7 @@ fn inside_pdf_scroll(widget: &gtk::Widget) -> bool {
 }
 
 struct Dispatcher {
-    window: gtk::ApplicationWindow,
+    window: gtk::Window,
     view: BrowserView,
     sidebar: SidebarFocus,
     top_bar: TopBarNavigation,
@@ -461,8 +467,10 @@ struct Dispatcher {
     history: Rc<NavigationHistory>,
     /// The item the open **rename ›** prompt renames.
     rename_target: Rc<RefCell<Option<crate::model::FileEntry>>>,
-    armed_actions: RefCell<Option<files::ArmedActions>>,
+    armed_actions: Rc<RefCell<Option<files::ArmedActions>>>,
     open_with: files::OpenWithLookup,
+    /// Set in a portal file chooser, whose request limits and finishes the map.
+    chooser: Option<ChooserPolicy>,
 }
 
 struct KeyEvent {
@@ -498,6 +506,90 @@ impl KeyEvent {
 }
 
 impl Dispatcher {
+    fn bind(
+        window: &gtk::Window,
+        sidebar: &SidebarView,
+        bindings: Bindings,
+        chooser: Option<ChooserPolicy>,
+    ) -> Self {
+        let weak_browser = Rc::downgrade(&bindings.view.browser());
+        let dispatcher = Self {
+            window: window.clone(),
+            view: bindings.view,
+            top_bar: bindings.top_bar,
+            preview: bindings.preview,
+            type_to_search: bindings.type_to_search,
+            shortcuts: bindings.shortcuts,
+            go: GoCompletion::new(bindings.folders),
+            history: bindings.history,
+            rename_target: Rc::default(),
+            armed_actions: Rc::default(),
+            open_with: files::OpenWithLookup::default(),
+            sidebar: SidebarFocus {
+                state: sidebar.state.clone(),
+                widget: sidebar.widget.clone(),
+                previous: RefCell::new(None),
+            },
+            chooser,
+        };
+        dispatcher.preview.bind_keyboard_view(&dispatcher.view);
+        let keycaps = Rc::downgrade(&sidebar.state);
+        dispatcher.shortcuts.connect_chord_changed(move |chord| {
+            if let Some(sidebar) = keycaps.upgrade() {
+                sidebar.show_place_keycaps(chord == Some(crate::ui::tenxer_mode::Chord::Go));
+            }
+        });
+        // gtk_window_destroy() unrealizes while other references still exist, so the
+        // Widget::destroy signal is too late to drop a pending chord.
+        let cancel_on_destroy = dispatcher.shortcuts.clone();
+        let go_on_destroy = dispatcher.go.clone();
+        let open_with_on_destroy = dispatcher.open_with.clone();
+        window.connect_unrealize(move |_| {
+            cancel_on_destroy.cancel_chord();
+            go_on_destroy.invalidate();
+            open_with_on_destroy.invalidate();
+        });
+        // The rename target lives exactly as long as its prompt.
+        let rename_target = dispatcher.rename_target.clone();
+        dispatcher
+            .shortcuts
+            .connect_prompt_reset(move || drop(rename_target.take()));
+        bind_go_completion(&dispatcher);
+        bind_history_prompts(&dispatcher);
+        release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
+        clear_find_on_mode_exit(window, &dispatcher, &weak_browser);
+        bind_footer_filter(&dispatcher);
+        dispatcher
+    }
+
+    /// Only the 10xer map runs here. Window-wide stages such as global search,
+    /// clipboard, and undo never see a chooser's keys.
+    fn handle_chooser_key(
+        &self,
+        browser: &Rc<Browser>,
+        key: Key,
+        modifiers: Modifiers,
+    ) -> KeyResult {
+        if !self.type_to_search.preferences.tenxer_mode() {
+            return self.tenxer_keys(browser, key, modifiers);
+        }
+        if !items::is_modifier_key(key) {
+            self.open_with.invalidate();
+        }
+        // The request's name and the location keep every typed key but F1.
+        if self.text_focused()
+            && !self.shortcuts.prompt_has_focus()
+            && !self.preview_document_focused()
+        {
+            if key == Key::F1 {
+                return self.shortcuts.handle_key(key, modifiers);
+            }
+            return self.tenxer_keys(browser, key, modifiers);
+        }
+        self.input_owner(browser, key, modifiers)
+            .or_else(|| self.tenxer_keys(browser, key, modifiers))
+    }
+
     fn handle_key(&self, browser: &Rc<Browser>, key: Key, modifiers: Modifiers) -> Propagation {
         if !items::is_modifier_key(key) {
             self.open_with.invalidate();
@@ -654,6 +746,9 @@ impl Dispatcher {
         if key == Key::q && !modifiers.contains(Modifiers::SHIFT_MASK) && !command {
             preferences.set_tenxer_mode(false);
             return Some(Propagation::Stop);
+        }
+        if let Some(result) = self.chooser_refusal(key, modifiers) {
+            return Some(result);
         }
         if key == Key::Q && modifiers.contains(Modifiers::SHIFT_MASK) && !command {
             self.window.close();

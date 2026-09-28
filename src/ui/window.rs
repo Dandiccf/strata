@@ -47,9 +47,7 @@ mod volume_password;
 pub(super) use devices::{
     RemovableDestination, removable_destinations, resolve_removable_destination,
 };
-pub(in crate::ui) use keyboard::{
-    SidebarChord, activate_sidebar_focus, move_sidebar_focus, sidebar_chord,
-};
+pub(in crate::ui) use keyboard::{ChooserKeys, ChooserPolicy};
 
 pub use open_argument::present_open;
 pub use unlock_argument::{UnlockTarget, present_unlock};
@@ -138,6 +136,35 @@ impl TypeToSearch {
                 }
             }
     }
+}
+
+/// Shares the window's 10xer map with a portal file chooser.
+pub(super) fn chooser_keys(
+    window: &gtk::Window,
+    view: &BrowserView,
+    sidebar: &SidebarView,
+    top_bar: super::top_bar_navigation::TopBarNavigation,
+    preview: &super::preview::PreviewDrawer,
+    shortcuts: &super::shortcut_footer::ShortcutFooter,
+    policy: ChooserPolicy,
+) -> ChooserKeys {
+    ChooserKeys::new(
+        window,
+        sidebar,
+        keyboard::Bindings {
+            view: view.clone(),
+            top_bar,
+            preview: preview.clone(),
+            type_to_search: TypeToSearch {
+                view: view.clone(),
+                preferences: PreferenceManager::shared(),
+            },
+            shortcuts: shortcuts.clone(),
+            folders: Rc::new(super::go_completion::GioFolders),
+            history: crate::services::NavigationHistory::shared(),
+        },
+        policy,
+    )
 }
 
 fn mouse_history_action(button: u32) -> Option<MouseHistoryAction> {

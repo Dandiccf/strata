@@ -4,4 +4,5 @@ use super::*;
 
 mod acceptance;
 mod filtered_preview;
+mod keyboard;
 mod sizing;

@@ -184,6 +184,62 @@ fn q_leaves_tenxer_and_shift_q_closes_only_the_current_window() {
 }
 
 #[test]
+fn mode_cycles_and_closed_windows_leave_no_duplicate_commands_or_listeners() {
+    gtk_test(
+        "ui::window::tests::preferences::mode_cycles_and_closed_windows_leave_no_duplicate_commands_or_listeners",
+        || {
+            let manager = PreferenceManager::shared();
+            let toggle = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK;
+            let first = OpenWindow::open();
+            settle();
+            let baseline = manager.listener_count();
+            for _ in 0..3 {
+                manager.set_tenxer_mode(true);
+                settle();
+                manager.set_tenxer_mode(false);
+                settle();
+            }
+            assert_eq!(manager.listener_count(), baseline, "cycles added listeners");
+
+            let closed = {
+                let window = gtk::ApplicationWindow::builder()
+                    .application(&test_application())
+                    .build();
+                let content = super::super::composition::WindowContent::new(&window, &manager);
+                content.bind(&window, &manager);
+                content.connect_cleanup(&window);
+                window.present();
+                settle();
+                assert!(manager.listener_count() > baseline);
+                window.destroy();
+                window.downgrade()
+            };
+            settle_for(std::time::Duration::from_millis(100));
+            assert_eq!(
+                manager.listener_count(),
+                baseline,
+                "a closed window kept listeners"
+            );
+            assert!(
+                closed.upgrade().is_none(),
+                "a closed window was never released"
+            );
+            assert!(window_listed(&first.window));
+
+            let third = OpenWindow::open();
+            settle();
+            for (window, expected) in [(&third.window, true), (&first.window, false)] {
+                press(window, gtk::gdk::Key::M, toggle);
+                settle();
+                assert_eq!(manager.tenxer_mode(), expected, "one toggle per press");
+                assert_eq!(first.content.footer().tag_visible(), expected);
+                assert_eq!(third.content.footer().tag_visible(), expected);
+            }
+        },
+    );
+}
+
+#[test]
 fn browsing_preferences_stay_saved_but_unused_until_exit() {
     gtk_test(
         "ui::window::tests::preferences::browsing_preferences_stay_saved_but_unused_until_exit",
