@@ -85,22 +85,80 @@ pub(crate) enum Chord {
     Go,
     /// **g** while a document or archive preview owns the keys: only **g g**.
     PreviewTop,
+    Copy,
 }
 
 impl Chord {
     pub(crate) fn mark(self) -> &'static str {
         match self {
             Self::Go | Self::PreviewTop => "g-",
+            Self::Copy => "c-",
         }
     }
 
-    pub(crate) fn hint(self) -> &'static str {
+    pub(crate) fn options(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::Go => {
-                "g first · h home · d downloads · c config · t trash · n network · r recent · \
-                 k documents · p pictures · v videos · 1–9 pins"
-            }
-            Self::PreviewTop => "g top",
+            Self::Go => &[
+                ("g", "First item"),
+                ("f", "Follow search result"),
+                ("h", "Home"),
+                ("d", "Downloads"),
+                ("c", "Config"),
+                ("t", "Trash"),
+                ("n", "Network"),
+                ("r", "Recent"),
+                ("k", "Documents"),
+                ("p", "Pictures"),
+                ("v", "Videos"),
+                ("1–9", "Pins"),
+                ("Space", "Type a path"),
+            ],
+            Self::PreviewTop => &[("g", "Top")],
+            Self::Copy => &[("c", "Copy path"), ("n", "Copy name")],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Prompt {
+    Find,
+    FindBackward,
+    Filter,
+    Search,
+    Go,
+    Jump,
+    Recent,
+    Create,
+}
+
+impl Prompt {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Find => "/",
+            Self::FindBackward => "?",
+            Self::Filter => "filter:",
+            Self::Search => "search:",
+            Self::Go => "go \u{203a}",
+            Self::Jump => "jump \u{203a}",
+            Self::Recent => "recent \u{203a}",
+            Self::Create => "create \u{203a}",
+        }
+    }
+
+    pub(crate) fn picks_history(self) -> bool {
+        matches!(self, Self::Jump | Self::Recent)
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Find => "Find in this listing",
+            Self::FindBackward => "Find backward in this listing",
+            Self::Filter => "Filter this listing",
+            Self::Search => "Search this folder and its subfolders",
+            Self::Go => "Go to a path or URI",
+            Self::Jump => "Jump to a visited folder",
+            Self::Recent => "Jump to a recently visited folder",
+            Self::Create => "Create a file, or a folder ending in /",
         }
     }
 }
