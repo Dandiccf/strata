@@ -2,7 +2,9 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
 
@@ -17,11 +19,48 @@ use crate::{
 mod audio;
 #[cfg(debug_assertions)]
 mod diagnostics;
+#[cfg(test)]
+mod tests;
 use audio::PcmOutput;
 
 const PAUSED_IDLE: Duration = Duration::from_secs(30);
 const RESIZE_DELAY: Duration = Duration::from_millis(250);
+// Coalesce seek-bar drags: only the settled position restarts decoding.
+const SEEK_DELAY: Duration = Duration::from_millis(200);
 const PRESENTATION_QUEUE: usize = 3;
+// Bounded mid-play restarts: a transient stall (audio sink hiccup, slow decode)
+// resumes at the last position instead of killing the stream, while a permanently
+// broken source still fails closed instead of respawning workers forever.
+const MAX_STALL_RECOVERIES: u32 = 3;
+// While the audio clock is stuck (e.g. the sink unsuspending on resume), video
+// may lead it on wall time by this much instead of freezing for the watchdog.
+const AUDIO_LEAD_CAP_US: u64 = 2_000_000;
+// Restart (bounded) when the audio clock is frozen this long mid-play, so a
+// dead pipeline is rebuilt in seconds rather than after the 8s watchdog.
+const AUDIO_STUCK_TIMEOUT: Duration = Duration::from_secs(3);
+// Quick preview reopens where it closed: positions below this are restarts
+// from zero rather than a resume worth an extra decode.
+const RESTORE_MIN_US: u64 = 1_000_000;
+const MAX_REMEMBERED_POSITIONS: usize = 128;
+
+static MEDIA_POSITIONS: LazyLock<Mutex<HashMap<PathBuf, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn remember_media_position(path: PathBuf, position: u64) {
+    if let Ok(mut positions) = MEDIA_POSITIONS.lock() {
+        if positions.len() >= MAX_REMEMBERED_POSITIONS {
+            positions.clear();
+        }
+        positions.insert(path, position);
+    }
+}
+
+pub(crate) fn recall_media_position(path: &Path) -> Option<u64> {
+    MEDIA_POSITIONS
+        .lock()
+        .ok()
+        .and_then(|positions| positions.get(path).copied())
+}
 
 #[cfg(test)]
 type TestLoader = std::rc::Rc<dyn Fn(SandboxedMedia, u32) -> Result<Session, String>>;
@@ -47,12 +86,16 @@ mod imp {
         pub(super) resized: Cell<Option<Instant>>,
         pub(super) paused: Cell<Option<Instant>>,
         pub(super) dormant: Cell<bool>,
+        pub(super) seek_pending: Cell<Option<(u64, Instant)>>,
         pub(super) first_frame: Cell<bool>,
         pub(super) clock: Cell<Option<Instant>>,
         pub(super) clock_base: Cell<u64>,
         pub(super) position: Cell<u64>,
         pub(super) end: Cell<Option<u64>>,
         pub(super) last_progress: Cell<Option<Instant>>,
+        pub(super) recoveries: Cell<u32>,
+        pub(super) audio_stuck_since: Cell<Option<Instant>>,
+        pub(super) restore: Cell<Option<u64>>,
     }
 
     #[glib::object_subclass]
@@ -102,6 +145,7 @@ mod imp {
         fn pause(&self) {
             self.obj().capture_position();
             self.clock.set(None);
+            self.audio_stuck_since.set(None);
             self.paused.set(Some(Instant::now()));
             let result = self
                 .audio
@@ -115,8 +159,26 @@ mod imp {
         }
 
         fn seek(&self, timestamp: i64) {
-            self.obj().restart_at(timestamp.max(0) as u64);
-            self.obj().ensure_timer();
+            let position = timestamp.max(0) as u64;
+            let obj = self.obj();
+            // A restart just fired (startup, recover, or an earlier seek):
+            // coalesce the burst and fire once settled. Otherwise restart
+            // immediately and move the slider now instead of leaving it
+            // snapped back at the old position for the whole restart.
+            if self
+                .starting
+                .get()
+                .is_some_and(|time| time.elapsed() < SEEK_DELAY)
+            {
+                self.seek_pending.set(Some((position, Instant::now())));
+            } else {
+                obj.restart_at(position);
+                if obj.is_prepared() {
+                    obj.update(self.position.get() as i64);
+                }
+            }
+            self.dormant.set(false);
+            obj.ensure_timer();
         }
         fn realize(&self, _: gdk::Surface) {}
         fn unrealize(&self, _: gdk::Surface) {}
@@ -160,10 +222,21 @@ glib::wrapper! {
 impl DecodedMedia {
     pub fn new(source: SandboxedMedia) -> Self {
         let obj: Self = glib::Object::new();
+        let restore = recall_media_position(&source.path)
+            .filter(|&position| position > RESTORE_MIN_US);
         obj.imp().source.replace(Some(source));
+        if let Some(position) = restore {
+            obj.imp().restore.set(Some(position));
+        }
         obj.restart_at(0);
         obj.ensure_timer();
         obj
+    }
+
+    pub fn restore_position(&self, position: u64) {
+        if position > RESTORE_MIN_US {
+            self.imp().restore.set(Some(position));
+        }
     }
 
     fn ensure_timer(&self) {
@@ -195,6 +268,15 @@ impl DecodedMedia {
         if imp.closed.replace(true) {
             return;
         }
+        // Remember where the preview closed so reopening resumes there.
+        // Skips unwatched beginnings and watched-to-the-end streams.
+        if let Some(source) = imp.source.borrow().as_ref() {
+            let position = imp.position.get();
+            let duration = self.duration().max(0) as u64;
+            if position > RESTORE_MIN_US && (duration == 0 || position < duration) {
+                remember_media_position(source.path.clone(), position);
+            }
+        }
         if let Some(timer) = imp.timer.borrow_mut().take() {
             timer.remove();
         }
@@ -204,6 +286,7 @@ impl DecodedMedia {
         imp.texture.borrow_mut().take();
         imp.source.borrow_mut().take();
         imp.restart.set(None);
+        imp.seek_pending.set(None);
         self.invalidate_contents();
     }
 
@@ -235,6 +318,7 @@ impl DecodedMedia {
         imp.position.set(media::timestamp(tick));
         imp.clock.set(None);
         imp.clock_base.set(0);
+        imp.audio_stuck_since.set(None);
         imp.first_frame.set(false);
         imp.end.set(None);
         imp.dormant.set(false);
@@ -256,17 +340,27 @@ impl DecodedMedia {
         }
     }
 
-    fn relative_position(&self) -> u64 {
+    /// Restart decoding at the captured position after a mid-play stall instead
+    /// of failing the stream. Only call once playback has started; startup and
+    /// seek failures keep failing closed. Gives up after MAX_STALL_RECOVERIES
+    /// consecutive stalls without progress so broken sources still surface.
+    fn recover(&self, reason: &str) -> Result<(), String> {
         let imp = self.imp();
-        if let Some(audio) = imp.audio.borrow().as_ref() {
-            audio.position_us().unwrap_or(imp.clock_base.get())
-        } else {
-            imp.clock_base.get()
-                + imp
-                    .clock
-                    .get()
-                    .map_or(0, |clock| clock.elapsed().as_micros() as u64)
+        let recoveries = imp.recoveries.get();
+        if recoveries >= MAX_STALL_RECOVERIES {
+            return Err(reason.into());
         }
+        imp.recoveries.set(recoveries + 1);
+        tracing::warn!(
+            recoveries = recoveries + 1,
+            reason,
+            "restarting stalled media playback"
+        );
+        self.capture_position();
+        let position = imp.position.get();
+        self.restart_at(position);
+        imp.last_progress.set(Some(Instant::now()));
+        Ok(())
     }
 
     fn capture_position(&self) {
@@ -274,14 +368,44 @@ impl DecodedMedia {
         if !imp.first_frame.get() {
             return;
         }
-        let relative = self.relative_position();
-        imp.clock_base.set(relative);
-        imp.clock.set(self.is_playing().then(Instant::now));
+        let base = imp.clock_base.get();
+        let elapsed = imp
+            .clock
+            .get()
+            .map_or(0, |clock| clock.elapsed().as_micros() as u64);
+        let mut relative = base + elapsed;
+        let mut audio_flowing = imp.audio.borrow().is_none();
+        if let Some(audio) = imp.audio.borrow().as_ref() {
+            match audio.position_us() {
+                // Follow a flowing audio clock and re-anchor the wall clock.
+                Some(position) if position > base => {
+                    imp.clock_base.set(position);
+                    imp.clock.set(self.is_playing().then(Instant::now));
+                    imp.audio_stuck_since.set(None);
+                    audio_flowing = true;
+                    relative = position;
+                }
+                // The sink is stuck (e.g. unsuspending on resume): let video
+                // lead on wall time, capped, instead of freezing for the
+                // watchdog. The anchor is kept so audio can take over again.
+                _ => {
+                    relative = relative.min(base + AUDIO_LEAD_CAP_US);
+                    if self.is_playing() && imp.audio_stuck_since.get().is_none() {
+                        imp.audio_stuck_since.set(Some(Instant::now()));
+                    }
+                }
+            }
+        }
         if let Some(header) = imp.header.get() {
             let position = (media::timestamp(header.start_tick) + relative)
                 .min(imp.end.get().unwrap_or(header.duration_us));
             if position != imp.position.get() {
                 imp.last_progress.set(Some(Instant::now()));
+                // Wall-clock drift over stuck audio is not health: without
+                // this, dead audio plus working video would restart forever.
+                if audio_flowing {
+                    imp.recoveries.set(0);
+                }
             }
             imp.position.set(position);
         }
@@ -307,12 +431,25 @@ impl DecodedMedia {
                 self.restart_at(imp.position.get());
             }
         }
+        // Fire a settled seek before the paused-idle check below, so seeking
+        // out of dormant wakes instead of being re-dormantized immediately
+        // (restart_at refreshes the paused stamp when not playing).
+        if let Some((position, since)) = imp.seek_pending.get()
+            && since.elapsed() >= SEEK_DELAY
+        {
+            imp.seek_pending.take();
+            self.restart_at(position);
+            if self.is_prepared() {
+                self.update(imp.position.get() as i64);
+            }
+        }
         if !self.is_playing()
             && imp
                 .paused
                 .get()
                 .is_some_and(|time| time.elapsed() >= PAUSED_IDLE)
             && !imp.dormant.get()
+            && imp.seek_pending.get().is_none()
         {
             imp.session.borrow_mut().take();
             imp.audio.borrow_mut().take();
@@ -378,6 +515,17 @@ impl DecodedMedia {
             let event = imp.session.borrow().as_ref().and_then(Session::receive);
             match event {
                 Some(Event::Prepared(header)) => {
+                    // Reopening resumes where the preview closed. The saved
+                    // position is only trusted against this header: past-the-end
+                    // (file replaced) plays from zero instead of failing.
+                    if let Some(saved) = imp.restore.take()
+                        && saved < header.duration_us
+                    {
+                        imp.header.set(Some(header));
+                        tracing::debug!(position_us = saved, "resuming media preview");
+                        self.restart_at(saved);
+                        break;
+                    }
                     let audio = header
                         .audio
                         .then(|| PcmOutput::new(self.is_muted(), self.volume()))
@@ -469,17 +617,40 @@ impl DecodedMedia {
                     }
                     break;
                 }
-                Some(Event::Failed(error)) => return Err(error),
+                Some(Event::Failed(error)) => {
+                    if imp.first_frame.get() {
+                        self.recover(&error)?;
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
                 None => break,
             }
         }
-        if let Some(audio) = imp.audio.borrow().as_ref()
-            && let Some(error) = audio.error()
-        {
+        let audio_error = imp
+            .audio
+            .borrow()
+            .as_ref()
+            .and_then(PcmOutput::error);
+        if let Some(error) = audio_error {
+            // Drop the faulty pipeline via restart instead of latching one
+            // transient sink error as a permanent stream failure.
+            if imp.first_frame.get() {
+                self.recover(&error)?;
+                return Ok(());
+            }
             return Err(error);
         }
         if self.is_playing() && imp.first_frame.get() {
             self.capture_position();
+            if imp
+                .audio_stuck_since
+                .get()
+                .is_some_and(|since| since.elapsed() > AUDIO_STUCK_TIMEOUT)
+            {
+                self.recover("Audio output stopped advancing")?;
+                return Ok(());
+            }
             let ended = imp.end.get().is_some_and(|end| {
                 // The advertised duration can fall between 48-kHz sample boundaries.
                 let tolerance = if imp.header.get().is_some_and(|header| header.audio) {
@@ -525,7 +696,7 @@ impl DecodedMedia {
                 .get()
                 .is_some_and(|time| time.elapsed() > media::FRAME_TIMEOUT)
             {
-                return Err("Media playback clock stopped making progress".into());
+                self.recover("Media playback clock stopped making progress")?;
             }
         }
         Ok(())
