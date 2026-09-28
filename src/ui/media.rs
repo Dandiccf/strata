@@ -222,8 +222,8 @@ glib::wrapper! {
 impl DecodedMedia {
     pub fn new(source: SandboxedMedia) -> Self {
         let obj: Self = glib::Object::new();
-        let restore = recall_media_position(&source.path)
-            .filter(|&position| position > RESTORE_MIN_US);
+        let restore =
+            recall_media_position(&source.path).filter(|&position| position > RESTORE_MIN_US);
         obj.imp().source.replace(Some(source));
         if let Some(position) = restore {
             obj.imp().restore.set(Some(position));
@@ -627,11 +627,7 @@ impl DecodedMedia {
                 None => break,
             }
         }
-        let audio_error = imp
-            .audio
-            .borrow()
-            .as_ref()
-            .and_then(PcmOutput::error);
+        let audio_error = imp.audio.borrow().as_ref().and_then(PcmOutput::error);
         if let Some(error) = audio_error {
             // Drop the faulty pipeline via restart instead of latching one
             // transient sink error as a permanent stream failure.
