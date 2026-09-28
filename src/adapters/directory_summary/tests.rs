@@ -168,9 +168,9 @@ fn directory_summary_treats_a_directory_removed_before_measurement_as_truncated_
 fn aborting_a_directory_measurement_stops_it_mid_flight() {
     let root = unique_fixture_root("abort-mid-flight");
     std::fs::create_dir_all(&root).expect("the directory fixture should be created");
-    // `next_files_future` batches 64 entries at a time, so 200 files force several suspension
-    // points, giving a real window to observe partial progress before the walk would finish.
-    let total_files = 200;
+    // More than one enumeration batch gives a real window to observe partial progress before the
+    // walk would finish.
+    let total_files = 600;
     for index in 0..total_files {
         std::fs::write(root.join(format!("file-{index}.txt")), b"content")
             .expect("the directory fixture file should be written");
@@ -206,8 +206,8 @@ fn aborting_a_directory_measurement_stops_it_mid_flight() {
 
             // Drive the loop only until the walk has made some real progress (at least one batch
             // beyond the root directory itself), then abort immediately -- this is genuinely
-            // mid-flight since one batch (64) is far short of the full tree (1 + 200), regardless
-            // of exactly how many main-loop iterations it took to get there.
+            // mid-flight since one batch is short of the full tree, regardless of exactly how many
+            // main-loop iterations it took to get there.
             for _ in 0..1_000 {
                 if budget.total.get().item_count > 1 {
                     break;
@@ -240,9 +240,9 @@ fn aborting_a_directory_measurement_stops_it_mid_flight() {
 fn directory_summary_stops_enumerating_the_root_once_the_measurement_budget_is_reached() {
     let root = unique_fixture_root("root-budget-stop");
     std::fs::create_dir_all(&root).expect("the directory fixture should be created");
-    // More than one `next_files_future` batch (64 entries), so a walk that kept fetching
-    // further batches after the budget was spent would still show up as a much larger count.
-    let total_files = 150;
+    // More than one enumeration batch means continuing after the budget is spent would still show
+    // up as a much larger count.
+    let total_files = 600;
     for index in 0..total_files {
         std::fs::write(root.join(format!("file-{index}.txt")), b"content")
             .expect("the directory fixture file should be written");

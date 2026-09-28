@@ -4245,6 +4245,14 @@ fn connect_selection(
         });
 }
 
+fn select_all(pane: &Pane) {
+    for section in pane.item_sections() {
+        section.syncing.set(true);
+        section.selection.select_all();
+        section.syncing.set(false);
+    }
+}
+
 fn set_selections(pane: &Pane, positions: &[usize]) {
     let all_selected = positions.len() == pane.model.n_items() as usize;
     for section in pane.item_sections() {

@@ -483,6 +483,12 @@ pub(super) fn set_column_selections(column: &ColumnView, positions: &[u32]) {
     column.syncing_selection.set(false);
 }
 
+pub(super) fn select_all_in_column(column: &ColumnView) {
+    column.syncing_selection.set(true);
+    column.selection.select_all();
+    column.syncing_selection.set(false);
+}
+
 fn should_activate_single_click(
     press_count: i32,
     is_directory: bool,

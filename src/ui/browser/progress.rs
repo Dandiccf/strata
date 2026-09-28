@@ -4,7 +4,7 @@ use crate::ui::blur::BlurBin;
 use crate::ui::browser::ViewState;
 use crate::ui::browser::entry::{format_file_size, item_count_label};
 use crate::ui::controls::modal_layout;
-use crate::ui::modal::{ModalHost, dismiss_modal_layer, modal_layer};
+use crate::ui::modal::{dismiss_modal_layer, modal_layer, window_overlay};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -195,13 +195,12 @@ impl ViewState {
         subtitle_text: &str,
         on_cancel: Rc<dyn Fn()>,
     ) {
-        let Some(ModalHost {
-            overlay: window_overlay,
-            blurred_root,
-        }) = ModalHost::blurred_for(&self.overlay)
-        else {
+        let Some(window_overlay) = window_overlay(&self.overlay) else {
             return;
         };
+        // File listings update throughout an operation. Re-blurring that live surface
+        // repaints the whole window and can visibly pulse behind the progress dialog.
+        let blurred_root = None;
 
         let layout = modal_layout(icon, title_text, subtitle_text, "Cancel");
         layout.content.add_css_class("compact");
@@ -577,12 +576,12 @@ impl ViewState {
         }
     }
 
-    pub(super) fn dismiss_file_operation_progress(&self) {
+    pub(super) fn dismiss_file_operation_progress(self: &Rc<Self>) {
         self.dismiss_file_operation_progress_then(|| {});
     }
 
     pub(super) fn dismiss_file_operation_progress_then(
-        &self,
+        self: &Rc<Self>,
         after_dismiss: impl FnOnce() + 'static,
     ) {
         if let Some(source) = self.pending_file_progress.take() {
@@ -602,24 +601,39 @@ impl ViewState {
         self.transfer_rate_sample.set(None);
         self.transfer_rate_bytes_per_second.set(None);
         self.flushing_to_device.set(false);
+        self.file_progress_dismiss_waiters
+            .borrow_mut()
+            .push(Box::new(after_dismiss));
         if let Some(view) = self.file_progress_view.take() {
             view.indeterminate.set(false);
             view.archive_activity.stop();
             if let Some(source) = view.pulse_source.take() {
                 source.remove();
             }
-            let after_dismiss = Rc::new(RefCell::new(Some(after_dismiss)));
-            let callback = after_dismiss.clone();
+            self.file_progress_dismissing.set(true);
+            let weak = Rc::downgrade(self);
             view.layer.connect_parent_notify(move |layer| {
-                if layer.parent().is_none()
-                    && let Some(callback) = callback.borrow_mut().take()
-                {
+                if layer.parent().is_some() {
+                    return;
+                }
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                if !state.file_progress_dismissing.replace(false) {
+                    return;
+                }
+                state.browser.focus_active();
+                let callbacks = state.file_progress_dismiss_waiters.take();
+                for callback in callbacks {
                     callback();
                 }
             });
             dismiss_modal_layer(&view.layer, &view.overlay, view.blurred_root.as_ref());
-        } else {
-            after_dismiss();
+        } else if !self.file_progress_dismissing.get() {
+            let callbacks = self.file_progress_dismiss_waiters.take();
+            for callback in callbacks {
+                callback();
+            }
         }
     }
 

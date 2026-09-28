@@ -56,32 +56,29 @@ pub(super) struct EntryAnimationTarget {
     pub(super) row: gtk::Widget,
 }
 
-pub(super) fn collect_entry_targets(
+pub(super) fn collect_entry_targets<'a>(
     source: &gtk::Widget,
-    entries: &[FileEntry],
+    entries: impl IntoIterator<Item = &'a FileEntry>,
 ) -> Vec<EntryAnimationTarget> {
-    if entries.is_empty() || entries.len() > 64 {
-        return Vec::new();
-    }
-    let names: HashSet<&str> = entries
-        .iter()
-        .map(|entry| entry.display_name.as_str())
-        .collect();
     let mut candidates = Vec::new();
     walk_widgets(source, &mut |widget| {
-        if widget.is_mapped()
-            && is_entry_row(widget)
-            && row_name(widget).is_some_and(|name| names.contains(name.as_str()))
-        {
+        if widget.is_mapped() && is_entry_row(widget) {
             candidates.push(widget.clone());
         }
     });
+    let candidate_names = candidates
+        .iter()
+        .filter_map(row_name)
+        .collect::<HashSet<_>>();
 
     let mut used = HashSet::new();
     let mut targets = Vec::new();
     for entry in entries {
         if used.len() == candidates.len() {
             break;
+        }
+        if !candidate_names.contains(&entry.display_name) {
+            continue;
         }
         let display_path = entry.location.display_path();
         let matching_path = candidates.iter().position(|row| {

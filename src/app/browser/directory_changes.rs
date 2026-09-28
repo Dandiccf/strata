@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crate::{app::navigation::EntrySplice, model::Location, services::DirectoryChange};
+use crate::{app::navigation::EntrySpliceApplication, model::Location, services::DirectoryChange};
 
 use super::{Browser, BrowserEvent, StagingLoad};
 
@@ -140,10 +140,10 @@ impl Browser {
         }
     }
 
-    fn publish_live_change(
+    pub(super) fn publish_live_change(
         &self,
         depth: usize,
-        application: Option<(Vec<EntrySplice>, Option<usize>)>,
+        application: EntrySpliceApplication,
         focused_was_removed: bool,
     ) {
         let Some((splices, selected)) = application else {

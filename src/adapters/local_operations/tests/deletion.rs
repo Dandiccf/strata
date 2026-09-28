@@ -238,11 +238,12 @@ fn deletion_error_summaries_are_bounded_and_report_the_failure_count() {
 }
 
 #[test]
-fn rotational_deletes_cap_parallelism_without_disabling_it() {
-    assert_eq!(super::bounded_local_delete_worker_count(0, false), 1);
-    assert_eq!(super::bounded_local_delete_worker_count(1, true), 1);
-    assert_eq!(super::bounded_local_delete_worker_count(8, true), 1);
-    assert_eq!(super::bounded_local_delete_worker_count(8, false), 2);
+fn delete_parallelism_is_bounded_for_each_storage_class() {
+    assert_eq!(super::bounded_local_worker_count(0, false), 1);
+    assert_eq!(super::bounded_local_worker_count(1, true), 1);
+    assert_eq!(super::bounded_local_worker_count(8, true), 1);
+    assert_eq!(super::bounded_local_worker_count(8, false), 8);
+    assert_eq!(super::bounded_local_worker_count(32, false), 8);
 }
 
 #[test]

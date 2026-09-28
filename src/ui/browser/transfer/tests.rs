@@ -1849,6 +1849,123 @@ fn normal_copy_and_move_to_keep_home_search_creation_and_reveal() {
 }
 
 #[test]
+fn cancelling_an_operation_keeps_the_live_local_listing_visible() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::cancelling_an_operation_keeps_the_live_local_listing_visible",
+        || {
+            let fixture = tempfile::tempdir().expect("cancelled transfer fixture");
+            std::fs::write(fixture.path().join("copied.txt"), b"copied").expect("copied fixture");
+            let root = Location::local(fixture.path());
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.navigate_location(root.clone());
+            wait_until(
+                || {
+                    view.browser()
+                        .column_snapshot(0)
+                        .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 1)
+                },
+                "the local listing",
+            );
+            let request = view.browser().column_request_id(0).expect("loaded request");
+
+            view.state
+                .handle(&crate::app::BrowserEvent::OperationCancelled {
+                    completed: 1,
+                    failed: 0,
+                    not_attempted: 1,
+                    affected_locations: std::collections::HashSet::from([root]),
+                });
+
+            assert_eq!(view.browser().column_request_id(0), Some(request));
+            let snapshot = view.browser().column_snapshot(0).expect("visible listing");
+            assert!(!snapshot.loading);
+            assert_eq!(snapshot.count, 1);
+        },
+    );
+}
+
+#[test]
+fn transfer_reveal_waits_for_the_live_monitor_instead_of_reloading() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::transfer_reveal_waits_for_the_live_monitor_instead_of_reloading",
+        || {
+            let fixture = tempfile::tempdir().expect("transfer reveal fixture");
+            let destination = Location::local(fixture.path());
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.navigate_location(destination.clone());
+            wait_until(
+                || {
+                    view.browser()
+                        .column_snapshot(0)
+                        .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 0)
+                },
+                "the empty local destination",
+            );
+            let request = view.browser().column_request_id(0).expect("loaded request");
+            let copied = fixture.path().join("copied.txt");
+            std::fs::write(&copied, b"copied").expect("copied fixture");
+
+            view.state
+                .handle(&crate::app::BrowserEvent::TransferReveal {
+                    destination,
+                    locations: vec![Location::local(copied)],
+                });
+
+            assert_eq!(view.browser().column_request_id(0), Some(request));
+        },
+    );
+}
+
+#[test]
+fn revealing_an_already_open_local_destination_keeps_its_live_listing() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::revealing_an_already_open_local_destination_keeps_its_live_listing",
+        || {
+            let fixture = tempfile::tempdir().expect("transfer reveal fixture");
+            let copied = fixture.path().join("copied.txt");
+            std::fs::write(&copied, b"copied").expect("copied fixture");
+            let destination = Location::local(fixture.path());
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.navigate_location(destination.clone());
+            wait_until(
+                || {
+                    view.browser()
+                        .column_snapshot(0)
+                        .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 1)
+                },
+                "the local destination listing",
+            );
+            let request = view.browser().column_request_id(0).expect("loaded request");
+
+            view.state
+                .handle(&crate::app::BrowserEvent::TransferReveal {
+                    destination,
+                    locations: vec![Location::local(&copied)],
+                });
+
+            assert_eq!(view.browser().column_request_id(0), Some(request));
+            assert_eq!(
+                view.browser()
+                    .selected_entries()
+                    .into_iter()
+                    .map(|entry| entry.location)
+                    .collect::<Vec<_>>(),
+                [Location::local(copied)]
+            );
+        },
+    );
+}
+
+#[test]
 fn transfer_noops_preserve_same_folder_copies() {
     for root in [
         Location::local("/fixture"),
