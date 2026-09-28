@@ -43,23 +43,36 @@ const AUDIO_STUCK_TIMEOUT: Duration = Duration::from_secs(3);
 const RESTORE_MIN_US: u64 = 1_000_000;
 const MAX_REMEMBERED_POSITIONS: usize = 128;
 
-static MEDIA_POSITIONS: LazyLock<Mutex<HashMap<PathBuf, u64>>> =
+static MEDIA_POSITIONS: LazyLock<Mutex<HashMap<PathBuf, (u64, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_media_position(path: PathBuf, position: u64) {
     if let Ok(mut positions) = MEDIA_POSITIONS.lock() {
-        if positions.len() >= MAX_REMEMBERED_POSITIONS {
-            positions.clear();
+        if positions.len() >= MAX_REMEMBERED_POSITIONS && !positions.contains_key(&path) {
+            let oldest = positions
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(path, _)| path.clone());
+            if let Some(oldest) = oldest {
+                positions.remove(&oldest);
+            }
         }
-        positions.insert(path, position);
+        positions.insert(path, (position, Instant::now()));
+    }
+}
+
+fn forget_media_position(path: &Path) {
+    if let Ok(mut positions) = MEDIA_POSITIONS.lock() {
+        positions.remove(path);
     }
 }
 
 pub(crate) fn recall_media_position(path: &Path) -> Option<u64> {
-    MEDIA_POSITIONS
-        .lock()
-        .ok()
-        .and_then(|positions| positions.get(path).copied())
+    MEDIA_POSITIONS.lock().ok().and_then(|mut positions| {
+        let entry = positions.get_mut(path)?;
+        entry.1 = Instant::now();
+        Some(entry.0)
+    })
 }
 
 #[cfg(test)]
@@ -171,6 +184,9 @@ mod imp {
                 .is_some_and(|time| time.elapsed() < SEEK_DELAY)
             {
                 self.seek_pending.set(Some((position, Instant::now())));
+                if obj.is_prepared() {
+                    obj.update(position as i64);
+                }
             } else {
                 obj.restart_at(position);
                 if obj.is_prepared() {
@@ -275,6 +291,8 @@ impl DecodedMedia {
             let duration = self.duration().max(0) as u64;
             if position > RESTORE_MIN_US && (duration == 0 || position < duration) {
                 remember_media_position(source.path.clone(), position);
+            } else {
+                forget_media_position(&source.path);
             }
         }
         if let Some(timer) = imp.timer.borrow_mut().take() {
@@ -356,7 +374,7 @@ impl DecodedMedia {
             reason,
             "restarting stalled media playback"
         );
-        self.capture_position();
+        self.capture_position_progress(false);
         let position = imp.position.get();
         self.restart_at(position);
         imp.last_progress.set(Some(Instant::now()));
@@ -364,6 +382,13 @@ impl DecodedMedia {
     }
 
     fn capture_position(&self) {
+        self.capture_position_progress(true);
+    }
+
+    // `clears_recoveries` marks observed forward progress as health. The
+    // recovery-path snapshot passes false: a failure whose playhead still moved
+    // must not erase the strike recover() just recorded.
+    fn capture_position_progress(&self, clears_recoveries: bool) {
         let imp = self.imp();
         if !imp.first_frame.get() {
             return;
@@ -403,7 +428,7 @@ impl DecodedMedia {
                 imp.last_progress.set(Some(Instant::now()));
                 // Wall-clock drift over stuck audio is not health: without
                 // this, dead audio plus working video would restart forever.
-                if audio_flowing {
+                if clears_recoveries && audio_flowing {
                     imp.recoveries.set(0);
                 }
             }
