@@ -116,7 +116,8 @@ fn go_chord_resolves_uris_and_visible_pin_order() {
         go_target(Key::_9, &pins),
         Some(GoTarget::Missing("No pin 9".into()))
     );
-    for key in [Key::z, Key::G, Key::q, Key::space, Key::_0] {
+    assert_eq!(go_target(Key::space, &pins), Some(GoTarget::Prompt));
+    for key in [Key::z, Key::G, Key::q, Key::_0] {
         assert_eq!(go_target(key, &pins), None, "{key:?} is not a place");
     }
 }
@@ -143,12 +144,13 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             fixture.press(Key::g, ModifierType::empty());
             assert_eq!(fixture.shortcuts.chord().text(), "g-");
             assert!(fixture.shortcuts.chord().is_visible());
-            assert!(
-                fixture
-                    .shortcuts
-                    .chord_hint()
-                    .is_some_and(|hint| hint.contains("h home") && hint.contains("1–9 pins"))
-            );
+            let option = |key: &str, action: &str| (key.to_owned(), action.to_owned());
+            wait_until(|| {
+                fixture.shortcuts.chord_options().is_some_and(|options| {
+                    options.contains(&option("h", "Home"))
+                        && options.contains(&option("1–9", "Pins"))
+                })
+            });
             let keycaps = visible_keycaps(&fixture);
             for key in ["h", "d", "k", "p", "v", "1", "2"] {
                 assert!(
@@ -162,11 +164,15 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             );
             fixture.press(Key::Escape, ModifierType::empty());
             assert!(!fixture.shortcuts.chord().is_visible());
-            assert_eq!(fixture.shortcuts.chord_hint(), None);
+            assert_eq!(fixture.shortcuts.chord_options(), None);
             assert!(visible_keycaps(&fixture).is_empty());
             fixture.press(Key::d, ModifierType::empty());
             pump(50);
             assert_eq!(browser.active_location(), origin, "Esc left no pending d");
+            wait_until(|| modal_visible(&fixture.overlay));
+            assert!(click_class(&fixture.overlay, "action-dialog-close"));
+            wait_until(|| !modal_visible(&fixture.overlay));
+            focus_files(&fixture);
 
             for (key, path, feedback) in [
                 (Key::d, &places.downloads, "No Downloads folder"),
@@ -191,6 +197,7 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             for (key, feedback) in [
                 (Key::z, "Unknown chord"),
                 (Key::q, "Unknown chord"),
+                (Key::f, "Nothing to reveal"),
                 (Key::_3, "No pin 3"),
             ] {
                 chord(&fixture, key);
@@ -244,6 +251,11 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
                 Some(Location::local(&places.home)),
                 "mode exit left no pending g"
             );
+            if modal_visible(&fixture.overlay) {
+                assert!(click_class(&fixture.overlay, "action-dialog-close"));
+                wait_until(|| !modal_visible(&fixture.overlay));
+            }
+            focus_files(&fixture);
 
             fixture.press(Key::g, ModifierType::empty());
             fixture.press(Key::comma, ModifierType::CONTROL_MASK);
@@ -288,10 +300,16 @@ fn assert_place_key_does_not_jump(
     fixture: &KeyboardFixture,
     origin: &Option<crate::model::Location>,
 ) {
-    if !shortcut_reference_visible(fixture) {
+    let reference = shortcut_reference_visible(fixture);
+    if !reference {
         focus_files(fixture);
     }
     fixture.press(Key::d, ModifierType::empty());
+    if !reference {
+        wait_until(|| modal_visible(&fixture.overlay));
+        assert!(click_class(&fixture.overlay, "action-dialog-close"));
+        wait_until(|| !modal_visible(&fixture.overlay));
+    }
     pump(50);
     assert_eq!(fixture.view.browser().active_location(), *origin);
     assert_eq!(fixture.shortcuts.armed_chord(), None);
