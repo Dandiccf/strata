@@ -3048,7 +3048,13 @@ fn focusing_the_rename_entry_selects_the_stem() {
             );
             let entry = modal_entry(&overlay).expect("the rename entry");
             assert_eq!(entry.text().as_str(), "photo.jpg");
-            // The entry is prefilled with the stem selected.
+            entry.select_region(0, 0);
+            entry.grab_focus();
+
+            wait_until(
+                || entry.selection_bounds() == Some((0, 5)),
+                "the stem selection to survive focus",
+            );
             let (start, end) = entry.selection_bounds().expect("a selection");
             assert_eq!(
                 (start, end),
@@ -3096,7 +3102,6 @@ fn accepting_a_non_utf8_self_copy_name_does_not_write_a_mangled_copy() {
                 "same-folder paste must open the conflict dialog"
             );
             let entry = modal_entry(&overlay).expect("the rename entry");
-            // Accept the prefilled (lossy) name without editing it.
             entry.emit_by_name::<()>("activate", &[]);
 
             let lossy_name = entry.text().to_string();

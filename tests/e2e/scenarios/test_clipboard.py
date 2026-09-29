@@ -118,8 +118,6 @@ def test_paste_into_explicit_selection_after_returning_to_parent(strata, mode, s
     )
     strata.keyboard.press("ctrl+v")
     if mode == "List" and selection == "click":
-        # Pasting into the folder the file already lives in now prompts
-        # for the copy name; Keep Both keeps the numbered duplicate.
         strata.wait(lambda: strata.dialog() is not None, "the conflict dialog")
         strata.pointer.click(strata.dialog_button("Keep Both"))
     strata.wait(

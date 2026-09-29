@@ -780,7 +780,6 @@ fn validated_child(parent: &gio::File, name: &str) -> Result<gio::File, &'static
     Ok(parent.child(name))
 }
 
-/// Target names must stay inside the destination.
 fn is_single_path_component(name: &OsStr) -> bool {
     let bytes = name.as_bytes();
     !bytes.is_empty()

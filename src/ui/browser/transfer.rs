@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::adapters::gio_file_for_location;
-use crate::adapters::local_operations::{duplicate_candidate_name, parse_copy_suffix};
+use crate::adapters::{duplicate_candidate_name, parse_copy_suffix};
 use crate::app::Browser;
 use crate::model::{FileEntry, Location};
 use crate::services::{
@@ -56,8 +56,6 @@ struct TransferCollision {
     source: Location,
     /// Both colliding items are directories, so their contents can be merged.
     mergeable: bool,
-    /// The target is the source itself (pasting into the source's own folder):
-    /// only renaming or keeping a numbered duplicate makes sense.
     self_copy: bool,
 }
 
@@ -168,7 +166,6 @@ fn transfer_collision(source: &Location, destination: &Location) -> Option<Trans
     })
 }
 
-/// The name Keep Both would allocate for a collision.
 fn first_duplicate_candidate(
     destination: &gio::File,
     source: &Location,
@@ -370,8 +367,6 @@ impl ViewState {
         self.start_transfer_with_reveal(destination, sources, move_sources, true, None, focus);
     }
 
-    /// The explicit Duplicate action skips the conflict prompt that a plain
-    /// same-folder paste shows; the backend assigns numbered names.
     pub(super) fn start_duplicate_transfer(
         self: &Rc<Self>,
         destination: Location,
@@ -703,7 +698,6 @@ impl ViewState {
         let skip = !accepted.is_empty() || !collisions.is_empty();
         let validate_rename = (!move_sources).then(|| {
             let destination_file = gio_file_for_location(&destination);
-            // Keep raw bytes for non-UTF-8 source names.
             let source_display = source.display_name();
             let source_raw = gio_file_for_location(&source)
                 .basename()
@@ -730,7 +724,6 @@ impl ViewState {
             }
             Rc::new(move |name: &str| -> Result<OsString, String> {
                 validate_basename(name).map_err(|err| err.to_string())?;
-                // Map a lossy display name back to raw bytes.
                 let resolved: OsString = match &source_raw {
                     Some(raw) if name == source_display && raw.as_os_str() != OsStr::new(name) => {
                         raw.clone()
@@ -1024,7 +1017,6 @@ impl ViewState {
         let apply_all = form_check_button("Apply to All");
         apply_all.set_visible(actions.apply_to_all);
         layout.actions.prepend(&apply_all);
-        // Rename applies to one item; uncheck the box for the next dialog.
         let inner_choice = on_choice.clone();
         let apply_all_for_rename = apply_all.clone();
         let on_choice = Rc::new(move |choice, apply_to_all| {
@@ -1111,17 +1103,23 @@ impl ViewState {
             crate::ui::accessibility::set_label(&rename_entry, "New name");
             let stem_end = rename_stem_end(name);
             rename_entry.select_region(0, stem_end);
-            // GTK selects the whole name on focus; restore the stem once.
+            // GTK's select-on-focus runs after the focus-enter signal.
             {
-                let restored = std::sync::atomic::AtomicBool::new(false);
+                let restored = Cell::new(false);
                 let focus = gtk::EventControllerFocus::new();
-                focus.connect_enter(move |controller| {
-                    if restored.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let weak = rename_entry.downgrade();
+                focus.connect_enter(move |_| {
+                    if restored.replace(true) {
                         return;
                     }
-                    if let Some(entry) = controller.widget().and_downcast::<gtk::Entry>() {
-                        entry.select_region(0, stem_end);
-                    }
+                    let weak = weak.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(entry) = weak.upgrade()
+                            && entry.is_mapped()
+                        {
+                            entry.select_region(0, stem_end);
+                        }
+                    });
                 });
                 rename_entry.add_controller(focus);
             }
