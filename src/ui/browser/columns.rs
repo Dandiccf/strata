@@ -1380,7 +1380,10 @@ impl ViewState {
             scroll: scroll.clone(),
             overlay: self.overlay.clone(),
             targets: marquee_targets.clone(),
-            is_item: crate::ui::marquee::item_bounds_predicate(marquee_targets),
+            is_item: crate::ui::marquee::item_content_predicate(
+                marquee_targets,
+                Rc::new(crate::ui::pointer::hits_item_content),
+            ),
             clear_selection: Rc::new(move || {
                 if let Some(state) = weak_for_clear.upgrade() {
                     state.clear_column_selections();

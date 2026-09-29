@@ -211,27 +211,34 @@ ROW_DRAG_MODES = [
 
 @pytest.mark.preferences(single_click_previews=True)
 @pytest.mark.parametrize("mode", ROW_DRAG_MODES)
-def test_empty_name_space_drag_respects_view_policy(strata, mode):
-    """Columns keep whole-row dragging; List name whitespace starts selection."""
-
-    fixture = strata.fixture
+def test_empty_name_space_drag_starts_marquee(strata, mode):
     source = strata.entry("todo.txt")
     target = strata.entry("archive")
     start = strata.pointer.row_whitespace_point(source, "todo.txt")
 
     strata.pointer.drag_points(start, target.screen_bounds().center)
+    expect_name_space_marquee(strata)
 
-    if mode == "List":
-        expect_name_space_marquee(strata)
-        return
+
+@pytest.mark.preferences(single_click_previews=True)
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_selected_item_blank_space_starts_file_drag(strata, mode):
+    source = strata.entry("todo.txt")
+    strata.pointer.click(source)
+    strata.wait(lambda: "todo.txt" in strata.selected_names(), "source selection")
+    if mode == "Icons":
+        icon = source.find(role="image")
+        assert icon is not None
+        bounds = icon.screen_bounds()
+        start = (bounds.x - 6, bounds.center[1])
+    else:
+        start = strata.pointer.row_whitespace_point(source, "todo.txt")
+    strata.pointer.drag_points(start, strata.entry("archive").screen_bounds().center)
     strata.wait(
-        lambda: fixture.path("archive/todo.txt").exists(),
-        "the file dragged from empty row space to arrive in archive",
+        lambda: strata.fixture.path("archive/todo.txt").exists(),
+        "the selected file dragged from blank item space",
     )
-    strata.wait(
-        lambda: not fixture.path("todo.txt").exists(),
-        "the file dragged from empty row space to leave its source directory",
-    )
+    assert not strata.fixture.path("todo.txt").exists()
 
 
 def expect_name_space_marquee(strata):
@@ -249,16 +256,16 @@ def drag_from_row_padding(strata, mode, edge):
     source = strata.entry("todo.txt")
     target = strata.entry("archive")
     start = strata.pointer.row_padding_point(source, edge)
-    if mode == "List":
-        start = (strata.pointer.row_whitespace_point(source, "todo.txt")[0], start[1])
+    start = (strata.pointer.row_whitespace_point(source, "todo.txt")[0], start[1])
 
     strata.pointer.drag_points(start, target.screen_bounds().center)
 
-    if mode == "List":
-        expect_name_space_marquee(strata)
-        source = strata.select_entry_with_keyboard("todo.txt")
-        start = metadata_drag_origin(strata, source, edge)
-        strata.pointer.drag_points(start, strata.entry("archive").screen_bounds().center)
+    expect_name_space_marquee(strata)
+    if mode == "Columns":
+        return
+    source = strata.select_entry_with_keyboard("todo.txt")
+    start = metadata_drag_origin(strata, source, edge)
+    strata.pointer.drag_points(start, strata.entry("archive").screen_bounds().center)
     strata.wait(
         lambda: fixture.path("archive/todo.txt").exists(),
         f"the file dragged from {edge} row padding to arrive in archive",

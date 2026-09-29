@@ -105,6 +105,7 @@ impl ListFactory {
                 Some(row.icon.upcast_ref()),
                 &content_click,
                 true,
+                slow_click,
             ),
         );
     }

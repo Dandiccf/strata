@@ -158,6 +158,7 @@ pub(super) fn column_rows(
 
         item.set_child(Some(&row));
         let pending_activation = Rc::new(RefCell::new(None::<PendingPointerActivation>));
+        let was_selected = Rc::new(Cell::new(false));
         let mut content_drag: Option<gtk::DragSource> = None;
         if weak_state.upgrade().is_some_and(|state| state.interactive) {
             let drag = gtk::DragSource::builder()
@@ -171,11 +172,14 @@ pub(super) fn column_rows(
             let search_active_for_drag = search_active_for_factory.clone();
             let search_results_for_drag = search_results_for_factory.clone();
             let selection_for_drag = selection_for_rows.clone();
+            let was_selected_for_drag = was_selected.clone();
             drag.connect_prepare(move |source, x, y| {
                 let prepare_row = prepare_row.upgrade()?;
                 if prepare_row
                     .pick(x, y, gtk::PickFlags::DEFAULT)
                     .is_some_and(|target| crate::ui::focus_navigation::editable(&target))
+                    || (!was_selected_for_drag.get()
+                        && !crate::ui::pointer::hits_item_content(prepare_row.upcast_ref(), x, y))
                 {
                     return None;
                 }
@@ -374,7 +378,6 @@ pub(super) fn column_rows(
         let pending_activation_for_motion = pending_activation.clone();
         let pending_activation_for_release = pending_activation.clone();
         let pending_activation_for_cancel = pending_activation;
-        let was_selected = Rc::new(Cell::new(false));
         let was_selected_for_press = was_selected.clone();
         let was_selected_for_release = was_selected.clone();
         let sequence = crate::ui::collection_interaction::PointerSequence::default();
