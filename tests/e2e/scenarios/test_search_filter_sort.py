@@ -610,3 +610,48 @@ def test_tenxer_footer_search_covers_subfolders_and_restores_the_filter(strata, 
         and strata.window.find(role="label", name="search: photo") is None,
         "the footer to show the restored filter",
     )
+
+
+@pytest.mark.preferences(
+    tenxer_mode=True,
+    type_to_search=False,
+    single_click_previews=False,
+    filter_include_subfolders=False,
+)
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_tenxer_sort_chords_and_dot_keep_the_cursor(strata, mode, root):
+    strata.select_entry_with_keyboard("readme.md")
+
+    strata.keyboard.press(",")
+    strata.wait(lambda: strata.window.find(role="label", name=",-") is not None, "the armed sort chord")
+    strata.keyboard.press("s")
+    strata.wait(
+        lambda: strata.entry_names(root)[-2:] == ["todo.txt", "readme.md"],
+        ", s to sort by size",
+    )
+    strata.keyboard.press(",")
+    strata.keyboard.press("S")
+    strata.wait(
+        lambda: strata.entry_names(root)[-2:] == ["readme.md", "todo.txt"],
+        ", S to reverse the size sort",
+    )
+    strata.wait_for_focused_entry("readme.md")
+
+    before = strata.entry_names(root)
+    strata.keyboard.press(",")
+    strata.keyboard.press("n")
+    strata.wait(lambda: strata.window.find(role="label", name="Unknown chord") is not None, ", n to cancel")
+    assert strata.entry_names(root) == before
+    assert strata.window.find(role="text", states={"editable", "focused"}) is None
+
+    strata.keyboard.press(",")
+    strata.keyboard.press("a")
+    strata.wait(lambda: strata.entry_names(root) == ROOT_ENTRIES, ", a to sort by name")
+    assert strata.window.find(role="text", states={"editable", "focused"}) is None, ", a creates nothing"
+    strata.wait_for_focused_entry("readme.md")
+
+    strata.keyboard.press(".")
+    strata.wait(lambda: ".hidden.txt" in strata.entry_names(root), ". to show hidden files")
+    strata.keyboard.press(".")
+    strata.wait(lambda: ".hidden.txt" not in strata.entry_names(root), ". to hide them again")
+    strata.wait_for_focused_entry("readme.md")

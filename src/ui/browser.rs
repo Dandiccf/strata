@@ -43,6 +43,7 @@ mod dissolve_delete;
 mod entry;
 mod entry_animation;
 mod events;
+mod file_commands;
 pub(in crate::ui) mod find;
 pub(super) mod fly_to_trash;
 mod inline_edit;
@@ -61,12 +62,16 @@ mod result_selection;
 mod transfer;
 mod trash;
 
+#[cfg(test)]
+pub(super) use crate::ui::browser::clipboard::clipboard_mark;
 pub(in crate::ui) use crate::ui::browser::clipboard::drag_icon_with_count;
+pub(super) use crate::ui::browser::clipboard::{
+    ClipboardMark, ClipboardMarks, file_drag_content, mark_in, set_mark_result_style,
+};
 pub(crate) use crate::ui::browser::clipboard::{
     PreparedFileDrop, drag_actions_for_modifiers, file_drop_action, file_drop_commit,
     locations_from_file_list_value, prepare_file_drop_target,
 };
-pub(super) use crate::ui::browser::clipboard::{file_drag_content, set_cut_result_style};
 pub(crate) use crate::ui::browser::collection::{
     ActivePaneFilter, debounce_filter_entry, detach_collection_view, filter_placeholder,
     focus_collection_item_when_allocated, focus_filter_entry, notify_filter_query,
@@ -82,6 +87,9 @@ pub(super) use crate::ui::browser::desktop::{launch_terminal, open_location};
 pub(super) use crate::ui::browser::entry::{
     FOLDER_TYPE_GROUP, OTHER_TYPE_GROUP, entry_filter, entry_icon, entry_model_value,
     format_file_size, icon_for_name, metadata_needs_fill, model_type_group, rounded_size_and_unit,
+};
+pub(crate) use crate::ui::browser::file_commands::{
+    ConflictFocus, CreateRefusal, Yank, can_rename,
 };
 pub(super) use crate::ui::browser::inline_edit::{queue_rename, reveal_rename_row};
 pub(in crate::ui) use crate::ui::browser::listing_filter::{
@@ -185,6 +193,7 @@ pub(super) struct ViewState {
     /// True only while a column row gesture is writing the selection model.
     /// Focus echoes of the cursor are not pointer-owned.
     pointer_owns_selection: Cell<bool>,
+    column_resizing: Cell<bool>,
     horizontal_scroll_generation: Rc<Cell<u64>>,
     suppress_focus_scroll: Cell<bool>,
     /// Set while a footer prompt moves the cursor; the prompt keeps the keys.
@@ -206,6 +215,7 @@ pub(super) struct ViewState {
     pending_rename: RefCell<Option<PendingRename>>,
     rename_generation: Cell<u64>,
     rename_reveal_generation: Cell<u64>,
+    keyboard_refocus: Cell<Option<file_commands::KeyboardRefocus>>,
     pending_click_rename: RefCell<Option<glib::SourceId>>,
     click_rename_generation: Cell<u64>,
     pending_new_entry: RefCell<Option<Rc<PendingEntryRename>>>,
@@ -571,6 +581,7 @@ impl BrowserView {
             context_menu_focus: RefCell::new(None),
             input_ownership: RefCell::new(super::input_ownership::InputOwnership::default()),
             pointer_owns_selection: Cell::new(false),
+            column_resizing: Cell::new(false),
             horizontal_scroll_generation: Rc::new(Cell::new(0)),
             suppress_focus_scroll: Cell::new(false),
             cursor_keeps_focus: Cell::new(false),
@@ -591,6 +602,7 @@ impl BrowserView {
             pending_rename: RefCell::new(None),
             rename_generation: Cell::new(0),
             rename_reveal_generation: Cell::new(0),
+            keyboard_refocus: Cell::new(None),
             pending_click_rename: RefCell::new(None),
             click_rename_generation: Cell::new(0),
             pending_new_entry: RefCell::new(None),
@@ -658,9 +670,8 @@ impl BrowserView {
         state.install_input_ownership();
         state.install_column_peek_targets();
         state.install_drag_autoscroll();
-        if interactive {
-            columns::install_resize_edges(&state);
-        }
+        // Resize edges are mode-agnostic; only transfers stay interactive-only.
+        columns::install_resize_edges(&state);
 
         let weak_state = Rc::downgrade(&state);
         columns::install_horizontal_scroll(&state);
@@ -1354,6 +1365,24 @@ impl BrowserView {
         self.state.cancel_location_edit();
     }
 
+    /// Opens a path or URI typed outside the location bar. A relative path
+    /// resolves against the open native folder; errors use the location bar's
+    /// dialog and leave the current folder open.
+    pub(in crate::ui) fn open_typed_location(&self, input: &str) {
+        let base = self
+            .state
+            .browser
+            .active_location()
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf));
+        if let Err(error) = self.state.open_typed_location(input, base.as_deref()) {
+            show_error_dialog(
+                &self.state.overlay,
+                "Unable to open location",
+                &error.to_string(),
+            );
+        }
+    }
+
     pub fn set_peek_enabled(&self, enabled: bool) {
         self.state.peek_enabled.set(enabled);
         if !enabled {
@@ -1391,8 +1420,13 @@ impl BrowserView {
     }
 
     pub fn create_new_folder(&self) {
-        let mode = self.view_mode();
-        let depth = if mode == BrowserMode::Columns {
+        if let Some((depth, location)) = self.new_entry_parent() {
+            self.state.begin_new_entry(depth, location, true);
+        }
+    }
+
+    fn new_entry_parent(&self) -> Option<(usize, Location)> {
+        let depth = if self.view_mode() == BrowserMode::Columns {
             new_folder_destination_depth(
                 self.state.focused_column_depth(),
                 self.state.browser.active_depth(),
@@ -1400,15 +1434,11 @@ impl BrowserView {
             )
         } else {
             self.state.browser.active_depth()
-        };
-        if let Some((depth, location)) = depth.and_then(|depth| {
-            self.state
-                .browser
-                .location_at(depth)
-                .map(|location| (depth, location))
-        }) {
-            self.state.begin_new_entry(depth, location, true);
-        }
+        }?;
+        self.state
+            .browser
+            .location_at(depth)
+            .map(|location| (depth, location))
     }
 
     pub(in crate::ui) fn set_preview_owns_keys(&self, owned: bool) {
@@ -1474,19 +1504,23 @@ impl BrowserView {
     }
 
     pub fn paste(&self) {
+        if let Some(location) = self.paste_location() {
+            self.state.paste_into(location);
+        }
+    }
+
+    fn paste_location(&self) -> Option<Location> {
         self.state.sync_mode_selection();
         let selected = self.state.browser.selected_entries();
         let column = self
             .state
             .destination_depth()
             .and_then(|depth| self.state.browser.location_at(depth));
-        if let Some(location) = paste_destination(
+        paste_destination(
             &selected,
             column,
             self.state.browser.selection_is_load_cursor(),
-        ) {
-            self.state.paste_into(location);
-        }
+        )
     }
 
     pub fn copy_selection(&self) -> bool {
@@ -1740,15 +1774,18 @@ impl BrowserView {
         if entries.is_empty() {
             return false;
         }
-        let in_trash = self
-            .state
+        let in_trash = self.focused_location_is_trash();
+        self.state.request_delete(entries, permanent || in_trash);
+        true
+    }
+
+    fn focused_location_is_trash(&self) -> bool {
+        self.state
             .focused_column_depth()
             .and_then(|depth| self.state.browser.location_at(depth))
             .or_else(|| self.state.browser.active_location())
             .as_ref()
-            .is_some_and(is_trash_location);
-        self.state.request_delete(entries, permanent || in_trash);
-        true
+            .is_some_and(is_trash_location)
     }
 
     pub fn undo_last_operation(&self) -> bool {
@@ -1978,7 +2015,7 @@ impl BrowserView {
             })
     }
 
-    pub fn page_selection(&self, direction: i32) -> bool {
+    pub fn page_selection(&self, direction: i32, extend: bool) -> bool {
         let focused = self.state.overlay.root().and_then(|root| root.focus());
         let Some((view, scroll)) = focused
             .as_ref()
@@ -1988,6 +2025,25 @@ impl BrowserView {
         };
         let page = super::scrolling::page(&view, &scroll);
         self.state.mode_views.borrow().suppress_focus_scroll();
+        if extend {
+            let order = self
+                .state
+                .browser
+                .active_depth()
+                .and_then(|depth| self.displayed_order(depth));
+            self.state
+                .browser
+                .extend_page_selection(direction, page.items, order.as_deref());
+            let position = self.cursor_view_position(&view);
+            super::scrolling::reveal_cursor(
+                &view,
+                &scroll,
+                direction,
+                super::scrolling::CursorMotion::Page,
+                position,
+            );
+            return true;
+        }
         let target = self.state.browser.active_depth().and_then(|depth| {
             self.state
                 .mode_views

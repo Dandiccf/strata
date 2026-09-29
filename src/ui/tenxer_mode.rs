@@ -85,22 +85,48 @@ pub(crate) enum Chord {
     Go,
     /// **g** while a document or archive preview owns the keys: only **g g**.
     PreviewTop,
+    Copy,
+    Sort,
+    Action,
 }
 
 impl Chord {
     pub(crate) fn mark(self) -> &'static str {
         match self {
             Self::Go | Self::PreviewTop => "g-",
+            Self::Copy => "c-",
+            Self::Sort => ",-",
+            Self::Action => ";-",
         }
     }
 
-    pub(crate) fn hint(self) -> &'static str {
+    pub(crate) fn options(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::Go => {
-                "g first · f hit's folder · h home · d downloads · c config · t trash · n network · \
-                 r recent · k documents · p pictures · v videos · 1–9 pins"
-            }
-            Self::PreviewTop => "g top",
+            Self::Go => &[
+                ("g", "First item"),
+                ("f", "Follow search result"),
+                ("h", "Home"),
+                ("d", "Downloads"),
+                ("c", "Config"),
+                ("t", "Trash"),
+                ("n", "Network"),
+                ("r", "Recent"),
+                ("k", "Documents"),
+                ("p", "Pictures"),
+                ("v", "Videos"),
+                ("1–9", "Pins"),
+                ("Space", "Type a path"),
+            ],
+            Self::PreviewTop => &[("g", "Top")],
+            Self::Copy => &[("c", "Copy path"), ("n", "Copy name")],
+            Self::Sort => &[
+                ("a", "Name"),
+                ("m", "Modified"),
+                ("s", "Size"),
+                ("e", "Type"),
+                ("Shift", "Reverse"),
+            ],
+            Self::Action => &[],
         }
     }
 }
@@ -111,6 +137,11 @@ pub(crate) enum Prompt {
     FindBackward,
     Filter,
     Search,
+    Go,
+    Jump,
+    Recent,
+    Create,
+    Rename,
 }
 
 impl Prompt {
@@ -120,7 +151,16 @@ impl Prompt {
             Self::FindBackward => "?",
             Self::Filter => "filter:",
             Self::Search => "search:",
+            Self::Go => "go \u{203a}",
+            Self::Jump => "jump \u{203a}",
+            Self::Recent => "recent \u{203a}",
+            Self::Create => "create \u{203a}",
+            Self::Rename => "rename \u{203a}",
         }
+    }
+
+    pub(crate) fn picks_history(self) -> bool {
+        matches!(self, Self::Jump | Self::Recent)
     }
 
     pub(crate) fn name(self) -> &'static str {
@@ -129,6 +169,11 @@ impl Prompt {
             Self::FindBackward => "Find backward in this listing",
             Self::Filter => "Filter this listing",
             Self::Search => "Search this folder and its subfolders",
+            Self::Go => "Go to a path or URI",
+            Self::Jump => "Jump to a visited folder",
+            Self::Recent => "Jump to a recently visited folder",
+            Self::Create => "Create a file, or a folder ending in /",
+            Self::Rename => "Rename the focused item",
         }
     }
 }

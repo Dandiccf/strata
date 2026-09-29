@@ -291,3 +291,55 @@ def test_undo_restores_a_completed_move(strata):
         "undo to put the file back",
     )
     assert not fixture.path("archive/todo.txt").exists()
+
+
+TENXER = pytest.mark.preferences(
+    tenxer_mode=True,
+    type_to_search=False,
+    single_click_previews=False,
+)
+
+
+@TENXER
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_tenxer_footer_rename_keeps_contents_and_refuses_conflicts(strata, mode):
+    fixture = strata.fixture
+    root = fixture.root.name
+    strata.select_entry_with_keyboard("todo.txt")
+
+    strata.keyboard.press("r")
+    field = strata.editable_field()
+    strata.wait(lambda: field.text == "todo.txt", "r to fill in the focused name")
+    strata.keyboard.type_text("discarded")
+    strata.keyboard.press("Escape")
+    strata.wait(lambda: strata.window.find(role="text", states={"editable", "focused"}) is None, "Esc to close the prompt")
+    strata.wait_for_focused_entry("todo.txt")
+
+    strata.keyboard.press("F2")
+    field = strata.editable_field()
+    strata.keyboard.press("ctrl+a")
+    strata.keyboard.type_text("readme.md")
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: strata.window.find(role="label", name="“readme.md” already exists") is not None,
+        "the conflict to keep the prompt open with its reason",
+    )
+    assert field.has_state("focused")
+    assert fixture.path("readme.md").read_text() == "# Fixture\n"
+
+    strata.keyboard.press("ctrl+a")
+    strata.keyboard.type_text("done list.txt")
+    strata.keyboard.press("Return")
+    strata.wait(lambda: fixture.path("done list.txt").is_file(), "Enter to rename the file")
+    assert fixture.path("done list.txt").read_text() == "todo\n"
+    assert not fixture.path("todo.txt").exists()
+    strata.wait_for_focused_entry("done list.txt")
+
+    strata.keyboard.press("r")
+    strata.editable_field()
+    strata.keyboard.type_text("clicked")
+    strata.click_entry("readme.md", root)
+    strata.wait(lambda: strata.window.find(role="text", states={"editable", "focused"}) is None, "a click to end the prompt")
+    strata.wait_for_selection(["readme.md"], root)
+    assert fixture.path("done list.txt").is_file()
+    assert not any("clicked" in name for name in fixture.names())

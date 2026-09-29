@@ -90,7 +90,13 @@ fn send_to_display_name(id: &str, root: &Path) -> String {
         .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
-/// Which resolution controls a conflict prompt shows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ConflictFocus {
+    #[default]
+    Replace,
+    KeepBoth,
+}
+
 #[derive(Clone, Copy, Default)]
 struct ConflictActions {
     keep_both: bool,
@@ -98,6 +104,7 @@ struct ConflictActions {
     skip: bool,
     apply_to_all: bool,
     self_copy: bool,
+    focus: ConflictFocus,
 }
 
 struct TransferDialogOptions {
@@ -343,7 +350,24 @@ impl ViewState {
         sources: Vec<Location>,
         move_sources: bool,
     ) {
-        self.start_transfer_with_reveal(destination, sources, move_sources, true, None);
+        self.start_transfer_with_reveal(
+            destination,
+            sources,
+            move_sources,
+            true,
+            None,
+            ConflictFocus::Replace,
+        );
+    }
+
+    pub(super) fn paste_transfer(
+        self: &Rc<Self>,
+        destination: Location,
+        sources: Vec<Location>,
+        move_sources: bool,
+        focus: ConflictFocus,
+    ) {
+        self.start_transfer_with_reveal(destination, sources, move_sources, true, None, focus);
     }
 
     /// The explicit Duplicate action skips the conflict prompt that a plain
@@ -361,7 +385,15 @@ impl ViewState {
                 target_name: None,
             })
             .collect();
-        self.resolve_transfer_collisions(destination, Vec::new(), accepted, false, true, None);
+        self.resolve_transfer_collisions(
+            destination,
+            Vec::new(),
+            accepted,
+            false,
+            true,
+            None,
+            ConflictFocus::Replace,
+        );
     }
 
     pub(super) fn send_to_removable_device(self: &Rc<Self>, id: String, sources: Vec<Location>) {
@@ -479,7 +511,14 @@ impl ViewState {
         sources: Vec<Location>,
         send_to: SendToTransferContext,
     ) {
-        self.start_transfer_with_reveal(destination, sources, false, false, Some(send_to));
+        self.start_transfer_with_reveal(
+            destination,
+            sources,
+            false,
+            false,
+            Some(send_to),
+            ConflictFocus::Replace,
+        );
     }
 
     fn send_to_success_text(device_name: &str, item_count: usize) -> String {
@@ -534,7 +573,14 @@ impl ViewState {
         move_sources: bool,
     ) {
         let reveal = crate::ui::preferences::PreferenceManager::shared().open_folder_after_drop();
-        self.start_transfer_with_reveal(destination, sources, move_sources, reveal, None);
+        self.start_transfer_with_reveal(
+            destination,
+            sources,
+            move_sources,
+            reveal,
+            None,
+            ConflictFocus::Replace,
+        );
     }
 
     /// Paste and explicit "move/copy to" reveal their result independently of
@@ -546,6 +592,7 @@ impl ViewState {
         move_sources: bool,
         reveal: bool,
         send_to: Option<SendToTransferContext>,
+        focus: ConflictFocus,
     ) {
         if is_trash_location(&destination)
             || destination.is_recent_location()
@@ -579,9 +626,14 @@ impl ViewState {
             move_sources,
             reveal,
             send_to,
+            focus,
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each prompt carries the whole paste forward to resolve the next collision"
+    )]
     fn resolve_transfer_collisions(
         self: &Rc<Self>,
         destination: Location,
@@ -590,6 +642,7 @@ impl ViewState {
         move_sources: bool,
         reveal: bool,
         send_to: Option<SendToTransferContext>,
+        focus: ConflictFocus,
     ) {
         if collisions.is_empty() {
             let source_depth = self
@@ -705,6 +758,7 @@ impl ViewState {
                 skip,
                 apply_to_all,
                 self_copy: collision.self_copy,
+                focus,
             },
             validate_rename,
             Rc::new(move |choice, apply_to_all| {
@@ -781,6 +835,7 @@ impl ViewState {
                     move_sources,
                     reveal,
                     send_to_conflict.clone(),
+                    focus,
                 );
             }),
         );
@@ -1037,6 +1092,7 @@ impl ViewState {
             });
         }
 
+        let keep_both_focus = keep_both.clone();
         let mut enter_buttons = vec![
             skip,
             keep_both,
@@ -1152,6 +1208,8 @@ impl ViewState {
                     entry.grab_focus_without_selecting();
                 }
             });
+        } else if actions.focus == ConflictFocus::KeepBoth && actions.keep_both {
+            focus_button(&keep_both_focus);
         } else {
             focus_button(&replace);
         }

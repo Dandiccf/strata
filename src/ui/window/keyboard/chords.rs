@@ -17,7 +17,10 @@ use super::{Dispatcher, KeyResult, command_modifiers, items::is_modifier_key};
 use crate::{
     app::Browser,
     model::Location,
-    ui::{tenxer_mode::Chord, window::home_directory},
+    ui::{
+        tenxer_mode::{Chord, Prompt},
+        window::home_directory,
+    },
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -25,6 +28,7 @@ pub(in crate::ui::window) enum GoTarget {
     FirstItem,
     /// The folder holding the search hit under the cursor.
     HitFolder,
+    Prompt,
     /// `validate` routes URI places through mount-aware validation.
     Place {
         location: Location,
@@ -40,6 +44,7 @@ pub(in crate::ui::window) fn go_target(key: Key, pins: &[Location]) -> Option<Go
     match key {
         Key::g => Some(GoTarget::FirstItem),
         Key::f => Some(GoTarget::HitFolder),
+        Key::space | Key::KP_Space => Some(GoTarget::Prompt),
         Key::h => place(Location::local(home_directory()), false),
         Key::c => config_folder(),
         Key::t => place(Location::uri("trash:///"), false),
@@ -123,11 +128,14 @@ impl Dispatcher {
         if key == Key::Escape && mods.is_empty() {
             return Some(Propagation::Stop);
         }
-        let completed = mods.is_empty()
-            && match chord {
-                Chord::Go => self.complete_go(browser, key),
-                Chord::PreviewTop => key == Key::g && self.preview_to_top(),
-            };
+        let completed = match chord {
+            Chord::Sort => (mods - Modifiers::SHIFT_MASK).is_empty() && self.complete_sort(key),
+            _ if !mods.is_empty() => false,
+            Chord::Go => self.complete_go(browser, key),
+            Chord::PreviewTop => key == Key::g && self.preview_to_top(),
+            Chord::Copy => self.complete_copy(key),
+            Chord::Action => self.complete_action(key),
+        };
         if !completed {
             self.shortcuts.show_feedback("Unknown chord");
         }
@@ -144,6 +152,9 @@ impl Dispatcher {
                 if !self.view.reveal_listing_search_hit() {
                     self.shortcuts.show_feedback("Nothing to reveal");
                 }
+            }
+            GoTarget::Prompt => {
+                self.shortcuts.open_prompt(Prompt::Go);
             }
             GoTarget::Place { location, validate } => {
                 self.view.keyboard_navigation();

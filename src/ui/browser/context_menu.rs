@@ -2008,94 +2008,34 @@ fn prepare_open_with(
     let result = result.clone();
     let generation = generation.clone();
     glib::MainContext::default().spawn_local(async move {
-        let unavailable = |reason: &str| {
-            for button in [&single_button, &multiple_button] {
-                button.set_sensitive(false);
-                set_open_with_explanation(button, Some(reason));
+        let resolved =
+            crate::ui::open_with::resolve(&files, || generation.get() == expected_generation).await;
+        let applications = match resolved {
+            None => return,
+            Some(Ok(applications)) => applications,
+            Some(Err(reason)) => {
+                for button in [&single_button, &multiple_button] {
+                    button.set_sensitive(false);
+                    set_open_with_explanation(button, Some(reason));
+                }
+                return;
             }
         };
-        let mut content_types = Vec::<String>::new();
-        for file in &files {
-            if generation.get() != expected_generation {
-                return;
-            }
-            let info = file
-                .query_info_future(
-                    "standard::type,standard::content-type",
-                    gio::FileQueryInfoFlags::NONE,
-                    glib::Priority::DEFAULT,
-                )
-                .await;
-            if generation.get() != expected_generation {
-                return;
-            }
-            let Ok(info) = info else {
-                unavailable("Unable to read the selected file type");
-                return;
-            };
-            if info.file_type() == gio::FileType::SymbolicLink {
-                unavailable("Broken symbolic links cannot be opened with an application");
-                return;
-            }
-            let Some(next_type) = info.content_type().map(|value| value.to_string()) else {
-                unavailable("Unable to determine the selected file type");
-                return;
-            };
-            if !content_types
-                .iter()
-                .any(|value| gio::content_type_equals(value, &next_type))
-            {
-                content_types.push(next_type);
-            }
-        }
-        if generation.get() != expected_generation {
-            return;
-        }
-        let requires_uris = crate::ui::open_with::requires_uri_handlers(&files);
-        let (recommended_apps, other_apps, default) =
-            common_applications(&content_types, requires_uris);
-        let available = !recommended_apps.is_empty() || !other_apps.is_empty();
-        let explanation = if available {
-            None
-        } else if content_types.len() > 1 {
-            Some("No application can open all selected file types")
-        } else {
-            Some("No compatible applications were found")
-        };
-        open_button.set_visible(default.is_some());
+        let explanation = applications.unavailable_reason();
+        open_button.set_visible(applications.default.is_some());
         result.replace(Some(OpenWithSelection {
             locations,
             files,
-            content_types,
-            recommended_apps,
-            other_apps,
-            default,
+            content_types: applications.content_types,
+            recommended_apps: applications.recommended,
+            other_apps: applications.other,
+            default: applications.default,
         }));
         for button in [&single_button, &multiple_button] {
-            button.set_sensitive(available);
+            button.set_sensitive(explanation.is_none());
             set_open_with_explanation(button, explanation);
         }
     });
-}
-
-fn common_applications(
-    content_types: &[String],
-    requires_uris: bool,
-) -> (Vec<gio::AppInfo>, Vec<gio::AppInfo>, Option<gio::AppInfo>) {
-    let Some(first) = content_types.first() else {
-        return (vec![], vec![], None);
-    };
-    let (mut recommended, _) = crate::ui::open_with::categorized_apps(first, requires_uris);
-    let mut default = gio::AppInfo::default_for_type(first, requires_uris);
-    for content_type in &content_types[1..] {
-        let (next_rec, _) = crate::ui::open_with::categorized_apps(content_type, requires_uris);
-        recommended.retain(|app| next_rec.iter().any(|candidate| candidate.equal(app)));
-        let next_default = gio::AppInfo::default_for_type(content_type, requires_uris);
-        default = default.filter(|app| next_default.as_ref().is_some_and(|next| next.equal(app)));
-    }
-    let other =
-        crate::ui::open_with::filter_other_apps(gio::AppInfo::all(), &recommended, requires_uris);
-    (recommended, other, default)
 }
 
 #[cfg(test)]

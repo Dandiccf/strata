@@ -734,6 +734,8 @@ def test_narrow_window_prioritizes_the_last_column_and_restores_the_latest_previ
     assert column.x + column.width <= strata.preview().screen_bounds().x
     resize(480)
     strata.wait(lambda: strata.preview() is None, "the preview to yield to browsing")
+    # The drawer can disappear before its deferred focus restoration reaches the column.
+    strata.wait(lambda: strata.focused_name() == "inner.txt", "focus to return to the listing")
     strata.keyboard.press("Down")
     strata.wait_for_selection(["nested-notes.txt"])
     resize(900)

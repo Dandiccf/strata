@@ -2,11 +2,15 @@
 
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     rc::Rc,
     time::Duration,
 };
 
 use gtk::{gdk, glib, prelude::*};
+
+use candidates::Candidates;
+use chord_panel::ChordPanel;
 
 use super::{
     browser::FilterStatus,
@@ -16,6 +20,7 @@ use super::{
 
 type Shortcut = (&'static str, &'static str);
 type ChordListener = Box<dyn Fn(Option<Chord>)>;
+type PromptResetListeners = Rc<RefCell<Vec<Box<dyn Fn()>>>>;
 /// `None` while the view is busy rebuilding; the footer then retries on idle.
 type FilterSource = Rc<RefCell<Option<Rc<dyn Fn() -> Option<Option<FilterStatus>>>>>>;
 
@@ -107,27 +112,41 @@ impl CurrentHit {
     }
 }
 
-/// The armed chord and its footer mark. The chord is armed exactly while the
-/// mark is showing.
+/// The chord is armed only while its pill is visible.
 #[derive(Clone)]
 struct ChordIndicator {
     armed: Rc<Cell<Option<Chord>>>,
     mark: glib::WeakRef<gtk::Label>,
-    hint: glib::WeakRef<gtk::Label>,
+    panel: ChordPanel,
     listeners: Rc<RefCell<Vec<ChordListener>>>,
 }
 
 impl ChordIndicator {
     fn set(&self, chord: Option<Chord>) {
+        let rows = chord.map(|chord| {
+            chord
+                .options()
+                .iter()
+                .map(|(key, action)| ((*key).to_owned(), (*action).to_owned()))
+                .collect::<Vec<_>>()
+        });
+        self.set_with(chord, rows.unwrap_or_default());
+    }
+
+    fn set_with(&self, chord: Option<Chord>, rows: Vec<(String, String)>) {
+        let previous = self.armed.replace(chord);
         if let Some(mark) = self.mark.upgrade() {
             mark.set_text(chord.map_or("", Chord::mark));
             mark.set_visible(chord.is_some());
+            match chord {
+                Some(chord) if previous != Some(chord) => {
+                    self.panel.show(&mark, chord, &rows, self.armed.clone());
+                }
+                Some(_) => {}
+                None => self.panel.hide(),
+            }
         }
-        if let Some(hint) = self.hint.upgrade() {
-            hint.set_text(chord.map_or("", Chord::hint));
-            hint.set_visible(chord.is_some());
-        }
-        if self.armed.replace(chord) != chord {
+        if previous != chord {
             for listener in self.listeners.borrow().iter() {
                 listener(chord);
             }
@@ -279,7 +298,12 @@ struct PromptBar {
     bar: gtk::Box,
     label: gtk::Label,
     entry: gtk::Entry,
+    hint: gtk::Label,
     kind: Rc<Cell<Option<Prompt>>>,
+    resets: PromptResetListeners,
+    /// Set while a [`PromptSink`] replaces the text, which is not an edit.
+    replacing: Rc<Cell<bool>>,
+    candidates: Rc<Candidates>,
 }
 
 #[derive(Clone)]
@@ -287,7 +311,11 @@ struct WeakPromptBar {
     bar: glib::WeakRef<gtk::Box>,
     label: glib::WeakRef<gtk::Label>,
     entry: glib::WeakRef<gtk::Entry>,
+    hint: glib::WeakRef<gtk::Label>,
     kind: Rc<Cell<Option<Prompt>>>,
+    resets: PromptResetListeners,
+    replacing: Rc<Cell<bool>>,
+    candidates: Rc<Candidates>,
 }
 
 impl PromptBar {
@@ -301,13 +329,23 @@ impl PromptBar {
         entry.add_css_class("form-control");
         entry.add_css_class("shortcut-footer-prompt");
         entry.set_hexpand(true);
+        let hint = gtk::Label::new(None);
+        hint.add_css_class("shortcut-footer-chord-hint");
+        hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        hint.set_visible(false);
         bar.append(&label);
         bar.append(&entry);
+        bar.append(&hint);
+        let candidates = Candidates::attach(&entry);
         Self {
             bar,
             label,
             entry,
+            hint,
             kind: Rc::new(Cell::new(None)),
+            resets: Rc::default(),
+            replacing: Rc::default(),
+            candidates,
         }
     }
 
@@ -316,7 +354,28 @@ impl PromptBar {
             bar: self.bar.downgrade(),
             label: self.label.downgrade(),
             entry: self.entry.downgrade(),
+            hint: self.hint.downgrade(),
             kind: self.kind.clone(),
+            resets: self.resets.clone(),
+            replacing: self.replacing.clone(),
+            candidates: self.candidates.clone(),
+        }
+    }
+
+    fn set_hint(&self, text: Option<&str>) {
+        self.hint.set_text(text.unwrap_or_default());
+        self.hint.set_visible(text.is_some());
+        self.entry
+            .update_property(&[gtk::accessible::Property::Description(
+                text.unwrap_or_default(),
+            )]);
+    }
+
+    fn reset(&self) {
+        self.set_hint(None);
+        self.candidates.clear();
+        for listener in self.resets.borrow().iter() {
+            listener();
         }
     }
 
@@ -336,6 +395,9 @@ impl PromptBar {
         // Replacing an open prompt must not hand its text to the new kind.
         self.kind.set(None);
         self.entry.set_text("");
+        self.reset();
+        // Undo history could otherwise bring back typed credentials.
+        self.entry.set_enable_undo(kind != Prompt::Go);
         self.kind.set(Some(kind));
         self.label.set_text(kind.label());
         super::accessibility::set_label(&self.entry, kind.name());
@@ -352,6 +414,7 @@ impl PromptBar {
         self.kind.set(None);
         self.entry.set_text("");
         self.bar.set_visible(false);
+        self.reset();
     }
 }
 
@@ -361,8 +424,38 @@ impl WeakPromptBar {
             bar: self.bar.upgrade()?,
             label: self.label.upgrade()?,
             entry: self.entry.upgrade()?,
+            hint: self.hint.upgrade()?,
             kind: self.kind.clone(),
+            resets: self.resets.clone(),
+            replacing: self.replacing.clone(),
+            candidates: self.candidates.clone(),
         })
+    }
+}
+
+pub(in crate::ui) struct PromptSink {
+    prompt: WeakPromptBar,
+    kind: Prompt,
+}
+
+impl PromptSink {
+    /// Replaces the text (caret at the end) and the hint, but only while the
+    /// same kind of prompt is still open.
+    pub(in crate::ui) fn show(&self, text: Option<&str>, hint: Option<&str>) {
+        let Some(prompt) = self.prompt.upgrade() else {
+            return;
+        };
+        if prompt.kind.get() != Some(self.kind) || !prompt.bar.is_visible() {
+            return;
+        }
+        if let Some(text) = text {
+            // GTK reports a replacement as two changes: cleared, then filled.
+            prompt.replacing.set(true);
+            prompt.entry.set_text(text);
+            prompt.replacing.set(false);
+            prompt.entry.set_position(-1);
+        }
+        prompt.set_hint(hint);
     }
 }
 
@@ -387,16 +480,12 @@ impl ShortcutFooter {
         super::accessibility::set_label(&tag, crate::ui::tenxer_mode::TAG_NAME);
         tag.set_visible(false);
         let chord = gtk::Label::new(None);
-        chord.add_css_class("shortcut-footer-chord");
+        chord.add_css_class("shortcut-footer-chord-pill");
         chord.set_visible(false);
-        let chord_hint = gtk::Label::new(None);
-        chord_hint.add_css_class("shortcut-footer-chord-hint");
-        chord_hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        chord_hint.set_visible(false);
         let chords = ChordIndicator {
             armed: Rc::new(Cell::new(None)),
             mark: chord.downgrade(),
-            hint: chord_hint.downgrade(),
+            panel: ChordPanel::attach(&chord),
             listeners: Rc::new(RefCell::new(Vec::new())),
         };
         let visual = gtk::Label::new(None);
@@ -415,12 +504,10 @@ impl ShortcutFooter {
         status.append(&paste);
         status.append(&filter);
         status.append(&visual);
-        status.append(&chord);
-        status.append(&chord_hint);
-        // Transient marks grow leftward so the pill stays put.
-        status.append(&tag);
         status.append(&feedback);
         status.append(&count);
+        status.append(&chord);
+        status.append(&tag);
         root.add_child(&status);
         root.add_child(&prompt.bar);
         let show_hints = Rc::new(Cell::new(true));
@@ -694,7 +781,6 @@ impl ShortcutFooter {
             more.clone().upcast(),
             tag.clone().upcast(),
             chord.clone().upcast(),
-            chord_hint.clone().upcast(),
             visual.clone().upcast(),
             filter.clone().upcast(),
             current.root.clone().upcast(),
@@ -1017,18 +1103,47 @@ impl ShortcutFooter {
         self.prompt.open(&self.root, kind, text)
     }
 
-    /// Runs `listener` as the open prompt's text changes, not when a prompt
-    /// opens empty or closes.
+    pub(in crate::ui) fn select_prompt_region(&self, start: i32, end: i32) {
+        self.prompt.entry.select_region(start, end);
+    }
+
+    /// Runs `listener` as the open prompt's text is edited, not when a prompt
+    /// opens empty or closes, or a [`PromptSink`] replaces the text.
     pub(in crate::ui) fn connect_prompt_changed(
         &self,
         listener: impl Fn(Prompt, String) + 'static,
     ) {
         let kind = self.prompt.kind.clone();
+        let replacing = self.prompt.replacing.clone();
         self.prompt.entry.connect_changed(move |entry| {
+            if replacing.get() {
+                return;
+            }
             if let Some(kind) = kind.get() {
                 listener(kind, entry.text().to_string());
             }
         });
+    }
+
+    /// Runs `listener` whenever a prompt opens or closes, so work tied to the
+    /// previous text can be dropped.
+    pub(in crate::ui) fn connect_prompt_reset(&self, listener: impl Fn() + 'static) {
+        self.prompt.resets.borrow_mut().push(Box::new(listener));
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn prompt_hint(&self) -> Option<String> {
+        self.prompt
+            .hint
+            .is_visible()
+            .then(|| self.prompt.hint.text().to_string())
+    }
+
+    pub(in crate::ui) fn prompt_sink(&self, kind: Prompt) -> PromptSink {
+        PromptSink {
+            prompt: self.prompt.downgrade(),
+            kind,
+        }
     }
 
     #[cfg(test)]
@@ -1085,8 +1200,49 @@ impl ShortcutFooter {
         self.prompt.close();
     }
 
+    pub(in crate::ui) fn show_candidates(&self, paths: Vec<PathBuf>) {
+        if self.prompt.bar.is_visible() {
+            self.prompt.candidates.set(paths);
+        }
+    }
+
+    pub(in crate::ui) fn step_candidate(&self, delta: i32) {
+        self.prompt.candidates.step(delta);
+    }
+
+    pub(in crate::ui) fn chosen_candidate(&self) -> Option<PathBuf> {
+        self.prompt.candidates.chosen()
+    }
+
+    pub(in crate::ui) fn candidate_position(&self) -> Option<(usize, usize)> {
+        self.prompt.candidates.position()
+    }
+
+    pub(in crate::ui) fn connect_candidate_activated(&self, listener: impl Fn(PathBuf) + 'static) {
+        self.prompt.candidates.connect_activated(listener);
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn candidates(&self) -> Vec<PathBuf> {
+        self.prompt.candidates.paths()
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn candidates_shown(&self) -> bool {
+        self.prompt.candidates.is_shown()
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn click_candidate(&self, index: usize) {
+        self.prompt.candidates.activate(index);
+    }
+
     pub(in crate::ui) fn arm_chord(&self, chord: Chord) {
         self.chords.set(Some(chord));
+    }
+
+    pub(in crate::ui) fn arm_chord_with(&self, chord: Chord, rows: Vec<(String, String)>) {
+        self.chords.set_with(Some(chord), rows);
     }
 
     pub(in crate::ui) fn armed_chord(&self) -> Option<Chord> {
@@ -1107,9 +1263,8 @@ impl ShortcutFooter {
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn chord_hint(&self) -> Option<String> {
-        let hint = self.chords.hint.upgrade()?;
-        hint.is_visible().then(|| hint.text().to_string())
+    pub(in crate::ui) fn chord_options(&self) -> Option<Vec<(String, String)>> {
+        self.chords.panel.shown_options()
     }
 
     pub(in crate::ui) fn prompt_is_visible(&self) -> bool {
@@ -1838,5 +1993,7 @@ fn append_section(parent: &gtk::Box, title: &str, shortcuts: &[Shortcut], compac
     parent.append(&section);
 }
 
+mod candidates;
+mod chord_panel;
 #[cfg(test)]
 mod tests;

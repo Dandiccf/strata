@@ -9,7 +9,17 @@ use gtk::{
 };
 
 use super::{Dispatcher, KeyResult, command_modifiers};
-use crate::{app::Browser, ui::tenxer_mode::Prompt};
+use crate::{
+    app::Browser,
+    model::Location,
+    services::NavigationHistory,
+    ui::{
+        browser::CreateRefusal,
+        go_completion::{Context, Step},
+        shortcut_footer::{PromptSink, ShortcutFooter},
+        tenxer_mode::Prompt,
+    },
+};
 
 fn plain(modifiers: Modifiers) -> bool {
     !command_modifiers(modifiers)
@@ -17,9 +27,7 @@ fn plain(modifiers: Modifiers) -> bool {
 }
 
 impl Dispatcher {
-    /// **/**, **?**, **n**, **N**, **f**, **s**, and the filter and search
-    /// **Esc** steps from the listing. Shift is ignored because some layouts
-    /// type **/** with it and **?** / **N** always need it.
+    /// Shift is ignored because some layouts type **/** with it and **?** / **N** need it.
     pub(super) fn tenxer_prompt_keys(&self, key: Key, modifiers: Modifiers) -> KeyResult {
         if !plain(modifiers) || !self.view.item_view_has_focus() {
             return None;
@@ -27,6 +35,17 @@ impl Dispatcher {
         match key {
             Key::slash | Key::KP_Divide => self.shortcuts.open_prompt(Prompt::Find),
             Key::question => self.shortcuts.open_prompt(Prompt::FindBackward),
+            Key::z | Key::Z => {
+                let kind = if key == Key::z {
+                    Prompt::Jump
+                } else {
+                    Prompt::Recent
+                };
+                let opened = self.shortcuts.open_prompt(kind);
+                let browser = self.view.browser();
+                show_history_candidates(&self.shortcuts, &self.history, &browser, kind);
+                opened
+            }
             Key::n | Key::N => {
                 self.repeat_find(key == Key::N);
                 return Some(Propagation::Stop);
@@ -42,26 +61,9 @@ impl Dispatcher {
                     true
                 }
             },
-            Key::Escape if self.view.listing_search_active() => {
-                self.dismiss_search_step();
-                return Some(Propagation::Stop);
-            }
-            Key::Escape if self.view.clear_listing_filter() => return Some(Propagation::Stop),
             _ => return None,
         };
         Some(Propagation::Stop)
-    }
-
-    fn dismiss_search_step(&self) {
-        if self.view.leave_visual() || self.view.dismiss_find_highlight() {
-            return;
-        }
-        if self.preview.is_enabled() {
-            self.preview.close();
-            self.view.focus_listing_search();
-            return;
-        }
-        self.view.dismiss_listing_search();
     }
 
     fn repeat_find(&self, reverse: bool) {
@@ -92,7 +94,21 @@ impl Dispatcher {
         if !plain(modifiers) {
             return Propagation::Proceed;
         }
+        let kind = self.shortcuts.open_prompt_kind();
         match key {
+            Key::Tab | Key::KP_Tab | Key::ISO_Left_Tab if kind == Some(Prompt::Go) => {
+                let backward =
+                    key == Key::ISO_Left_Tab || modifiers.contains(Modifiers::SHIFT_MASK);
+                self.complete_folder(browser, backward);
+            }
+            Key::Escape
+                if kind.is_some_and(|kind| {
+                    matches!(kind, Prompt::Go | Prompt::Create | Prompt::Rename)
+                        || kind.picks_history()
+                }) =>
+            {
+                self.return_to_listing(browser)
+            }
             Key::Escape => {
                 if self.shortcuts.open_prompt_kind() == Some(Prompt::Filter) {
                     self.shortcuts.dismiss_prompt();
@@ -111,6 +127,18 @@ impl Dispatcher {
                 self.return_to_listing(browser);
             }
             Key::Return | Key::KP_Enter => self.submit_prompt(browser),
+            Key::Up | Key::KP_Up | Key::Down | Key::KP_Down
+                if kind.is_some_and(Prompt::picks_history) =>
+            {
+                let delta = if matches!(key, Key::Up | Key::KP_Up) {
+                    -1
+                } else {
+                    1
+                };
+                self.shortcuts.step_candidate(delta);
+                show_candidate_hint(&self.shortcuts);
+            }
+            Key::Up | Key::KP_Up | Key::Down | Key::KP_Down if kind == Some(Prompt::Rename) => {}
             Key::Up | Key::KP_Up => self.view.step_cursor_unfocused(-1),
             Key::Down | Key::KP_Down => self.view.step_cursor_unfocused(1),
             _ => return Propagation::Proceed,
@@ -131,6 +159,35 @@ impl Dispatcher {
                 self.view.commit_listing_search(&text);
                 return;
             }
+            Some(Prompt::Go) => {
+                // Closing clears the entry before navigation can show a dialog.
+                self.return_to_listing(browser);
+                if !text.trim().is_empty() {
+                    self.view.keyboard_navigation();
+                    self.view.open_typed_location(&text);
+                }
+                return;
+            }
+            Some(Prompt::Jump | Prompt::Recent) => {
+                let Some(path) = self.shortcuts.chosen_candidate() else {
+                    show_candidate_hint(&self.shortcuts);
+                    return;
+                };
+                self.return_to_listing(browser);
+                self.view.keyboard_navigation();
+                self.view
+                    .browser()
+                    .navigate_with_selection(Location::local(path), true);
+                return;
+            }
+            Some(Prompt::Create) => {
+                self.submit_create(browser, &text);
+                return;
+            }
+            Some(Prompt::Rename) => {
+                self.submit_rename(browser, &text);
+                return;
+            }
             _ if text.is_empty() => true,
             Some(kind @ (Prompt::Find | Prompt::FindBackward)) => {
                 self.view.find(&text, kind == Prompt::FindBackward, false)
@@ -144,10 +201,122 @@ impl Dispatcher {
         }
     }
 
+    fn complete_folder(&self, browser: &Browser, backward: bool) {
+        let text = self.shortcuts.prompt_text();
+        let current = browser
+            .active_location()
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf));
+        let home = gtk::glib::home_dir();
+        let listing = |include_hidden| {
+            browser
+                .active_depth()
+                .map(|depth| browser.folder_names(depth, include_hidden))
+                .unwrap_or_default()
+        };
+        let context = Context {
+            current: current.as_deref(),
+            home: &home,
+            show_hidden: browser.preferences().show_hidden,
+            listing: &listing,
+        };
+        let sink = self.shortcuts.prompt_sink(Prompt::Go);
+        let later = self.shortcuts.prompt_sink(Prompt::Go);
+        let step = self.go.step(&text, backward, &context, move |step| {
+            show_step(&later, step)
+        });
+        show_step(&sink, step);
+    }
+
+    fn submit_create(&self, browser: &Browser, text: &str) {
+        let hint = match self.view.create_typed_entry(text) {
+            Ok(()) => return self.return_to_listing(browser),
+            Err(CreateRefusal::Invalid(message)) => message.to_owned(),
+            Err(CreateRefusal::Exists(name)) => {
+                format!("\u{201c}{name}\u{201d} already exists")
+            }
+            Err(CreateRefusal::Unsupported) => {
+                self.return_to_listing(browser);
+                self.shortcuts
+                    .show_feedback("Can\u{2019}t create items here");
+                return;
+            }
+        };
+        self.shortcuts
+            .prompt_sink(Prompt::Create)
+            .show(None, Some(&hint));
+    }
+
+    fn submit_rename(&self, browser: &Browser, text: &str) {
+        let Some(entry) = self.rename_target.borrow().clone() else {
+            return self.return_to_listing(browser);
+        };
+        let hint = match self.view.rename_typed_entry(entry, text) {
+            Ok(()) => return self.return_to_listing(browser),
+            Err(CreateRefusal::Invalid(message)) => message.to_owned(),
+            Err(CreateRefusal::Exists(name)) => {
+                format!("\u{201c}{name}\u{201d} already exists")
+            }
+            Err(CreateRefusal::Unsupported) => {
+                self.return_to_listing(browser);
+                self.shortcuts
+                    .show_feedback("Can\u{2019}t rename items here");
+                return;
+            }
+        };
+        self.shortcuts
+            .prompt_sink(Prompt::Rename)
+            .show(None, Some(&hint));
+    }
+
     fn return_to_listing(&self, browser: &Browser) {
         self.shortcuts.dismiss_prompt();
         if !self.view.focus_visible_results() {
             browser.focus_active();
         }
+    }
+}
+
+pub(super) fn show_history_candidates(
+    shortcuts: &ShortcutFooter,
+    history: &NavigationHistory,
+    browser: &Browser,
+    kind: Prompt,
+) {
+    if !kind.picks_history() || shortcuts.open_prompt_kind() != Some(kind) {
+        return;
+    }
+    let text = shortcuts.prompt_text();
+    let current = browser.active_location();
+    let excluded = current.as_ref().and_then(Location::native_path);
+    let items = if kind == Prompt::Jump {
+        history.search_excluding(&text, excluded)
+    } else {
+        history.recent_excluding(&text, excluded)
+    };
+    let paths = items.into_iter().map(|item| item.path).collect();
+    shortcuts.show_candidates(paths);
+    show_candidate_hint(shortcuts);
+}
+
+fn show_candidate_hint(shortcuts: &ShortcutFooter) {
+    let Some(kind) = shortcuts.open_prompt_kind() else {
+        return;
+    };
+    let hint = match shortcuts.candidate_position() {
+        None => Some("No matching folders".to_owned()),
+        Some((_, 1)) => None,
+        Some((index, count)) => Some(format!("{} of {count}", index + 1)),
+    };
+    shortcuts.prompt_sink(kind).show(None, hint.as_deref());
+}
+
+fn show_step(sink: &PromptSink, step: Step) {
+    match step {
+        Step::Complete { text, index, count } => {
+            let position = (count > 1).then(|| format!("{} of {count}", index + 1));
+            sink.show(Some(&text), position.as_deref());
+        }
+        Step::Pending => sink.show(None, Some("Listing folders\u{2026}")),
+        Step::Hint(hint) => sink.show(None, Some(hint.text())),
     }
 }

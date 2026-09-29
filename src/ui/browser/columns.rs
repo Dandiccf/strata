@@ -129,6 +129,7 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
             gesture.set_state(gtk::EventSequenceState::Denied);
             return;
         };
+        state.column_resizing.set(true);
         let now = glib::monotonic_time() as u64;
         let autofit = last_press
             .borrow()
@@ -156,7 +157,10 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
             Some((shell.clone(), shell.width().max(COLUMN_WIDTH), pointer_x));
         gesture.set_state(gtk::EventSequenceState::Claimed);
     });
+    let weak_for_end = Rc::downgrade(state);
     let active_for_update = active.clone();
+    let active_for_end = active.clone();
+    let active_for_cancel = active.clone();
     resize.connect_drag_update(move |gesture, fallback_offset_x, _| {
         let active = active_for_update.borrow();
         let Some((shell, initial, start)) = active.as_ref() else {
@@ -169,7 +173,17 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
         shell.set_size_request(resized_column_width(*initial, offset_x), -1);
     });
     resize.connect_drag_end(move |_, _, _| {
-        active.borrow_mut().take();
+        active_for_end.borrow_mut().take();
+        if let Some(state) = weak_for_end.upgrade() {
+            state.column_resizing.set(false);
+        }
+    });
+    let weak_for_cancel = Rc::downgrade(state);
+    resize.connect_cancel(move |_, _| {
+        active_for_cancel.borrow_mut().take();
+        if let Some(state) = weak_for_cancel.upgrade() {
+            state.column_resizing.set(false);
+        }
     });
     state.scroller.add_controller(resize);
 }
@@ -549,8 +563,8 @@ pub(super) fn set_active_path_style(row: &gtk::Box, active: bool, immediate: boo
     }
 }
 
-pub(super) fn set_cut_path_style(row: &gtk::Box, cut: bool) {
-    if cut {
+pub(super) fn set_mark_path_style(row: &gtk::Box, mark: super::clipboard::ClipboardMark) {
+    if mark == super::clipboard::ClipboardMark::Cut {
         row.add_css_class("cut");
     } else {
         row.remove_css_class("cut");
@@ -559,7 +573,7 @@ pub(super) fn set_cut_path_style(row: &gtk::Box, cut: bool) {
         .first_child()
         .and_downcast::<crate::ui::thumbnail::ThumbnailSlot>()
     {
-        icon.set_cut(cut);
+        icon.set_mark(mark);
     }
 }
 
@@ -1366,7 +1380,10 @@ impl ViewState {
             scroll: scroll.clone(),
             overlay: self.overlay.clone(),
             targets: marquee_targets.clone(),
-            is_item: crate::ui::marquee::item_bounds_predicate(marquee_targets),
+            is_item: crate::ui::marquee::item_content_predicate(
+                marquee_targets,
+                Rc::new(crate::ui::pointer::hits_item_content),
+            ),
             clear_selection: Rc::new(move || {
                 if let Some(state) = weak_for_clear.upgrade() {
                     state.clear_column_selections();

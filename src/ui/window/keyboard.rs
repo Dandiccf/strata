@@ -13,8 +13,12 @@ use gtk::{
 
 use crate::{
     app::Browser,
+    services::NavigationHistory,
     ui::{
-        browser::BrowserView, preview::PreviewDrawer, shortcut_footer::ShortcutFooter,
+        browser::BrowserView,
+        go_completion::{FolderSource, GoCompletion},
+        preview::PreviewDrawer,
+        shortcut_footer::ShortcutFooter,
         top_bar_navigation::TopBarNavigation,
     },
 };
@@ -23,6 +27,8 @@ use super::{SidebarState, SidebarView, TypeToSearch, visible_modal_layer};
 
 pub(super) mod chords;
 mod commands;
+mod escape;
+mod files;
 mod focus;
 mod items;
 mod preview;
@@ -42,6 +48,8 @@ pub(super) struct Bindings {
     pub preview: PreviewDrawer,
     pub type_to_search: TypeToSearch,
     pub shortcuts: ShortcutFooter,
+    pub folders: Rc<dyn FolderSource>,
+    pub history: Rc<NavigationHistory>,
 }
 
 pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bindings: Bindings) {
@@ -55,6 +63,11 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
         preview: bindings.preview,
         type_to_search: bindings.type_to_search,
         shortcuts: bindings.shortcuts,
+        go: GoCompletion::new(bindings.folders),
+        history: bindings.history,
+        rename_target: Rc::default(),
+        armed_actions: RefCell::default(),
+        open_with: files::OpenWithLookup::default(),
         sidebar: SidebarFocus {
             state: sidebar.state.clone(),
             widget: sidebar.widget.clone(),
@@ -71,7 +84,19 @@ pub(super) fn install(window: &gtk::ApplicationWindow, sidebar: &SidebarView, bi
     // gtk_window_destroy() unrealizes while other references still exist, so the
     // Widget::destroy signal is too late to drop a pending chord.
     let cancel_on_destroy = dispatcher.shortcuts.clone();
-    window.connect_unrealize(move |_| cancel_on_destroy.cancel_chord());
+    let go_on_destroy = dispatcher.go.clone();
+    let open_with_on_destroy = dispatcher.open_with.clone();
+    window.connect_unrealize(move |_| {
+        cancel_on_destroy.cancel_chord();
+        go_on_destroy.invalidate();
+        open_with_on_destroy.invalidate();
+    });
+    let rename_target = dispatcher.rename_target.clone();
+    dispatcher
+        .shortcuts
+        .connect_prompt_reset(move || drop(rename_target.take()));
+    bind_go_completion(&dispatcher);
+    bind_history_prompts(&dispatcher);
     let preferences = dispatcher.type_to_search.preferences.clone();
     release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
     clear_find_on_mode_exit(window, &dispatcher, &weak_browser);
@@ -168,6 +193,66 @@ fn bind_footer_filter(dispatcher: &Dispatcher) {
         .connect_search_selection_changed(Rc::new(move || shortcuts.schedule_filter_refresh()));
 }
 
+/// Opening, closing, or editing a prompt discards go completion that belongs to
+/// earlier text. Completion's own replacements are not edits.
+fn bind_go_completion(dispatcher: &Dispatcher) {
+    let go = dispatcher.go.clone();
+    dispatcher
+        .shortcuts
+        .connect_prompt_reset(move || go.invalidate());
+    let go = dispatcher.go.clone();
+    let hint = dispatcher
+        .shortcuts
+        .prompt_sink(crate::ui::tenxer_mode::Prompt::Go);
+    let create_hint = dispatcher
+        .shortcuts
+        .prompt_sink(crate::ui::tenxer_mode::Prompt::Create);
+    let rename_hint = dispatcher
+        .shortcuts
+        .prompt_sink(crate::ui::tenxer_mode::Prompt::Rename);
+    dispatcher
+        .shortcuts
+        .connect_prompt_changed(move |kind, _| match kind {
+            crate::ui::tenxer_mode::Prompt::Go => {
+                go.invalidate();
+                hint.show(None, None);
+            }
+            crate::ui::tenxer_mode::Prompt::Create => create_hint.show(None, None),
+            crate::ui::tenxer_mode::Prompt::Rename => rename_hint.show(None, None),
+            _ => {}
+        });
+}
+
+fn bind_history_prompts(dispatcher: &Dispatcher) {
+    let shortcuts = dispatcher.shortcuts.clone();
+    let history = dispatcher.history.clone();
+    let browser = Rc::downgrade(&dispatcher.view.browser());
+    dispatcher.shortcuts.connect_prompt_changed(move |kind, _| {
+        if let Some(browser) = browser.upgrade() {
+            prompts::show_history_candidates(&shortcuts, &history, &browser, kind);
+        }
+    });
+    let shortcuts = dispatcher.shortcuts.clone();
+    let view = dispatcher.view.clone();
+    dispatcher
+        .shortcuts
+        .connect_candidate_activated(move |path| {
+            if !shortcuts
+                .open_prompt_kind()
+                .is_some_and(crate::ui::tenxer_mode::Prompt::picks_history)
+            {
+                return;
+            }
+            shortcuts.dismiss_prompt();
+            if !view.focus_visible_results() {
+                view.browser().focus_active();
+            }
+            view.keyboard_navigation();
+            view.browser()
+                .navigate_with_selection(crate::model::Location::local(path), true);
+        });
+}
+
 /// Leaving 10xer mode forgets the find, footer filters, and search, and hands a focused
 /// prompt's keys back to the listing.
 fn clear_find_on_mode_exit(
@@ -177,6 +262,7 @@ fn clear_find_on_mode_exit(
 ) {
     let view = dispatcher.view.downgrade();
     let shortcuts = dispatcher.shortcuts.clone();
+    let open_with = dispatcher.open_with.clone();
     let browser = browser.clone();
     crate::ui::preferences::PreferenceManager::shared().bind_preference(
         window,
@@ -186,6 +272,7 @@ fn clear_find_on_mode_exit(
                 shortcuts.refresh_filter();
                 return;
             }
+            open_with.invalidate();
             if let Some(view) = view.upgrade() {
                 view.clear_find();
                 view.forget_listing_search();
@@ -373,6 +460,11 @@ struct Dispatcher {
     preview: PreviewDrawer,
     type_to_search: TypeToSearch,
     shortcuts: ShortcutFooter,
+    go: GoCompletion,
+    history: Rc<NavigationHistory>,
+    rename_target: Rc<RefCell<Option<crate::model::FileEntry>>>,
+    armed_actions: RefCell<Option<files::ArmedActions>>,
+    open_with: files::OpenWithLookup,
 }
 
 struct KeyEvent {
@@ -409,6 +501,9 @@ impl KeyEvent {
 
 impl Dispatcher {
     fn handle_key(&self, browser: &Rc<Browser>, key: Key, modifiers: Modifiers) -> Propagation {
+        if !items::is_modifier_key(key) {
+            self.open_with.invalidate();
+        }
         let preferences = &self.type_to_search.preferences;
         if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
             // Text-size shortcuts run before the chord consumer. Drop the mark
@@ -595,7 +690,13 @@ impl Dispatcher {
         {
             return Some(result);
         }
-        if let Some(result) = self.tenxer_prompt_keys(key, modifiers) {
+        if key == Key::Escape && !command && !self.inline_editing_active() {
+            return self.tenxer_escape(browser);
+        }
+        if let Some(result) = self
+            .tenxer_prompt_keys(key, modifiers)
+            .or_else(|| self.tenxer_file_keys(key, modifiers))
+        {
             return Some(result);
         }
         let icons = self.view.view_mode() == crate::ui::browser_modes::BrowserMode::Icons;

@@ -230,6 +230,10 @@ impl ViewState {
                 }
             }
             BrowserEvent::SortingFinished { depth } => {
+                self.finish_keyboard_refocus(
+                    super::file_commands::KeyboardRefocus::Sort(*depth),
+                    true,
+                );
                 self.overlay.set_cursor(None::<&gtk::gdk::Cursor>);
                 if let Some(column) = self.columns.borrow().get(*depth) {
                     super::pane_header::sync_column_sort_direction(
@@ -612,6 +616,10 @@ impl ViewState {
             BrowserEvent::RenameCompleted { request_id } => {
                 self.complete_pending_rename(*request_id);
                 self.prune_stale_search_results();
+                self.finish_keyboard_refocus(
+                    super::file_commands::KeyboardRefocus::Rename(*request_id),
+                    true,
+                );
             }
             BrowserEvent::RenameAbandoned { request_id } => {
                 self.abandon_pending_rename(*request_id);
@@ -621,6 +629,12 @@ impl ViewState {
                 message,
             } => {
                 self.fail_pending_rename_from_browser(*request_id);
+                if let Some(request_id) = request_id {
+                    self.finish_keyboard_refocus(
+                        super::file_commands::KeyboardRefocus::Rename(*request_id),
+                        false,
+                    );
+                }
                 show_error_dialog(&self.overlay, "Unable to rename item", message);
             }
             BrowserEvent::TransferStarted { total, moving } => {
