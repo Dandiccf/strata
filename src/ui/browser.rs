@@ -666,9 +666,8 @@ impl BrowserView {
         state.install_input_ownership();
         state.install_column_peek_targets();
         state.install_drag_autoscroll();
-        if interactive {
-            columns::install_resize_edges(&state);
-        }
+        // Resize edges are mode-agnostic; only transfers stay interactive-only.
+        columns::install_resize_edges(&state);
 
         let weak_state = Rc::downgrade(&state);
         columns::install_horizontal_scroll(&state);
