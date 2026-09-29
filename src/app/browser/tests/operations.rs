@@ -56,7 +56,7 @@ fn deletion_monitor_changes_publish_once_after_the_terminal_event() {
         request_id,
         completed: 1,
         total: 2,
-        deleted_location: Some(first.location.clone()),
+        deleted_locations: vec![first.location.clone()],
     });
 
     assert_eq!(

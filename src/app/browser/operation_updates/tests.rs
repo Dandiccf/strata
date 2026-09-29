@@ -121,7 +121,7 @@ fn bulk_trash_and_restore_update_the_listing_without_loading_gaps() {
         request_id: delete_id,
         completed: locations.len(),
         total: locations.len(),
-        deleted_location: locations.last().cloned(),
+        deleted_locations: locations.clone(),
     });
     let snapshot = browser.column_snapshot(0).expect("trash source column");
     assert_eq!(snapshot.count, 0);

@@ -271,7 +271,7 @@ fn directory_summary_stops_enumerating_the_root_once_the_measurement_budget_is_r
 #[test]
 fn directory_summary_does_not_stop_enumerating_siblings_after_one_branch_is_depth_truncated() {
     let root = unique_fixture_root("sibling-depth-truncation");
-    let sibling_count = 80;
+    let sibling_count = ENUMERATION_BATCH_SIZE as usize + 16;
     // Nested one level under "parent" so these are children of a directory that
     // `measure_children` recurses into, not top-level entries of `root` itself (which
     // are always fully enumerated regardless of budget after the earlier deletion-worklist fix).
@@ -287,8 +287,8 @@ fn directory_summary_does_not_stop_enumerating_siblings_after_one_branch_is_dept
     // With max_depth 1, every "sub-N" directory individually hits the depth cap when deciding
     // whether to recurse into its own "inner" child -- that is a branch-local condition, unrelated
     // to its siblings. It used to be conflated with the shared budget being spent, which stopped
-    // scanning further `next_files_future` batches entirely: with 80 siblings and a 64-entry batch
-    // size, that undercounted "parent" to 1 (itself) + 64 (first batch only) = 65.
+    // scanning further `next_files_future` batches entirely. Keep the fixture larger than the
+    // production batch so stopping after one request necessarily undercounts the siblings.
     let summary = glib::MainContext::new().block_on(summarize_directory_with_budget(
         &gio::File::for_path(&root),
         1,

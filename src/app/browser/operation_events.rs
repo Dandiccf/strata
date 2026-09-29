@@ -145,10 +145,10 @@ impl Browser {
             OperationEvent::DeleteProgress {
                 completed,
                 total,
-                deleted_location,
+                deleted_locations,
                 ..
             } => {
-                if let Some(location) = deleted_location {
+                for location in deleted_locations {
                     self.mark_merged_undo_item_completed(location);
                 }
                 BrowserEvent::DeletionProgress {

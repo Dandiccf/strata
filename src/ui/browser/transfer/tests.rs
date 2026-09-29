@@ -293,6 +293,17 @@ fn transfer_collisions_detect_existing_destination_items() -> Result<(), Box<dyn
 }
 
 #[test]
+fn collision_candidates_include_case_only_name_matches() -> Result<(), Box<dyn std::error::Error>> {
+    let destination = tempfile::tempdir()?;
+    std::fs::write(destination.path().join("photo.jpg"), b"old")?;
+
+    let candidates = destination_name_candidates(destination.path()).expect("directory listing");
+
+    assert!(candidates.contains(&destination_name_key(std::ffi::OsStr::new("PHOTO.JPG"))));
+    Ok(())
+}
+
+#[test]
 fn transfer_collisions_mark_folder_pairs_as_mergeable() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::temp_dir().join(format!("strata-mergeable-test-{}", std::process::id()));
     let _ignored = std::fs::remove_dir_all(&root);
