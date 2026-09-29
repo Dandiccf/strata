@@ -116,6 +116,10 @@ pub(in crate::ui) struct ChooserPolicy {
     pub(in crate::ui) confirm: Rc<dyn Fn(crate::model::FileEntry)>,
     /// **Esc** once nothing is left to dismiss.
     pub(in crate::ui) cancel: Rc<dyn Fn()>,
+    /// Save requests: **Enter** in the files saves in the current folder.
+    pub(in crate::ui) save: Option<Rc<dyn Fn()>>,
+    /// **r** / **F2** edit the Save name instead of renaming a file.
+    pub(in crate::ui) edit_name: Option<Rc<dyn Fn()>>,
 }
 
 /// The chooser's own key controller asks this first; `None` leaves the key to
@@ -747,7 +751,10 @@ impl Dispatcher {
             preferences.set_tenxer_mode(false);
             return Some(Propagation::Stop);
         }
-        if let Some(result) = self.chooser_refusal(key, modifiers) {
+        if let Some(result) = self
+            .chooser_refusal(key, modifiers)
+            .or_else(|| self.chooser_save(key, modifiers))
+        {
             return Some(result);
         }
         if key == Key::Q && modifiers.contains(Modifiers::SHIFT_MASK) && !command {

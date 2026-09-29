@@ -79,6 +79,32 @@ impl Dispatcher {
         true
     }
 
+    /// **Enter** in the files of a Save request saves in the current folder,
+    /// whatever the cursor is on.
+    pub(super) fn chooser_save(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+        let save = self.chooser.as_ref()?.save.as_ref()?;
+        if !matches!(key, Key::Return | Key::KP_Enter)
+            || !command_modifiers(modifiers).is_empty()
+            || !self.view.item_view_has_focus()
+        {
+            return None;
+        }
+        save();
+        Some(Propagation::Stop)
+    }
+
+    pub(super) fn chooser_edit_name(&self) -> bool {
+        let Some(edit_name) = self
+            .chooser
+            .as_ref()
+            .and_then(|policy| policy.edit_name.as_ref())
+        else {
+            return false;
+        };
+        edit_name();
+        true
+    }
+
     /// **Enter** / **o** on a file hands it to the request instead of an
     /// application. Folders still open.
     pub(super) fn chooser_confirm(&self, browser: &Browser) -> bool {

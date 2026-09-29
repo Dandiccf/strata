@@ -489,7 +489,11 @@ impl ChooserState {
         }
     }
 
+    /// 10xer mode always saves in the current folder.
     fn selected_folder(&self) -> Option<PathBuf> {
+        if PreferenceManager::shared().tenxer_mode() {
+            return None;
+        }
         let entries = self.chosen_entries(false);
         if entries.len() == 1 && entries[0].is_directory() {
             entries[0].location.native_path().map(Path::to_path_buf)
@@ -498,10 +502,15 @@ impl ChooserState {
         }
     }
 
+    /// In 10xer mode only **r** and typing change the name, so moving the
+    /// cursor never renames what **Enter** saves.
     fn update_selected_filename(&self) {
         let Some(filename) = self.filename.as_ref() else {
             return;
         };
+        if PreferenceManager::shared().tenxer_mode() {
+            return;
+        }
         let entries = self.chosen_entries(false);
         let selected = match entries.as_slice() {
             [entry] if !entry.is_directory() => Some(entry.location.clone()),
@@ -771,6 +780,20 @@ impl ChooserState {
             return;
         }
         self.activate_file(&entry.location);
+    }
+
+    fn name_has_focus(&self, focused: Option<&gtk::Widget>) -> bool {
+        self.filename.as_ref().is_some_and(|filename| {
+            focused.is_some_and(|focused| focused == filename || focused.is_ancestor(filename))
+        })
+    }
+
+    fn edit_name(&self) {
+        let Some(filename) = self.filename.as_ref() else {
+            return;
+        };
+        filename.grab_focus();
+        filename.select_region(0, super::collection_edit::rename_stem_end(&filename.text()));
     }
 
     fn activate_file(self: &Rc<Self>, location: &Location) {
@@ -1288,13 +1311,13 @@ fn build_chooser_with_source(
     window.set_default_size(dimensions.0, dimensions.1);
     browser.navigate(Location::local(&state.request.initial_directory));
     window.present();
-    if let Some(filename) = state.filename.as_ref() {
-        filename.grab_focus();
-        filename.select_region(0, -1);
-    } else if PreferenceManager::shared().tenxer_mode() {
+    if PreferenceManager::shared().tenxer_mode() {
         // The listing takes focus once it loads, so 10xer keys work at once.
         window.set_focus_visible(true);
         return Some(state);
+    } else if let Some(filename) = state.filename.as_ref() {
+        filename.grab_focus();
+        filename.select_region(0, -1);
     } else {
         sidebar_toggle.grab_focus();
     }
@@ -1485,6 +1508,12 @@ fn tenxer_keys(
 ) -> ChooserKeys {
     let confirming = Rc::downgrade(state);
     let cancelling = Rc::downgrade(state);
+    let saving = Rc::downgrade(state);
+    let naming = Rc::downgrade(state);
+    let save_request = matches!(
+        &state.request.kind,
+        ChooserKind::SaveFile { .. } | ChooserKind::SaveFiles { .. }
+    );
     super::window::chooser_keys(
         &state.window,
         &state.view,
@@ -1506,6 +1535,20 @@ fn tenxer_keys(
                 if let Some(state) = cancelling.upgrade() {
                     state.cancel();
                 }
+            }),
+            save: save_request.then(|| {
+                Rc::new(move || {
+                    if let Some(state) = saving.upgrade() {
+                        state.accept();
+                    }
+                }) as Rc<dyn Fn()>
+            }),
+            edit_name: state.filename.is_some().then(|| {
+                Rc::new(move || {
+                    if let Some(state) = naming.upgrade() {
+                        state.edit_name();
+                    }
+                }) as Rc<dyn Fn()>
             }),
         },
     )
@@ -1644,6 +1687,11 @@ fn install_shortcuts(
                 return glib::Propagation::Stop;
             }
             if state.dismiss_dropdown() {
+                return glib::Propagation::Stop;
+            }
+            // Like the footer prompts, 10xer Esc leaves the name for the files.
+            if preferences.tenxer_mode() && state.name_has_focus(focused.as_ref()) {
+                browser.focus_active();
                 return glib::Propagation::Stop;
             }
             if state.view.cancel_new_entry() || state.view.cancel_rename() {
@@ -1853,13 +1901,10 @@ fn install_shortcuts(
             && super::focus_navigation::plain_tab_direction(key, modifiers).is_some()
             && let Some(filename) = state.filename.as_ref()
         {
-            let in_name = focused
-                .as_ref()
-                .is_some_and(|focused| focused == filename || focused.is_ancestor(filename));
             let in_header = focused
                 .as_ref()
                 .is_some_and(|focused| focused == &header || focused.is_ancestor(&header));
-            if in_name {
+            if state.name_has_focus(focused.as_ref()) {
                 browser.focus_active();
                 return glib::Propagation::Stop;
             }

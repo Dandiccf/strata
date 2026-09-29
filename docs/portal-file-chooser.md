@@ -165,7 +165,8 @@ On a desktop that does not manage the frontend as a systemd user unit, log out a
 - With [10xer mode](10xer-mode.md#file-chooser) on, the chooser uses that keymap
   and footer within the request's limits: **Enter** / **o** choose a file, **q**
   leaves the mode without cancelling, and **Esc** cancels only after dismissing
-  prompts, filters, search, and preview.
+  prompts, filters, search, and preview. Save dialogs start in the files: **r**
+  edits the name, and **Enter** saves in the current folder.
 
 The X11 keyboard and context-menu regression tests require `xdotool` (or
 `STRATA_TEST_XDOTOOL`) and isolated XDG directories. Run each alone under a test display:

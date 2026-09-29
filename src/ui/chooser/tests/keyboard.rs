@@ -490,9 +490,9 @@ fn folder_only_search_hits_exclude_files_and_choose_the_focused_folder() {
 }
 
 #[test]
-fn save_name_keeps_typed_keys_and_the_cursor_names_the_file() {
+fn save_starts_in_the_files_r_edits_the_name_and_enter_saves_here() {
     crate::test_support::gtk_test(
-        "ui::chooser::tests::keyboard::save_name_keeps_typed_keys_and_the_cursor_names_the_file",
+        "ui::chooser::tests::keyboard::save_starts_in_the_files_r_edits_the_name_and_enter_saves_here",
         || {
             let chooser = Chooser::open(
                 ChooserKind::SaveFile {
@@ -502,30 +502,37 @@ fn save_name_keeps_typed_keys_and_the_cursor_names_the_file() {
                 &["existing.txt", "folder/", "other.txt"],
             );
             let name = chooser.state.filename.clone().expect("name field");
-            wait_until(|| {
+            let name_focused = || {
                 gtk::prelude::RootExt::focus(&chooser.state.window)
                     .is_some_and(|focus| focus.is_ancestor(&name))
-            });
+            };
+            wait_until(|| chooser.state.view.item_view_has_focus());
+            chooser.move_to("other.txt");
+            chooser.move_to("folder");
+            assert_eq!(name.text(), "output.txt", "the cursor renamed the file");
+
+            assert!(chooser.press(Key::r));
+            assert!(name_focused());
+            assert_eq!(name.selection_bounds(), Some((0, 6)));
             for (key, modifiers) in [
                 (Key::q, ModifierType::empty()),
                 (Key::Q, ModifierType::SHIFT_MASK),
                 (Key::j, ModifierType::empty()),
+                (Key::r, ModifierType::empty()),
                 (Key::a, ModifierType::CONTROL_MASK),
             ] {
                 assert!(!chooser.press_with(key, modifiers), "{key:?} was not typed");
             }
             assert!(PreferenceManager::shared().tenxer_mode());
-            assert!(chooser.state.view.browser().selection_is_load_cursor());
-            assert_eq!(name.text(), "output.txt");
+            name.set_text("report.txt");
+            assert!(chooser.press(Key::Escape));
+            assert!(chooser.state.view.item_view_has_focus());
+            assert_eq!(chooser.cursor_name().as_deref(), Some("folder"));
+            assert_eq!(name.text(), "report.txt");
             assert!(chooser.open_request());
 
-            assert!(chooser.press(Key::Tab));
-            wait_until(|| chooser.state.view.item_view_has_focus());
-            chooser.move_to("folder");
-            assert_eq!(name.text(), "output.txt", "a folder renamed the file");
-            chooser.move_to("other.txt");
-            wait_until(|| name.text() == "other.txt");
-            assert!(chooser.open_request(), "the cursor accepted the request");
+            assert!(chooser.press(Key::Return));
+            assert_eq!(chooser.chosen(), [chooser.uri("report.txt")]);
         },
     );
 }
@@ -554,7 +561,7 @@ fn saving_over_an_existing_file_confirms_with_cancel_focused() {
             };
             let confirm = || {
                 chooser.move_to("existing.txt");
-                assert!(chooser.press(Key::Return));
+                assert!(chooser.press(Key::o));
                 wait_until(|| {
                     visible_modal_layer(&chooser.state.window).is_some()
                         && focused_button().is_some()
