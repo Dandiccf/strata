@@ -25,21 +25,11 @@ use audio::PcmOutput;
 
 const PAUSED_IDLE: Duration = Duration::from_secs(30);
 const RESIZE_DELAY: Duration = Duration::from_millis(250);
-// Coalesce seek-bar drags: only the settled position restarts decoding.
 const SEEK_DELAY: Duration = Duration::from_millis(200);
 const PRESENTATION_QUEUE: usize = 3;
-// Bounded mid-play restarts: a transient stall (audio sink hiccup, slow decode)
-// resumes at the last position instead of killing the stream, while a permanently
-// broken source still fails closed instead of respawning workers forever.
 const MAX_STALL_RECOVERIES: u32 = 3;
-// While the audio clock is stuck (e.g. the sink unsuspending on resume), video
-// may lead it on wall time by this much instead of freezing for the watchdog.
 const AUDIO_LEAD_CAP_US: u64 = 2_000_000;
-// Restart (bounded) when the audio clock is frozen this long mid-play, so a
-// dead pipeline is rebuilt in seconds rather than after the 8s watchdog.
 const AUDIO_STUCK_TIMEOUT: Duration = Duration::from_secs(3);
-// Quick preview reopens where it closed: positions below this are restarts
-// from zero rather than a resume worth an extra decode.
 const RESTORE_MIN_US: u64 = 1_000_000;
 const MAX_REMEMBERED_POSITIONS: usize = 128;
 
@@ -174,10 +164,6 @@ mod imp {
         fn seek(&self, timestamp: i64) {
             let position = timestamp.max(0) as u64;
             let obj = self.obj();
-            // A restart just fired (startup, recover, or an earlier seek):
-            // coalesce the burst and fire once settled. Otherwise restart
-            // immediately and move the slider now instead of leaving it
-            // snapped back at the old position for the whole restart.
             if self
                 .starting
                 .get()
@@ -188,6 +174,7 @@ mod imp {
                     obj.update(position as i64);
                 }
             } else {
+                self.seek_pending.set(None);
                 obj.restart_at(position);
                 if obj.is_prepared() {
                     obj.update(self.position.get() as i64);
@@ -249,12 +236,6 @@ impl DecodedMedia {
         obj
     }
 
-    pub fn restore_position(&self, position: u64) {
-        if position > RESTORE_MIN_US {
-            self.imp().restore.set(Some(position));
-        }
-    }
-
     fn ensure_timer(&self) {
         if self.imp().timer.borrow().is_some() || self.imp().closed.get() {
             return;
@@ -284,8 +265,6 @@ impl DecodedMedia {
         if imp.closed.replace(true) {
             return;
         }
-        // Remember where the preview closed so reopening resumes there.
-        // Skips unwatched beginnings and watched-to-the-end streams.
         if let Some(source) = imp.source.borrow().as_ref() {
             let position = imp.position.get();
             let duration = self.duration().max(0) as u64;
@@ -358,10 +337,6 @@ impl DecodedMedia {
         }
     }
 
-    /// Restart decoding at the captured position after a mid-play stall instead
-    /// of failing the stream. Only call once playback has started; startup and
-    /// seek failures keep failing closed. Gives up after MAX_STALL_RECOVERIES
-    /// consecutive stalls without progress so broken sources still surface.
     fn recover(&self, reason: &str) -> Result<(), String> {
         let imp = self.imp();
         let recoveries = imp.recoveries.get();
@@ -385,9 +360,7 @@ impl DecodedMedia {
         self.capture_position_progress(true);
     }
 
-    // `clears_recoveries` marks observed forward progress as health. The
-    // recovery-path snapshot passes false: a failure whose playhead still moved
-    // must not erase the strike recover() just recorded.
+    // A failure snapshot must not clear the strike even if the playhead moved.
     fn capture_position_progress(&self, clears_recoveries: bool) {
         let imp = self.imp();
         if !imp.first_frame.get() {
@@ -402,7 +375,6 @@ impl DecodedMedia {
         let mut audio_flowing = imp.audio.borrow().is_none();
         if let Some(audio) = imp.audio.borrow().as_ref() {
             match audio.position_us() {
-                // Follow a flowing audio clock and re-anchor the wall clock.
                 Some(position) if position > base => {
                     imp.clock_base.set(position);
                     imp.clock.set(self.is_playing().then(Instant::now));
@@ -410,9 +382,7 @@ impl DecodedMedia {
                     audio_flowing = true;
                     relative = position;
                 }
-                // The sink is stuck (e.g. unsuspending on resume): let video
-                // lead on wall time, capped, instead of freezing for the
-                // watchdog. The anchor is kept so audio can take over again.
+                // Keep the audio anchor so a recovered sink can take over again.
                 _ => {
                     relative = relative.min(base + AUDIO_LEAD_CAP_US);
                     if self.is_playing() && imp.audio_stuck_since.get().is_none() {
@@ -426,8 +396,7 @@ impl DecodedMedia {
                 .min(imp.end.get().unwrap_or(header.duration_us));
             if position != imp.position.get() {
                 imp.last_progress.set(Some(Instant::now()));
-                // Wall-clock drift over stuck audio is not health: without
-                // this, dead audio plus working video would restart forever.
+                // Wall-clock drift over stuck audio must not reset the strike cap.
                 if clears_recoveries && audio_flowing {
                     imp.recoveries.set(0);
                 }
@@ -456,9 +425,7 @@ impl DecodedMedia {
                 self.restart_at(imp.position.get());
             }
         }
-        // Fire a settled seek before the paused-idle check below, so seeking
-        // out of dormant wakes instead of being re-dormantized immediately
-        // (restart_at refreshes the paused stamp when not playing).
+        // A settled seek must wake a dormant, paused worker before idle handling.
         if let Some((position, since)) = imp.seek_pending.get()
             && since.elapsed() >= SEEK_DELAY
         {
@@ -540,9 +507,6 @@ impl DecodedMedia {
             let event = imp.session.borrow().as_ref().and_then(Session::receive);
             match event {
                 Some(Event::Prepared(header)) => {
-                    // Reopening resumes where the preview closed. The saved
-                    // position is only trusted against this header: past-the-end
-                    // (file replaced) plays from zero instead of failing.
                     if let Some(saved) = imp.restore.take()
                         && saved < header.duration_us
                     {
@@ -654,8 +618,6 @@ impl DecodedMedia {
         }
         let audio_error = imp.audio.borrow().as_ref().and_then(PcmOutput::error);
         if let Some(error) = audio_error {
-            // Drop the faulty pipeline via restart instead of latching one
-            // transient sink error as a permanent stream failure.
             if imp.first_frame.get() {
                 self.recover(&error)?;
                 return Ok(());

@@ -37,8 +37,7 @@ fn drive_until(media: &DecodedMedia, calls: &Rc<RefCell<Vec<u32>>>, want: usize)
     while calls.borrow().len() < want {
         match media.tick() {
             Ok(()) => {}
-            // Worker slots are shared with other tests; brief contention
-            // retries instead of failing.
+            // Worker slots are shared with other tests.
             Err(error) if error.contains("busy") => {}
             Err(error) => panic!("tick failed: {error}"),
         }
@@ -48,15 +47,14 @@ fn drive_until(media: &DecodedMedia, calls: &Rc<RefCell<Vec<u32>>>, want: usize)
 }
 
 fn open_restoring(path: &str, position: u64) -> (DecodedMedia, Rc<RefCell<Vec<u32>>>) {
+    remember_media_position(path.into(), position);
     let media = DecodedMedia::new(test_source(path));
     let calls = Rc::new(RefCell::new(Vec::new()));
     media.imp().loader.replace(Some(fake_loader(&calls)));
-    media.restore_position(position);
     media.upcast_ref::<gtk::MediaStream>().play();
     (media, calls)
 }
 
-// One test, one thread: GTK initializes on a single thread per process.
 #[test]
 fn reopening_resumes_where_the_preview_closed() {
     gtk::init().expect("GTK display");
@@ -76,8 +74,6 @@ fn reopening_resumes_where_the_preview_closed() {
         Some(position)
     );
 
-    // A saved position past the end (replaced file) plays from zero, and an
-    // opening closed before anything played leaves no position behind.
     let (media, calls) = open_restoring("/shortened", TEST_DURATION_US + 1);
     drive_until(&media, &calls, 1);
     for _ in 0..20 {
@@ -97,7 +93,6 @@ fn reopening_resumes_where_the_preview_closed() {
     media.close();
     assert_eq!(recall_media_position(Path::new("/ended")), Some(30_000_000));
 
-    // Watched through the end: the stale resume must not survive the close.
     let (media, calls) = open_restoring("/ended", media::timestamp(900));
     drive_until(&media, &calls, 2);
     for _ in 0..20 {
@@ -107,7 +102,6 @@ fn reopening_resumes_where_the_preview_closed() {
     media.close();
     assert_eq!(recall_media_position(Path::new("/ended")), None);
 
-    // An early close drops a stored position instead of keeping it.
     remember_media_position("/ended".into(), 30_000_000);
     let (media, calls) = open_restoring("/ended", media::timestamp(900));
     drive_until(&media, &calls, 2);
