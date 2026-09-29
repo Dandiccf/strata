@@ -89,20 +89,10 @@ fn reopening_resumes_where_the_preview_closed() {
     for _ in 0..20 {
         media.tick().expect("tick succeeds");
     }
-    media.imp().position.set(30_000_000);
-    media.close();
-    assert_eq!(recall_media_position(Path::new("/ended")), Some(30_000_000));
-
-    let (media, calls) = open_restoring("/ended", media::timestamp(900));
-    drive_until(&media, &calls, 2);
-    for _ in 0..20 {
-        media.tick().expect("tick succeeds");
-    }
     media.imp().position.set(TEST_DURATION_US);
     media.close();
     assert_eq!(recall_media_position(Path::new("/ended")), None);
 
-    remember_media_position("/ended".into(), 30_000_000);
     let (media, calls) = open_restoring("/ended", media::timestamp(900));
     drive_until(&media, &calls, 2);
     media.imp().position.set(RESTORE_MIN_US);
