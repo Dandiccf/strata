@@ -1640,3 +1640,170 @@ fn another_browser_can_redo_the_undone_operation() {
     assert_eq!(pending_redo_entry(), None);
     assert_eq!(pending_undo_entry(), Some(UndoEntry::Trash(vec![location])));
 }
+
+#[test]
+fn a_completed_grouping_gesture_collapses_into_one_undo() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    let created = Location::local("/fixture/new folder");
+    push_pending_undo(UndoEntry::Copy(vec![created.clone()]));
+    browser.expect_group_folder(created.clone());
+    push_pending_undo(UndoEntry::Move(vec![
+        MoveRecord {
+            original: Location::local("/fixture/report.txt"),
+            current: Location::local("/fixture/new folder/report.txt"),
+        },
+        MoveRecord {
+            original: Location::local("/fixture/notes.txt"),
+            current: Location::local("/fixture/new folder/notes.txt"),
+        },
+    ]));
+
+    assert_eq!(
+        pending_undo_entry(),
+        Some(UndoEntry::Group {
+            folder: created.clone(),
+            records: vec![
+                MoveRecord {
+                    original: Location::local("/fixture/report.txt"),
+                    current: Location::local("/fixture/new folder/report.txt"),
+                },
+                MoveRecord {
+                    original: Location::local("/fixture/notes.txt"),
+                    current: Location::local("/fixture/new folder/notes.txt"),
+                },
+            ],
+        })
+    );
+
+    push_pending_undo(UndoEntry::Rename(RenameRecord {
+        original: created.clone(),
+        current: Location::local("/fixture/grouped"),
+        native_name: OsString::from("new folder"),
+        display_name: "new folder".to_owned(),
+        is_hidden: false,
+    }));
+
+    assert_eq!(
+        pending_undo_entry(),
+        Some(UndoEntry::Group {
+            folder: Location::local("/fixture/grouped"),
+            records: vec![
+                MoveRecord {
+                    original: Location::local("/fixture/report.txt"),
+                    current: Location::local("/fixture/grouped/report.txt"),
+                },
+                MoveRecord {
+                    original: Location::local("/fixture/notes.txt"),
+                    current: Location::local("/fixture/grouped/notes.txt"),
+                },
+            ],
+        })
+    );
+}
+
+#[test]
+fn a_grouping_without_a_rename_collapses_to_the_created_name() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    let created = Location::local("/fixture/new folder");
+    push_pending_undo(UndoEntry::Copy(vec![created.clone()]));
+    browser.expect_group_folder(created.clone());
+    push_pending_undo(UndoEntry::Move(vec![MoveRecord {
+        original: Location::local("/fixture/report.txt"),
+        current: Location::local("/fixture/new folder/report.txt"),
+    }]));
+
+    assert_eq!(
+        pending_undo_entry(),
+        Some(UndoEntry::Group {
+            folder: created.clone(),
+            records: vec![MoveRecord {
+                original: Location::local("/fixture/report.txt"),
+                current: Location::local("/fixture/new folder/report.txt"),
+            }],
+        })
+    );
+}
+
+#[test]
+fn group_folding_leaves_an_interleaved_entry_untouched() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    let created = Location::local("/fixture/new folder");
+    push_pending_undo(UndoEntry::Copy(vec![created.clone()]));
+    browser.expect_group_folder(created.clone());
+    push_pending_undo(UndoEntry::Move(vec![MoveRecord {
+        original: Location::local("/fixture/report.txt"),
+        current: Location::local("/fixture/new folder/report.txt"),
+    }]));
+    let interleaved = UndoEntry::Trash(vec![Location::local("/fixture/elsewhere.txt")]);
+    push_pending_undo(interleaved.clone());
+
+    assert_eq!(pending_undo_entry(), Some(interleaved));
+    let (generation, _) = claim_pending_undo(None).expect("undo claim");
+    finish_undo(generation, true);
+    assert!(matches!(
+        pending_undo_entry(),
+        Some(UndoEntry::Group { .. })
+    ));
+}
+
+#[test]
+fn group_folding_ignores_moves_into_another_folder() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    let created = Location::local("/fixture/new folder");
+    let unrelated = UndoEntry::Move(vec![MoveRecord {
+        original: Location::local("/fixture/report.txt"),
+        current: Location::local("/fixture/archive/report.txt"),
+    }]);
+    push_pending_undo(UndoEntry::Copy(vec![created.clone()]));
+    browser.expect_group_folder(created.clone());
+    push_pending_undo(unrelated.clone());
+
+    assert_eq!(pending_undo_entry(), Some(unrelated));
+    let (generation, _) = claim_pending_undo(None).expect("undo claim");
+    finish_undo(generation, true);
+    assert_eq!(
+        pending_undo_entry(),
+        Some(UndoEntry::Copy(vec![created.clone()]))
+    );
+}
+
+#[test]
+fn undoing_a_group_moves_back_and_trashes_the_folder_in_one_operation() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    browser.set_operation_provider(Rc::new(ImmediateOperationProvider));
+    UNDO_MOVE_REQUESTS.with(|requests| requests.borrow_mut().clear());
+    UNDO_MOVE_CLEANUPS.with(|requests| requests.borrow_mut().clear());
+    let created = Location::local("/fixture/new folder");
+    push_pending_undo(UndoEntry::Copy(vec![created.clone()]));
+    browser.expect_group_folder(created.clone());
+    push_pending_undo(UndoEntry::Move(vec![MoveRecord {
+        original: Location::local("/fixture/report.txt"),
+        current: Location::local("/fixture/new folder/report.txt"),
+    }]));
+    let (generation, records) = browser.pending_undo_group().expect("pending group undo");
+
+    assert!(
+        browser.undo_group(
+            generation,
+            records
+                .iter()
+                .cloned()
+                .map(|record| UndoMoveItem {
+                    record,
+                    conflict: TransferConflict::FailIfExists,
+                })
+                .collect(),
+        )
+    );
+
+    assert_eq!(
+        UNDO_MOVE_REQUESTS.with(|requests| requests.borrow().clone()),
+        vec![records]
+    );
+    assert_eq!(
+        UNDO_MOVE_CLEANUPS.with(|requests| requests.borrow().clone()),
+        vec![vec![created]]
+    );
+    assert_eq!(pending_undo_entry(), None);
+    assert!(peek_replay(true).is_none(), "a group undo offers no redo");
+}

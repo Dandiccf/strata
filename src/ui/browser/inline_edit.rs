@@ -128,6 +128,9 @@ pub(super) struct PendingEntryRename {
     depth: usize,
     parent: Location,
     reveal_generation: u64,
+    /// "New Folder with Selection" items moved into the created directory once
+    /// its row materializes. Empty for plain new entries.
+    move_sources: std::cell::RefCell<Vec<Location>>,
 }
 
 pub(in crate::ui) fn set_rename_label(label: &gtk::Widget, name: &str) {
@@ -825,6 +828,10 @@ impl ViewState {
         let weak = Rc::downgrade(self);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let selected = std::cell::Cell::new(false);
+        // Sources queued for the "New Folder with Selection" move. The rename
+        // editor opens only once they leave the listing: earlier, the removal
+        // splice would rebind the edited row and tear down the field.
+        let group_sources = std::cell::RefCell::new(Vec::new());
         // Wait for the refreshed listing and the virtualized row to be allocated.
         self.overlay.add_tick_callback(move |_, _| {
             let Some(state) = weak.upgrade() else {
@@ -859,6 +866,37 @@ impl ViewState {
                 })
                 .flatten();
             if let Some(position) = position {
+                // A created directory with pending sources means "New Folder
+                // with Selection": move the grouped items into it. The move is
+                // queued before the rename editor opens so the operation can
+                // start without waiting for the name.
+                let move_sources = if state
+                    .browser
+                    .entry_at(pending.depth, position)
+                    .is_some_and(|entry| entry.is_directory())
+                {
+                    pending.move_sources.take()
+                } else {
+                    Vec::new()
+                };
+                if !move_sources.is_empty() {
+                    group_sources.replace(move_sources.clone());
+                    state.browser.expect_group_folder(location.clone());
+                    let weak = Rc::downgrade(&state);
+                    let destination = location.clone();
+                    gtk::glib::idle_add_local_once(move || {
+                        if let Some(state) = weak.upgrade() {
+                            state.start_transfer_with_reveal(
+                                destination,
+                                move_sources,
+                                true,
+                                false,
+                                None,
+                                super::transfer::ConflictFocus::Replace,
+                            );
+                        }
+                    });
+                }
                 if !selected.replace(true) {
                     if state.mode_views.borrow().mode() == BrowserMode::Columns {
                         state.browser.reveal_created_entry(pending.depth, position);
@@ -868,7 +906,14 @@ impl ViewState {
                     } else {
                         state.browser.select(pending.depth, position);
                     }
-                } else if let Some(entry) = state.browser.entry_at(pending.depth, position)
+                } else if group_sources.borrow().iter().all(|source| {
+                    state
+                        .browser
+                        .with_entries(pending.depth, 0..snapshot.count, |entries| {
+                            !entries.iter().any(|entry| entry.location == *source)
+                        })
+                        .unwrap_or(true)
+                }) && let Some(entry) = state.browser.entry_at(pending.depth, position)
                     && state.begin_rename_item(pending.depth, position, entry)
                 {
                     state.pending_new_entry.take();
@@ -887,11 +932,45 @@ impl ViewState {
         });
     }
 
+    /// "New Folder with Selection": the fresh directory receives `entries` once
+    /// the create lands, while the usual pending-rename flow names it.
+    pub(super) fn new_folder_with_selection(
+        self: &Rc<Self>,
+        depth: usize,
+        entries: &[FileEntry],
+    ) -> bool {
+        let Some(location) = self
+            .browser
+            .location_at(depth)
+            .filter(|location| !is_trash_location(location) && !location.is_recent_location())
+        else {
+            return false;
+        };
+        // A recursive search shows its own result model; the created row never
+        // materializes there, so the move and rename would never dispatch.
+        if super::context_menu::context_search_active(self, depth) || entries.is_empty() {
+            return false;
+        }
+        let move_sources = entries.iter().map(|entry| entry.location.clone()).collect();
+        self.begin_new_entry_inner(depth, location, true, move_sources);
+        true
+    }
+
     pub(super) fn begin_new_entry(
         self: &Rc<Self>,
         depth: usize,
         location: Location,
         is_directory: bool,
+    ) {
+        self.begin_new_entry_inner(depth, location, is_directory, Vec::new());
+    }
+
+    fn begin_new_entry_inner(
+        self: &Rc<Self>,
+        depth: usize,
+        location: Location,
+        is_directory: bool,
+        move_sources: Vec<Location>,
     ) {
         if is_trash_location(&location) || location.is_recent_location() {
             return;
@@ -907,6 +986,7 @@ impl ViewState {
                 depth,
                 parent: location.clone(),
                 reveal_generation: self.rename_reveal_generation.get(),
+                move_sources: std::cell::RefCell::new(move_sources),
             })));
         if is_directory {
             self.browser.create_new_folder(location);

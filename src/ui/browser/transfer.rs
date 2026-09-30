@@ -700,7 +700,13 @@ impl ViewState {
     /// Moves the latest completed transfer back, confirming any item that would
     /// overwrite something created since the move.
     pub(super) fn undo_move(self: &Rc<Self>, generation: u64, records: Vec<MoveRecord>) -> bool {
-        self.replay_move(false, generation, records)
+        self.replay_move(false, generation, records, false)
+    }
+
+    /// Reverts "New Folder with Selection": the move replays back and the
+    /// created folder is trashed by the same operation.
+    pub(super) fn undo_group(self: &Rc<Self>, generation: u64, records: Vec<MoveRecord>) -> bool {
+        self.replay_move(false, generation, records, true)
     }
 
     pub(super) fn redo_trash(self: &Rc<Self>, generation: u64, locations: Vec<Location>) -> bool {
@@ -708,7 +714,7 @@ impl ViewState {
     }
 
     pub(super) fn redo_move(self: &Rc<Self>, generation: u64, records: Vec<MoveRecord>) -> bool {
-        self.replay_move(true, generation, records)
+        self.replay_move(true, generation, records, false)
     }
 
     fn replay_existing_locations(
@@ -729,7 +735,13 @@ impl ViewState {
         dispatch(&self.browser, generation, existing)
     }
 
-    fn replay_move(self: &Rc<Self>, redo: bool, generation: u64, records: Vec<MoveRecord>) -> bool {
+    fn replay_move(
+        self: &Rc<Self>,
+        redo: bool,
+        generation: u64,
+        records: Vec<MoveRecord>,
+        grouped: bool,
+    ) -> bool {
         let mut accepted = Vec::new();
         let mut collisions = Vec::new();
         for record in records {
@@ -754,7 +766,7 @@ impl ViewState {
             self.browser.discard_pending_replay(redo, generation);
             return false;
         }
-        self.resolve_replay_collisions(redo, generation, collisions, accepted);
+        self.resolve_replay_collisions(redo, generation, collisions, accepted, grouped);
         true
     }
 
@@ -787,10 +799,13 @@ impl ViewState {
         generation: u64,
         mut collisions: Vec<MoveRecord>,
         accepted: Vec<UndoMoveItem>,
+        grouped: bool,
     ) {
         if collisions.is_empty() {
             if accepted.is_empty() {
                 self.browser.discard_pending_replay(redo, generation);
+            } else if grouped {
+                self.browser.undo_group(generation, accepted);
             } else if redo {
                 self.browser.redo_move(generation, accepted);
             } else {
@@ -842,7 +857,7 @@ impl ViewState {
                     ConflictChoice::Skip if apply_to_all => remaining.clear(),
                     ConflictChoice::Skip => {}
                 }
-                state.resolve_replay_collisions(redo, generation, remaining, accepted);
+                state.resolve_replay_collisions(redo, generation, remaining, accepted, grouped);
             }),
         );
     }

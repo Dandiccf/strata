@@ -50,6 +50,11 @@ tries `new folder (1)` / `new file (1)`, then `(2)`, and so on without overwriti
 anything. The pane filter is cleared and the entire allocated default name is
 selected: one Backspace clears it, and typing replaces it.
 
+Item menu → **New Folder with Selection** (or **Ctrl+Alt+N**) creates `new folder`
+in the same directory, moves the selected items into it, and names it in place.
+With nothing selected **Ctrl+Alt+N** falls back to a plain `new folder`. The item
+is hidden in Trash, Recent, and while a recursive search is open.
+
 For **any file or folder rename**, Enter, clicking outside the field (even empty
 pane space), or moving keyboard focus away commits a valid name. Escape keeps
 the original name. Finishing with an empty or invalid name also keeps the

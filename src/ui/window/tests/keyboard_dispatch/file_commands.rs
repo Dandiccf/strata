@@ -517,3 +517,57 @@ fn tenxer_create_prompt_makes_exact_files_and_folders() {
         },
     );
 }
+
+#[test]
+fn ctrl_alt_n_groups_selected_items_into_a_named_folder() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::file_commands::ctrl_alt_n_groups_selected_items_into_a_named_folder",
+        || {
+            let fixture = KeyboardFixture::new();
+            let directory = fixture._directory.path().to_path_buf();
+            let browser = fixture.view.browser();
+            assert!(
+                browser.select_entries_by_name_at(0, &["a.txt".to_owned(), "b.txt".to_owned()],)
+            );
+            focus_files(&fixture);
+            assert!(fixture.press(Key::n, ModifierType::CONTROL_MASK | ModifierType::ALT_MASK));
+            wait_until(|| directory.join("new folder").is_dir());
+            wait_until(|| {
+                directory.join("new folder/a.txt").is_file()
+                    && directory.join("new folder/b.txt").is_file()
+            });
+            wait_until(|| fixture.view.rename_is_active());
+            assert!(!directory.join("a.txt").exists());
+            assert!(!directory.join("b.txt").exists());
+            assert_eq!(
+                directory_names(&directory.join("new folder")),
+                ["a.txt", "b.txt"]
+            );
+
+            let field = fixture.view.active_rename_field().expect("rename field");
+            field.set_text("grouped");
+            field.emit_activate();
+            wait_until(|| directory.join("grouped/b.txt").is_file());
+            assert!(!directory.join("new folder").exists());
+
+            wait_until(|| fixture.press(Key::z, ModifierType::CONTROL_MASK));
+            wait_until(|| {
+                directory.join("a.txt").is_file()
+                    && directory.join("b.txt").is_file()
+                    && !directory.join("grouped").exists()
+            });
+            assert!(
+                !directory.join("new folder").exists(),
+                "one undo reverts the whole gesture"
+            );
+
+            open_empty_folder(&fixture);
+            let empty = directory.join("empty");
+            assert!(fixture.press(Key::n, ModifierType::CONTROL_MASK | ModifierType::ALT_MASK));
+            wait_until(|| empty.join("new folder").is_dir());
+            wait_until(|| fixture.view.rename_is_active());
+            assert_eq!(directory_names(&empty), ["new folder"]);
+            plain(&fixture, Key::Escape);
+        },
+    );
+}
