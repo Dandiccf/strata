@@ -433,9 +433,116 @@ fn tenxer_preview_owns_document_keys_until_returned() {
 }
 
 #[test]
-fn default_archive_root_left_routes_to_the_parent_column() {
+fn default_archive_keys_follow_pane_focus() {
     crate::test_support::gtk_test(
-        "ui::window::tests::keyboard_dispatch::preview_ownership::default_archive_root_left_routes_to_the_parent_column",
+        "ui::window::tests::keyboard_dispatch::preview_ownership::default_archive_keys_follow_pane_focus",
+        || {
+            for mode in [BrowserMode::List, BrowserMode::Columns] {
+                let fixture = ownership_fixture();
+                PreferenceManager::shared().set_tenxer_mode(false);
+                let browser = fixture.view.browser();
+                fixture.view.set_view_mode(mode);
+                wait_loaded(&browser, 0);
+                select_named(&fixture, "bundle.zip");
+                focus_files(&fixture);
+                fixture
+                    .preview
+                    .show(browser.focused_entry().expect("archive"), Some(0));
+                wait_until(|| {
+                    widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
+                });
+                let location = browser.active_location();
+                let selection = fixture.selected();
+                assert!(fixture.view.item_view_has_focus());
+                assert!(!owner_bar(&fixture));
+
+                assert!(fixture.press(Key::Right, ModifierType::empty()));
+                wait_until(|| archive_has_focus(&fixture));
+                assert!(
+                    fixture.preview.archive_at_root(),
+                    "Right enters the pane before opening a member"
+                );
+                assert!(owner_bar(&fixture));
+                if mode == BrowserMode::Columns {
+                    assert!(widget_with_class(&fixture.view.widget(), "active-column").is_none());
+                }
+                fixture.press(Key::Down, ModifierType::empty());
+                fixture.press(Key::Right, ModifierType::empty());
+                assert!(
+                    fixture.preview.archive_at_root(),
+                    "member file is not opened"
+                );
+                fixture.press(Key::Up, ModifierType::empty());
+                fixture.press(Key::Right, ModifierType::empty());
+                assert!(!fixture.preview.archive_at_root());
+                fixture.press(Key::Left, ModifierType::empty());
+                assert!(fixture.preview.archive_at_root());
+                assert!(archive_has_focus(&fixture));
+                assert_eq!(fixture.selected(), selection);
+                assert!(!fixture.preview.archive_key(Key::Left));
+                fixture.press(Key::Left, ModifierType::empty());
+                wait_until(|| fixture.view.item_view_has_focus());
+                assert!(!owner_bar(&fixture));
+                if mode == BrowserMode::Columns {
+                    assert!(widget_with_class(&fixture.view.widget(), "active-column").is_some());
+                }
+                assert!(fixture.preview.is_open());
+                assert_eq!(browser.active_location(), location);
+                assert_eq!(focused_name(&browser), "bundle.zip");
+
+                if !fixture.press(Key::Down, ModifierType::empty()) {
+                    crate::ui::focus_navigation::activate_native_arrow(&fixture.window, Key::Down);
+                }
+                wait_until(|| focused_name(&browser) == "c.txt");
+                assert!(fixture.view.item_view_has_focus());
+                if !fixture.press(Key::Up, ModifierType::empty()) {
+                    crate::ui::focus_navigation::activate_native_arrow(&fixture.window, Key::Up);
+                }
+                wait_until(|| focused_name(&browser) == "bundle.zip");
+                wait_until(|| {
+                    widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
+                });
+                fixture.press(Key::Right, ModifierType::empty());
+                wait_until(|| archive_has_focus(&fixture));
+                assert!(owner_bar(&fixture));
+                fixture.press(Key::Left, ModifierType::empty());
+                wait_until(|| fixture.view.item_view_has_focus());
+                assert!(!owner_bar(&fixture));
+
+                for name in ["short.txt", "long.txt"] {
+                    select_named(&fixture, name);
+                    focus_files(&fixture);
+                    fixture
+                        .preview
+                        .show(browser.focused_entry().expect("document"), Some(0));
+                    wait_until(|| {
+                        widget_with_class(
+                            &fixture.preview.widget(),
+                            if name == "short.txt" {
+                                "preview-text"
+                            } else {
+                                "preview-virtual-list"
+                            },
+                        )
+                        .is_some()
+                    });
+                    fixture.press(Key::Right, ModifierType::empty());
+                    wait_until(|| preview_has_focus(&fixture));
+                    assert!(owner_bar(&fixture));
+                    assert!(fixture.press(Key::Left, ModifierType::empty()));
+                    wait_until(|| fixture.view.item_view_has_focus());
+                    assert!(!owner_bar(&fixture));
+                    assert_eq!(focused_name(&browser), name);
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn default_archive_listing_left_moves_to_the_parent_column() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::preview_ownership::default_archive_listing_left_moves_to_the_parent_column",
         || {
             let fixture = ownership_fixture();
             PreferenceManager::shared().set_tenxer_mode(false);
@@ -460,19 +567,17 @@ fn default_archive_root_left_routes_to_the_parent_column() {
             wait_until(|| {
                 widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
             });
-            assert!(fixture.preview.archive_at_root());
-            assert!(fixture.view.item_view_has_focus());
-            let location = browser.active_location();
-            assert!(fixture.press(Key::Right, ModifierType::empty()));
-            assert!(!fixture.preview.archive_at_root());
-            assert!(fixture.press(Key::Left, ModifierType::empty()));
-            assert!(fixture.preview.archive_at_root());
-            assert_eq!(browser.active_location(), location);
-            assert!(
-                !fixture.preview.archive_key(Key::Left),
-                "root Left is not handled"
-            );
-            assert!(fixture.press(Key::Left, ModifierType::empty()));
+            wait_until(|| fixture.preview.is_open());
+            browser.set_active_column(1);
+            browser.select(1, 0);
+            browser.focus_active();
+            assert_eq!(focused_name(&browser), "bundle.zip");
+            fixture.press(Key::Right, ModifierType::empty());
+            wait_until(|| archive_has_focus(&fixture));
+            fixture.press(Key::Left, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
+            assert_eq!(browser.focused_item().map(|(depth, _, _)| depth), Some(1));
+            fixture.press(Key::Left, ModifierType::empty());
             wait_until(|| {
                 browser
                     .focused_item()
@@ -480,6 +585,7 @@ fn default_archive_root_left_routes_to_the_parent_column() {
             });
             assert_eq!(browser.active_location(), origin);
             assert!(fixture.view.item_view_has_focus());
+            assert!(!owner_bar(&fixture));
         },
     );
 }

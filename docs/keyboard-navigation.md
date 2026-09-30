@@ -102,15 +102,19 @@ While the input is focused, Space types into the query if no result is selected.
 
 Quick Look on a local ZIP, 7z, TAR, or TAR.GZ opens the archive's member tree
 instead of extracting it. The preview starts at the archive root with its first
-member highlighted. The listing keeps its selection, but drops the
-keyboard-cursor outline so only one cursor is visible.
+member highlighted. In List and Columns modes, arrow keys act on the focused
+pane, not merely on an open preview. From the listing, **Right** enters the open
+preview; Quick Look hands focus to the archive directly. While the preview owns
+focus, its header shows the accent top border instead of the Miller column.
+Returning to the listing restores its cursor and column header indicator.
 
 Inside the preview, **Up/Down** (or **k/j**) move the highlight, **Right/l/Enter**
 opens the highlighted folder, and **Left/h** returns to the parent. **Left** at the
-archive root returns focus to the listing; if the listing already has focus in
-Columns mode, it moves to the parent column. Right/Enter on a member file does
-nothing. Navigating never
-extracts anything or touches the filesystem; **Space** and **Escape** still
+archive root returns focus to the listing without closing the preview. Up/Down
+then move through listing items; Right enters the preview again. In Columns
+mode, another Left from the listing moves to the parent column. Right/Enter on a
+member file does nothing. Navigating never extracts anything or touches the
+filesystem; **Space** and **Escape** still
 close the preview. In [10xer mode](10xer-mode.md#preview-keyboard-ownership),
 **h** at the archive root returns to the listing, **Space** is swallowed, and
 **Shift+Tab** / **Esc** return or close.
