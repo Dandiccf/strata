@@ -93,7 +93,7 @@ const TARGETS: &[Target] = &[
         id: "sidebar-places",
         page: "general",
         title: "Items shown in sidebar",
-        aliases: "sidebar places hide show home trash network recent shares desktop documents downloads pictures videos folder",
+        aliases: "sidebar places hide show home trash network recent shares desktop documents downloads music pictures videos folder",
     },
     Target {
         id: "opening",

@@ -77,6 +77,7 @@ pub mod icons {
     pub const PIN: &str = "strata-pin";
     pub const PLAY: &str = "strata-play";
     pub const MINUS: &str = "strata-minus";
+    pub const MUSIC: &str = "strata-music-2";
     pub const PLUS: &str = "strata-plus";
     pub const PRINTER: &str = "strata-printer";
     pub const PICTURES: &str = "strata-image";

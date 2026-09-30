@@ -470,6 +470,7 @@ fn append_sidebar_options(content: &gtk::Box, manager: &Rc<PreferenceManager>) {
         icons::MONITOR,
         icons::DOCUMENTS,
         icons::DOWNLOADS,
+        icons::MUSIC,
         icons::PICTURES,
         icons::VIDEOS,
     ];
@@ -515,6 +516,12 @@ fn append_sidebar_options(content: &gtk::Box, manager: &Rc<PreferenceManager>) {
             description: "Show the Downloads folder in the sidebar.",
             read: PreferenceManager::sidebar_show_downloads,
             write: PreferenceManager::set_sidebar_show_downloads,
+        },
+        PreferenceSwitch {
+            title: "Show Music in sidebar",
+            description: "Show the Music folder in the sidebar.",
+            read: PreferenceManager::sidebar_show_music,
+            write: PreferenceManager::set_sidebar_show_music,
         },
         PreferenceSwitch {
             title: "Show Pictures in sidebar",

@@ -75,6 +75,7 @@ const STANDARD_PLACE_IDS: &[&str] = &[
     "desktop",
     "documents",
     "downloads",
+    "music",
     "pictures",
     "videos",
 ];
@@ -1083,7 +1084,7 @@ pub(super) struct SidebarState {
     mount_monitor: gio_unix::MountMonitor,
     preference_manager: Rc<super::preferences::PreferenceManager>,
     place_order: RefCell<Vec<&'static str>>,
-    places_visibility: RefCell<[bool; 9]>,
+    places_visibility: RefCell<[bool; 10]>,
     pinned_places: Rc<RefCell<Vec<(Location, String)>>>,
     place_rows: RefCell<Vec<(Location, gtk::Button)>>,
     trash_contents: Cell<TrashContents>,
@@ -1987,6 +1988,7 @@ impl SidebarState {
                 "desktop" => manager.set_sidebar_show_desktop(false),
                 "documents" => manager.set_sidebar_show_documents(false),
                 "downloads" => manager.set_sidebar_show_downloads(false),
+                "music" => manager.set_sidebar_show_music(false),
                 "pictures" => manager.set_sidebar_show_pictures(false),
                 "videos" => manager.set_sidebar_show_videos(false),
                 _ => {}
@@ -3431,6 +3433,7 @@ fn is_standard_place_location(location: &Location) -> bool {
         glib::UserDirectory::Desktop,
         glib::UserDirectory::Documents,
         glib::UserDirectory::Downloads,
+        glib::UserDirectory::Music,
         glib::UserDirectory::Pictures,
         glib::UserDirectory::Videos,
     ]
@@ -3451,6 +3454,7 @@ fn sidebar_standard_place_visible(
         "desktop" => manager.sidebar_show_desktop(),
         "documents" => manager.sidebar_show_documents(),
         "downloads" => manager.sidebar_show_downloads(),
+        "music" => manager.sidebar_show_music(),
         "pictures" => manager.sidebar_show_pictures(),
         "videos" => manager.sidebar_show_videos(),
         _ => true,
@@ -3516,6 +3520,11 @@ fn standard_place(id: &str) -> Option<(&'static str, &'static str, glib::UserDir
             crate::assets::icons::DOWNLOADS,
             "Downloads",
             glib::UserDirectory::Downloads,
+        )),
+        "music" => Some((
+            crate::assets::icons::MUSIC,
+            "Music",
+            glib::UserDirectory::Music,
         )),
         "pictures" => Some((
             crate::assets::icons::PICTURES,

@@ -107,6 +107,8 @@ pub(in crate::ui) struct Preferences {
     #[serde(default = "default_enabled")]
     sidebar_show_downloads: bool,
     #[serde(default = "default_enabled")]
+    sidebar_show_music: bool,
+    #[serde(default = "default_enabled")]
     sidebar_show_pictures: bool,
     #[serde(default = "default_enabled")]
     sidebar_show_videos: bool,
@@ -221,6 +223,7 @@ impl Default for Preferences {
             sidebar_show_desktop: true,
             sidebar_show_documents: true,
             sidebar_show_downloads: true,
+            sidebar_show_music: true,
             sidebar_show_pictures: true,
             sidebar_show_videos: true,
             show_hidden: false,
@@ -310,6 +313,7 @@ fn default_sidebar_order() -> Vec<String> {
         "desktop".to_owned(),
         "documents".to_owned(),
         "downloads".to_owned(),
+        "music".to_owned(),
         "pictures".to_owned(),
         "videos".to_owned(),
     ]
@@ -1166,6 +1170,15 @@ impl PreferenceManager {
         self.save_preferences();
     }
 
+    pub fn sidebar_show_music(&self) -> bool {
+        self.preferences.borrow().sidebar_show_music
+    }
+
+    pub fn set_sidebar_show_music(&self, visible: bool) {
+        self.preferences.borrow_mut().sidebar_show_music = visible;
+        self.save_preferences();
+    }
+
     pub fn sidebar_show_pictures(&self) -> bool {
         self.preferences.borrow().sidebar_show_pictures
     }
@@ -1184,7 +1197,7 @@ impl PreferenceManager {
         self.save_preferences();
     }
 
-    pub fn sidebar_places_visibility(&self) -> [bool; 9] {
+    pub fn sidebar_places_visibility(&self) -> [bool; 10] {
         let preferences = self.preferences.borrow();
         [
             preferences.sidebar_show_home,
@@ -1194,6 +1207,7 @@ impl PreferenceManager {
             preferences.sidebar_show_desktop,
             preferences.sidebar_show_documents,
             preferences.sidebar_show_downloads,
+            preferences.sidebar_show_music,
             preferences.sidebar_show_pictures,
             preferences.sidebar_show_videos,
         ]

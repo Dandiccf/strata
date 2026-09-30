@@ -89,7 +89,19 @@ def test_current_breadcrumb_opens_hierarchy_instead_of_window_menu(strata):
     strata.wait_for_directory(path.parent.name)
 
 
-def test_a_sidebar_place_navigates_there(strata):
+@pytest.fixture
+def music_place(test_environment):
+    home = test_environment.home
+    music = home / "Audio Library"
+    music.mkdir()
+    (music / "song.txt").write_text("music\n")
+    (test_environment.config_home / "user-dirs.dirs").write_text(
+        'XDG_MUSIC_DIR="$HOME/Audio Library"\n'
+    )
+    return music
+
+
+def test_a_sidebar_place_navigates_there(music_place, strata):
     home = strata.environment.home
     (home / "sidebar-target.txt").write_text("target\n")
 
@@ -97,6 +109,10 @@ def test_a_sidebar_place_navigates_there(strata):
 
     strata.wait_for_directory(home.name)
     strata.entry("sidebar-target.txt")
+
+    strata.pointer.click(strata.sidebar_button("Music"))
+    strata.wait_for_directory(music_place.name)
+    strata.entry("song.txt")
 
 
 @pytest.fixture
