@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-//! 10xer file commands from the listing: yank, cut, unyank, paste, delete,
-//! create, rename, sort, hidden files, Open With, and the **c**, **,**, and
-//! **;** chords.
-
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -25,8 +21,6 @@ use crate::{
     },
 };
 
-/// The newest **O** lookup. Anything that starts a newer interaction ends it,
-/// so a late answer never opens a chooser over that interaction.
 #[derive(Clone, Default)]
 pub(super) struct OpenWithLookup {
     generation: Rc<Cell<u64>>,
@@ -42,7 +36,6 @@ impl OpenWithLookup {
     }
 }
 
-/// What the **;** panel listed, so a digit never runs an action it did not show.
 pub(super) struct ArmedActions {
     targets: Vec<Location>,
     ids: Vec<String>,
@@ -63,7 +56,6 @@ fn sort_choice(key: Key) -> Option<(SortKey, SortDirection)> {
     })
 }
 
-/// The digit typed and its 1-based slot; **0** is the tenth.
 fn action_slot(key: Key) -> Option<(char, usize)> {
     let digit = match key {
         Key::_0 | Key::KP_0 => 0,
@@ -91,7 +83,7 @@ impl Dispatcher {
         if !self.view.item_view_has_focus() {
             return None;
         }
-        // Filter and search results take these too, unlike directory commands.
+        // Result navigation also consumes Ctrl+H; toggling must win.
         if crate::ui::window::is_toggle_hidden_shortcut(key, modifiers) {
             self.view.toggle_hidden_from_keys();
             return Some(Propagation::Stop);
@@ -135,7 +127,6 @@ impl Dispatcher {
         }
     }
 
-    /// Paste leaves pointer or keyboard ownership of the destination as it is.
     fn paste(&self, focus: ConflictFocus) {
         let shortcuts = self.shortcuts.clone();
         self.view.paste_preferring(
@@ -187,7 +178,6 @@ impl Dispatcher {
         }
     }
 
-    /// **c c** / **c n**.
     pub(super) fn complete_copy(&self, key: Key) -> bool {
         let names = match key {
             Key::c => false,
@@ -202,7 +192,6 @@ impl Dispatcher {
 }
 
 impl Dispatcher {
-    /// **, a** / **m** / **s** / **e**; Shift reverses.
     pub(super) fn complete_sort(&self, key: Key) -> bool {
         let Some((sort_key, direction)) = sort_choice(key) else {
             return false;
@@ -234,8 +223,6 @@ impl Dispatcher {
         self.shortcuts.arm_chord_with(Chord::Action, rows);
     }
 
-    /// **; 1**–**; 0**. The catalog and targets are read again now; a slot
-    /// runs only if it still holds the action the panel listed for it.
     pub(super) fn complete_action(&self, key: Key) -> bool {
         let Some((digit, slot)) = action_slot(key) else {
             return false;
@@ -260,8 +247,6 @@ impl Dispatcher {
         true
     }
 
-    /// **O**. The lookup runs off the key handler; the chooser opens only if
-    /// no newer key, focus change, mode exit, or window close came first.
     fn open_with_targets(&self) {
         self.open_with.invalidate();
         let generation = self.open_with.generation.clone();

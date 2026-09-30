@@ -47,9 +47,7 @@ pub(super) struct Bindings {
     pub preview: PreviewDrawer,
     pub type_to_search: TypeToSearch,
     pub shortcuts: ShortcutFooter,
-    /// Lists folders for **go ›** completion.
     pub folders: Rc<dyn FolderSource>,
-    /// Visited folders for **z** / **Z**.
     pub history: Rc<NavigationHistory>,
 }
 
@@ -235,8 +233,6 @@ fn bind_go_completion(dispatcher: &Dispatcher) {
         });
 }
 
-/// **z** / **Z** list history candidates for the text as it is edited, and a
-/// clicked candidate opens like **Enter**.
 fn bind_history_prompts(dispatcher: &Dispatcher) {
     let shortcuts = dispatcher.shortcuts.clone();
     let history = dispatcher.history.clone();
@@ -247,15 +243,23 @@ fn bind_history_prompts(dispatcher: &Dispatcher) {
         }
     });
     let shortcuts = dispatcher.shortcuts.clone();
-    let browser = Rc::downgrade(&dispatcher.view.browser());
+    let view = dispatcher.view.clone();
     dispatcher
         .shortcuts
         .connect_candidate_activated(move |path| {
-            shortcuts.dismiss_prompt();
-            if let Some(browser) = browser.upgrade() {
-                browser.focus_active();
-                browser.navigate(crate::model::Location::local(path));
+            if !shortcuts
+                .open_prompt_kind()
+                .is_some_and(crate::ui::tenxer_mode::Prompt::picks_history)
+            {
+                return;
             }
+            shortcuts.dismiss_prompt();
+            if !view.focus_visible_results() {
+                view.browser().focus_active();
+            }
+            view.keyboard_navigation();
+            view.browser()
+                .navigate_with_selection(crate::model::Location::local(path), true);
         });
 }
 
@@ -469,7 +473,6 @@ struct Dispatcher {
     shortcuts: ShortcutFooter,
     go: GoCompletion,
     history: Rc<NavigationHistory>,
-    /// The item the open **rename ›** prompt renames.
     rename_target: Rc<RefCell<Option<crate::model::FileEntry>>>,
     armed_actions: Rc<RefCell<Option<files::ArmedActions>>>,
     open_with: files::OpenWithLookup,
@@ -553,7 +556,6 @@ impl Dispatcher {
             go_on_destroy.invalidate();
             open_with_on_destroy.invalidate();
         });
-        // The rename target lives exactly as long as its prompt.
         let rename_target = dispatcher.rename_target.clone();
         dispatcher
             .shortcuts
@@ -600,6 +602,9 @@ impl Dispatcher {
         }
         let preferences = &self.type_to_search.preferences;
         if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
+            // Text-size shortcuts run before the chord consumer. Drop the mark
+            // first, then resize, matching Ctrl+, opening Settings.
+            self.shortcuts.cancel_chord();
             preferences.set_text_size(size);
             return Propagation::Stop;
         }
@@ -687,7 +692,7 @@ impl Dispatcher {
             return Some(Propagation::Proceed);
         }
         if self.shortcuts.prompt_has_focus() {
-            if let Some(result) = self.shortcuts.handle_key(key, modifiers) {
+            if let Some(result) = self.footer_key(key, modifiers) {
                 return Some(result);
             }
             return Some(self.prompt_key(browser, key, modifiers));
@@ -696,14 +701,26 @@ impl Dispatcher {
             return Some(result);
         }
         if !self.inline_editing_active()
-            && let Some(result) = self.shortcuts.handle_key(key, modifiers)
+            && let Some(result) = self.footer_key(key, modifiers)
         {
             return Some(result);
         }
         if key == Key::Escape && crate::ui::scrolling::stop_autoscroll() {
+            self.shortcuts.cancel_chord();
             return Some(Propagation::Stop);
         }
         None
+    }
+
+    /// Shortcut-reference keys run before the chord consumer. A visible prompt
+    /// keeps its armed chord; every other claimed footer key cancels first.
+    fn footer_key(&self, key: Key, modifiers: Modifiers) -> KeyResult {
+        let prompted = self.shortcuts.prompt_is_visible();
+        let result = self.shortcuts.handle_key(key, modifiers)?;
+        if !prompted {
+            self.shortcuts.cancel_chord();
+        }
+        Some(result)
     }
 
     fn inline_editing_active(&self) -> bool {

@@ -249,7 +249,6 @@ impl PaneSection {
 
 type ListSorting = Rc<HeadingSort>;
 
-/// The sort List headings show and a heading click reverses.
 struct HeadingSort {
     current: Cell<(SortKey, SortDirection)>,
     arrows: RefCell<Vec<(SortKey, gtk::Image)>>,
@@ -260,8 +259,6 @@ impl HeadingSort {
         self.current.get()
     }
 
-    /// Shows `key` and `direction` however they were chosen, so the next
-    /// heading click reverses what is actually applied.
     fn show(&self, key: SortKey, direction: SortDirection) {
         self.current.set((key, direction));
         for (arrow_key, arrow) in self.arrows.borrow().iter() {
@@ -1007,7 +1004,6 @@ impl ModeViews {
             .collect()
     }
 
-    /// Filters whose funnel is closed: 10xer footer filters.
     pub(in crate::ui) fn hidden_filter_entries(&self) -> Vec<gtk::Entry> {
         self.icons_panes
             .iter()
@@ -1466,8 +1462,6 @@ impl ModeViews {
         self.cursor_keeps_focus.set(keep);
     }
 
-    /// The visible collection view showing `source` of pane `depth`, and its
-    /// position there.
     pub(in crate::ui) fn cursor_view(
         &self,
         depth: usize,
@@ -1481,7 +1475,6 @@ impl ModeViews {
         })
     }
 
-    /// Calls `visit` with the name label of every bound Icons and List item.
     pub(in crate::ui) fn visit_name_labels(&self, visit: impl Fn(&gtk::Widget)) {
         for pane in self.all_panes() {
             for section in pane.item_sections() {
@@ -1491,6 +1484,7 @@ impl ModeViews {
                     }
                 }
             }
+            pane.search.visit_result_name_labels(&visit);
         }
     }
 
@@ -2372,7 +2366,13 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
             depth,
             Some((source_index_for_setup.clone(), filtered_for_setup.clone())),
             peek_for_setup.clone(),
-            (None, Some(icon.upcast_ref()), &content_click, false),
+            (
+                None,
+                Some(icon.upcast_ref()),
+                &content_click,
+                false,
+                slow_click,
+            ),
         );
         item.set_child(Some(&card));
         if let Some(parent) = card.parent() {
@@ -3506,14 +3506,12 @@ fn collection_with_marquee(
     overlay.set_vexpand(true);
     super::scrolling::install_autoscroll(&scroll, &overlay);
 
-    let is_item = if list_rows {
-        super::marquee::item_content_predicate(
-            targets.clone(),
-            Rc::new(super::pointer::hits_list_item_content),
-        )
+    let content: super::marquee::ItemPredicate = if list_rows {
+        Rc::new(super::pointer::hits_list_item_content)
     } else {
         Rc::new(super::pointer::hits_item_content)
     };
+    let is_item = super::marquee::item_content_predicate(targets.clone(), content);
     let marquee = super::marquee::install(super::marquee::MarqueeSetup {
         view: view.clone(),
         surface: scroll.clone().upcast(),
@@ -3663,9 +3661,11 @@ fn install_list_drag_drop(
         Option<&gtk::Widget>,
         &gtk::GestureClick,
         bool,
+        Rc<SlowClickRename>,
     ),
 ) {
-    let (drag_icon, multi_drag_icon, content_click, list_rows) = drag_icon_and_content_click;
+    let (drag_icon, multi_drag_icon, content_click, list_rows, intent) =
+        drag_icon_and_content_click;
     if transfer_handler.borrow().is_none() {
         return;
     }
@@ -3682,15 +3682,16 @@ fn install_list_drag_drop(
     let prepare_row = row.downgrade();
     drag.connect_prepare(move |source, x, y| {
         let prepare_row = prepare_row.upgrade()?;
-        if list_rows {
-            if !super::pointer::hits_list_item_content(&prepare_row, x, y)
-                || prepare_row
-                    .pick(x, y, gtk::PickFlags::DEFAULT)
-                    .is_some_and(|target| crate::ui::focus_navigation::editable(&target))
-            {
-                return None;
-            }
-        } else if !super::pointer::hits_icon_card_content(&prepare_row, x, y) {
+        if prepare_row
+            .pick(x, y, gtk::PickFlags::DEFAULT)
+            .is_some_and(|target| crate::ui::focus_navigation::editable(&target))
+            || (!intent.was_selected.get()
+                && if list_rows {
+                    !super::pointer::hits_list_item_content(&prepare_row, x, y)
+                } else {
+                    !super::pointer::hits_icon_card_content(&prepare_row, x, y)
+                })
+        {
             return None;
         }
         source.set_actions(super::browser::drag_actions_for_modifiers(
