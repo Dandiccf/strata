@@ -1818,7 +1818,10 @@ fn item_menu_offers_compress_for_native_folder() {
                 .filter(|label| label.is_visible() && !label.text().is_empty())
                 .map(|label| label.text().to_string())
                 .collect::<Vec<_>>();
-            assert!(labels.iter().any(|label| label == "Compress…"), "{labels:?}");
+            assert!(
+                labels.iter().any(|label| label == "Compress…"),
+                "{labels:?}"
+            );
             popover.popdown();
             state.window.close();
         },
