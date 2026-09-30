@@ -100,7 +100,11 @@ To invalidate all cached answers, emit an event at any time:
 Invalidate on service state changes, mount disappearance, disconnect/reconnect or
 lost event history. Strata advances a generation, discards older in-flight query
 and menu responses, and refreshes visible items and open menus. Events carry no
-paths. A five-second cache lifetime is a fallback, not an event replacement.
+paths. A five-second refresh interval is a fallback, not an event replacement. Refreshes
+retain the last answer while awaiting its replacement; identical answers do not
+rebuild menus or clear badges. Changed menu rows are reconciled in place. Negative
+answers and provider disconnects withdraw presentation; unanswered state expires
+after at most fifteen seconds even if events keep invalidating it.
 
 ## Bounds and failure behavior
 

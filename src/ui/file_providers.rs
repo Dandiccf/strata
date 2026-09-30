@@ -13,6 +13,8 @@ use std::{
 };
 
 const TTL: Duration = Duration::from_secs(5);
+// Refresh deadlines do not erase presentation; failure still has a hard bound.
+const MAX_AGE: Duration = Duration::from_secs(15);
 type MenuKey = (Vec<String>, bool);
 type MenuResult = Vec<(usize, MenuAction)>;
 struct Provider {
@@ -21,6 +23,7 @@ struct Provider {
     cache: HashMap<String, (Instant, Decoration)>,
     menus: HashMap<MenuKey, (Instant, Vec<MenuAction>)>,
     epoch: u64,
+    refresh_after: Instant,
     disconnected: bool,
 }
 enum Pending {
@@ -139,6 +142,7 @@ impl Hub {
                     cache: HashMap::new(),
                     menus: HashMap::new(),
                     epoch: 0,
+                    refresh_after: Instant::now(),
                     disconnected: false,
                 });
             }
@@ -159,6 +163,8 @@ impl Hub {
                 match update {
                     Update::Offline => {
                         self.invalidate(index);
+                        self.providers[index].cache.clear();
+                        self.providers[index].menus.clear();
                         let ids: Vec<_> = self
                             .pending
                             .iter()
@@ -190,8 +196,22 @@ impl Hub {
                         let provider = &mut self.providers[index];
                         match pending {
                             Pending::Query(i, e, paths) if i == index && e == provider.epoch => {
-                                if provider.cache.len() + paths.len() > 2048 {
-                                    provider.cache.clear();
+                                let new_count = paths
+                                    .iter()
+                                    .filter(|path| !provider.cache.contains_key(*path))
+                                    .count();
+                                let excess =
+                                    (provider.cache.len() + new_count).saturating_sub(2048);
+                                if excess > 0 {
+                                    let mut oldest: Vec<_> = provider
+                                        .cache
+                                        .iter()
+                                        .map(|(path, (at, _))| (*at, path.clone()))
+                                        .collect();
+                                    oldest.sort_unstable();
+                                    for (_, path) in oldest.into_iter().take(excess) {
+                                        provider.cache.remove(&path);
+                                    }
                                 }
                                 // Missing entries are a negative answer, never an old badge.
                                 for path in &paths {
@@ -214,8 +234,15 @@ impl Hub {
                                 }
                             }
                             Pending::Menu(i, e, key) if i == index && e == provider.epoch => {
-                                if provider.menus.len() >= 32 {
-                                    provider.menus.clear();
+                                if provider.menus.len() >= 32
+                                    && !provider.menus.contains_key(&key)
+                                    && let Some(oldest) = provider
+                                        .menus
+                                        .iter()
+                                        .min_by_key(|(_, (at, _))| *at)
+                                        .map(|(key, _)| key.clone())
+                                {
+                                    provider.menus.remove(&oldest);
                                 }
                                 provider.menus.insert(key, (Instant::now(), reply.actions));
                             }
@@ -251,7 +278,7 @@ impl Hub {
             if provider.disconnected {
                 continue;
             }
-            let mut missing: Vec<_> = visible.iter().filter(|path| !provider.cache.get(*path).is_some_and(|(at,_)| at.elapsed() < TTL)
+            let mut missing: Vec<_> = visible.iter().filter(|path| !provider.cache.get(*path).is_some_and(|(at,_)| *at >= provider.refresh_after && at.elapsed() < TTL)
                 && !self.pending.values().any(|p| matches!(p,Pending::Query(i,_,paths) if *i == index && paths.contains(path)))).cloned().collect();
             missing.sort();
             missing.dedup();
@@ -270,7 +297,7 @@ impl Hub {
                 let decoration = self.providers.iter().find_map(|p| {
                     p.cache
                         .get(&s.path)
-                        .filter(|(at, _)| at.elapsed() < TTL)
+                        .filter(|(at, _)| at.elapsed() < MAX_AGE)
                         .and_then(|(_, d)| {
                             d.badge
                                 .as_ref()
@@ -285,8 +312,7 @@ impl Hub {
     fn invalidate(&mut self, index: usize) {
         let p = &mut self.providers[index];
         p.epoch += 1;
-        p.cache.clear();
-        p.menus.clear();
+        p.refresh_after = Instant::now();
     }
     fn menu(&mut self, key: &MenuKey) -> MenuResult {
         let mut out = Vec::new();
@@ -295,12 +321,17 @@ impl Hub {
             if p.disconnected {
                 continue;
             }
-            if let Some((_, actions)) = p.menus.get(key).filter(|(at, _)| at.elapsed() < TTL) {
+            if let Some((_, actions)) = p.menus.get(key).filter(|(at, _)| at.elapsed() < MAX_AGE) {
                 out.extend(actions.iter().cloned().map(|a| (i, a)));
-            } else if !self
-                .pending
-                .values()
-                .any(|r| matches!(r, Pending::Menu(j,_,k) if *j == i && k == key))
+            }
+            if !p
+                .menus
+                .get(key)
+                .is_some_and(|(at, _)| *at >= p.refresh_after && at.elapsed() < TTL)
+                && !self
+                    .pending
+                    .values()
+                    .any(|r| matches!(r, Pending::Menu(j,_,k) if *j == i && k == key))
             {
                 let epoch = p.epoch;
                 self.send(
@@ -359,12 +390,29 @@ pub(super) fn watch_menu(
         }
         let result = with_hub(|h| h.menu(&key));
         if result != previous {
-            model.remove_all();
-            for name in group.list_actions() {
-                group.remove_action(&name);
+            let prefix = previous
+                .iter()
+                .zip(&result)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let suffix = previous[prefix..]
+                .iter()
+                .rev()
+                .zip(result[prefix..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            for n in (prefix..previous.len() - suffix).rev() {
+                let (provider, action) = &previous[n];
+                model.remove(n as i32);
+                group.remove_action(&format!("action-{provider}-{}", action.id));
             }
-            for (n, (provider, a)) in result.iter().enumerate() {
-                let name = format!("action-{n}");
+            for (n, (provider, a)) in result
+                .iter()
+                .enumerate()
+                .take(result.len() - suffix)
+                .skip(prefix)
+            {
+                let name = format!("action-{provider}-{}", a.id);
                 let item = gio::MenuItem::new(
                     Some(&a.label.replace('_', "__")),
                     Some(&format!("provider.{name}")),
@@ -389,7 +437,7 @@ pub(super) fn watch_menu(
                     });
                 });
                 group.add_action(&action);
-                model.append_item(&item);
+                model.insert_item(n as i32, &item);
             }
             previous = result;
             changed();

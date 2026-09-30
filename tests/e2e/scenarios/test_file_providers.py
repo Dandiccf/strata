@@ -4,6 +4,7 @@ import base64
 import json
 from pathlib import Path
 import sys
+import time
 
 import pytest
 
@@ -19,7 +20,7 @@ def emit(value):
 def watch():
  previous=None
  while True:
-  try: now=state.read_text()
+  try: now=(state.read_text(), (state.parent/'event').read_text() if (state.parent/'event').exists() else '')
   except OSError: now='offline'
   if now!=previous:
    previous=now;emit({'version':1,'event':'invalidate'})
@@ -27,6 +28,7 @@ def watch():
 threading.Thread(target=watch,daemon=True).start()
 for line in sys.stdin:
  r=json.loads(line);paths=r['paths'];mode=state.read_text()
+ if (state.parent/'delay').exists(): time.sleep(.3)
  eligible=mode!='offline' and (r['method']=='query' or all(Path(p).is_relative_to(root) and Path(p).name!='local-only.txt' for p in paths))
  result={'version':1,'id':r['id']}
  if eligible:
@@ -94,3 +96,19 @@ def test_provider_background_receives_only_clicked_folder(strata, provider_regis
     request = json.loads(record.read_text())
     assert request["background"] is True
     assert request["paths"] == [str(strata.fixture.root)]
+
+
+@pytest.mark.parametrize("invalidate", [False, True])
+def test_refresh_keeps_unchanged_badges_and_open_menu_visible(strata, provider_registration, invalidate):
+    (provider_registration / "state").write_text("kept")
+    (provider_registration / "delay").touch()
+    strata.open_context_menu("todo.txt")
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "initial provider menu")
+    strata.wait(lambda: strata.window.find(role="image", description="Available offline"), "initial badge")
+    if invalidate:
+        (provider_registration / "event").write_text("refresh without changing state")
+    deadline = time.monotonic() + 7
+    while time.monotonic() < deadline:
+        assert "Release test pin" in strata.menu_items(), "refresh withdrew an unchanged menu"
+        assert strata.window.find(role="image", description="Available offline"), "refresh withdrew an unchanged badge"
+        time.sleep(.04)
