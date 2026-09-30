@@ -1485,7 +1485,9 @@ impl PreviewState {
                 browser.move_cursor(1);
             }
             gtk::gdk::Key::Left => {
-                browser.go_up();
+                if !browser.go_up() {
+                    return false;
+                }
             }
             gtk::gdk::Key::Right | gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
                 browser.open_cursor();

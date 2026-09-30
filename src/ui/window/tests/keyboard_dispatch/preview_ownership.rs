@@ -433,6 +433,58 @@ fn tenxer_preview_owns_document_keys_until_returned() {
 }
 
 #[test]
+fn default_archive_root_left_routes_to_the_parent_column() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::preview_ownership::default_archive_root_left_routes_to_the_parent_column",
+        || {
+            let fixture = ownership_fixture();
+            PreferenceManager::shared().set_tenxer_mode(false);
+            let browser = fixture.view.browser();
+            let origin = browser.active_location();
+            std::fs::write(fixture._directory.path().join("empty/bundle.zip"), b"zip")
+                .expect("nested archive");
+            fixture.view.set_view_mode(BrowserMode::Columns);
+            wait_loaded(&browser, 0);
+            select_named(&fixture, "empty");
+            focus_files(&fixture);
+            fixture.press(Key::Right, ModifierType::empty());
+            wait_loaded(&browser, 1);
+            wait_until(|| {
+                browser
+                    .focused_item()
+                    .is_some_and(|(depth, _, _)| depth == 1)
+            });
+            fixture
+                .preview
+                .show(browser.focused_entry().expect("archive"), Some(1));
+            wait_until(|| {
+                widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
+            });
+            assert!(fixture.preview.archive_at_root());
+            assert!(fixture.view.item_view_has_focus());
+            let location = browser.active_location();
+            assert!(fixture.press(Key::Right, ModifierType::empty()));
+            assert!(!fixture.preview.archive_at_root());
+            assert!(fixture.press(Key::Left, ModifierType::empty()));
+            assert!(fixture.preview.archive_at_root());
+            assert_eq!(browser.active_location(), location);
+            assert!(
+                !fixture.preview.archive_key(Key::Left),
+                "root Left is not handled"
+            );
+            assert!(fixture.press(Key::Left, ModifierType::empty()));
+            wait_until(|| {
+                browser
+                    .focused_item()
+                    .is_some_and(|(depth, _, _)| depth == 0)
+            });
+            assert_eq!(browser.active_location(), origin);
+            assert!(fixture.view.item_view_has_focus());
+        },
+    );
+}
+
+#[test]
 fn tenxer_interactive_previews_keep_a_defined_key_owner() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::preview_ownership::tenxer_interactive_previews_keep_a_defined_key_owner",
@@ -596,10 +648,10 @@ fn tenxer_interactive_previews_keep_a_defined_key_owner() {
             );
             fixture.press(Key::Left, ModifierType::empty());
             fixture.press(Key::Left, ModifierType::empty());
-            assert!(
-                archive_has_focus(&fixture),
-                "default Left at the root does nothing"
-            );
+            wait_until(|| fixture.view.item_view_has_focus());
+            assert!(fixture.preview.is_open());
+            assert_eq!(focused_name(&browser), "bundle.zip");
+            assert_eq!(browser.active_location(), origin);
             fixture.press(Key::space, ModifierType::empty());
             wait_until(|| !fixture.preview.is_enabled());
         },

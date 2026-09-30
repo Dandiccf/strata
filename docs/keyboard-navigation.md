@@ -106,8 +106,10 @@ member highlighted. The listing keeps its selection, but drops the
 keyboard-cursor outline so only one cursor is visible.
 
 Inside the preview, **Up/Down** (or **k/j**) move the highlight, **Right/l/Enter**
-opens the highlighted folder, and **Left/h** returns to the parent. Left at the
-archive root and Right/Enter on a member file do nothing. Navigating never
+opens the highlighted folder, and **Left/h** returns to the parent. **Left** at the
+archive root returns focus to the listing; if the listing already has focus in
+Columns mode, it moves to the parent column. Right/Enter on a member file does
+nothing. Navigating never
 extracts anything or touches the filesystem; **Space** and **Escape** still
 close the preview. In [10xer mode](10xer-mode.md#preview-keyboard-ownership),
 **h** at the archive root returns to the listing, **Space** is swallowed, and

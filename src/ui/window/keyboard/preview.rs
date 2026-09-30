@@ -143,7 +143,7 @@ impl Dispatcher {
     }
 
     /// Results replacing the listing take the keys back on their own cursor.
-    fn return_from_preview(&self, browser: &Browser) {
+    pub(super) fn return_from_preview(&self, browser: &Browser) {
         if self.view.focus_results_cursor() {
             return;
         }

@@ -69,6 +69,13 @@ impl Dispatcher {
         {
             return None;
         }
+        if event.key == Key::Left && self.preview.archive_at_root() {
+            if self.preview.archive_list_has_focus(event.focused.as_ref()) {
+                self.return_from_preview(&self.view.browser());
+                return Some(Propagation::Stop);
+            }
+            return None;
+        }
         match event.key {
             Key::Up | Key::Down | Key::Left | Key::Right | Key::Return | Key::KP_Enter => self
                 .preview
