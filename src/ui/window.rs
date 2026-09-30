@@ -838,23 +838,27 @@ pub(super) fn build_appearance_menu(
     preview_toggle.add_css_class("appearance-option");
     preview_toggle.add_css_class("preview-panel-option");
     super::accessibility::set_label(&preview_toggle, "Preview panel");
-    let shortcut_label = preview_shortcut.clone();
-    let tooltip_toggle = preview_toggle.clone();
+    let tooltip_toggle = preview_toggle.downgrade();
     preferences.bind_preference(
         &preview_shortcut,
         PreferenceManager::tenxer_mode,
-        move |_, enabled| {
+        move |widget, enabled| {
+            let shortcut = widget
+                .downcast_ref::<gtk::Label>()
+                .expect("preview shortcut label");
             let text = crate::ui::shortcut_reference::context_hint_for(
                 crate::ui::shortcut_reference::ContextHint::Preview,
                 enabled,
             );
-            shortcut_label.set_text(text);
-            shortcut_label.set_visible(!text.is_empty());
-            tooltip_toggle.set_tooltip_text(Some(&if text.is_empty() {
-                "Toggle preview panel while browsing".to_owned()
-            } else {
-                format!("Toggle preview panel while browsing ({text})")
-            }));
+            shortcut.set_text(text);
+            shortcut.set_visible(!text.is_empty());
+            if let Some(toggle) = tooltip_toggle.upgrade() {
+                toggle.set_tooltip_text(Some(&if text.is_empty() {
+                    "Toggle preview panel while browsing".to_owned()
+                } else {
+                    format!("Toggle preview panel while browsing ({text})")
+                }));
+            }
         },
     );
     let actions = gio::SimpleActionGroup::new();
