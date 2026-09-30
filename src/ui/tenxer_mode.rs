@@ -112,6 +112,7 @@ impl Chord {
                 ("n", "Network"),
                 ("r", "Recent"),
                 ("k", "Documents"),
+                ("m", "Music"),
                 ("p", "Pictures"),
                 ("v", "Videos"),
                 ("1–9", "Pins"),

@@ -52,6 +52,7 @@ pub(in crate::ui::window) fn go_target(key: Key, pins: &[Location]) -> Option<Go
         Key::r => place(Location::uri("recent:///"), false),
         Key::d => user_folder(glib::UserDirectory::Downloads, "Downloads"),
         Key::k => user_folder(glib::UserDirectory::Documents, "Documents"),
+        Key::m => user_folder(glib::UserDirectory::Music, "Music"),
         Key::p => user_folder(glib::UserDirectory::Pictures, "Pictures"),
         Key::v => user_folder(glib::UserDirectory::Videos, "Videos"),
         _ => {

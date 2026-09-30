@@ -3498,6 +3498,7 @@ fn standard_place_chord_key(id: &str) -> Option<&'static str> {
     match id {
         "documents" => Some("k"),
         "downloads" => Some("d"),
+        "music" => Some("m"),
         "pictures" => Some("p"),
         "videos" => Some("v"),
         _ => None,

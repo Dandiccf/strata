@@ -117,15 +117,17 @@ def test_a_sidebar_place_navigates_there(music_place, strata):
 
 @pytest.fixture
 def places(test_environment):
-    """Downloads exists and Documents is missing; pins are stored beta,
+    """Downloads and Music exist; Documents is missing; pins are stored beta,
     Downloads (hidden as a standard place), alpha."""
 
     home = test_environment.home
-    for name in ("Downloads", "pins/beta", "pins/alpha"):
+    for name in ("Downloads", "Audio Library", "pins/beta", "pins/alpha"):
         (home / name).mkdir(parents=True)
     config = test_environment.config_home
     (config / "user-dirs.dirs").write_text(
-        'XDG_DOWNLOAD_DIR="$HOME/Downloads"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\n'
+        'XDG_DOWNLOAD_DIR="$HOME/Downloads"\n'
+        'XDG_DOCUMENTS_DIR="$HOME/Documents"\n'
+        'XDG_MUSIC_DIR="$HOME/Audio Library"\n'
     )
     (config / "gtk-3.0").mkdir(exist_ok=True)
     (config / "gtk-3.0" / "bookmarks").write_text(
@@ -161,6 +163,7 @@ def test_tenxer_go_chord_jumps_to_places_and_visible_pins(places, strata):
     for second, directory in (
         ("h", places.name),
         ("d", "Downloads"),
+        ("m", "Audio Library"),
         ("2", "alpha"),
         ("1", "beta"),
     ):

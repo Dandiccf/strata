@@ -718,12 +718,12 @@ const TENXER_PLACE_CHORDS: &[PlaceChord] = &[
     PlaceChord {
         binding: Binding {
             category: "Places",
-            action: "Downloads / Documents / Pictures / Videos",
+            action: "Downloads / Documents / Music / Pictures / Videos",
             note: "",
-            keys: "g d / g k / g p / g v",
+            keys: "g d / g k / g m / g p / g v",
         },
         reference_keys: "",
-        reference_label: "Downloads / Documents / Pictures / Videos",
+        reference_label: "Downloads / Documents / Music / Pictures / Videos",
     },
     PlaceChord {
         binding: Binding {
