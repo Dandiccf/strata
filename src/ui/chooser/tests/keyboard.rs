@@ -507,6 +507,13 @@ fn save_starts_in_the_files_r_edits_the_name_and_enter_saves_here() {
                     .is_some_and(|focus| focus.is_ancestor(&name))
             };
             wait_until(|| chooser.state.view.item_view_has_focus());
+            let hints = widget_with_class(chooser.state.window.upcast_ref(), "chooser-save-hints")
+                .expect("save hints");
+            assert!(hints.is_visible());
+            PreferenceManager::shared().set_tenxer_mode(false);
+            assert!(!hints.is_visible());
+            PreferenceManager::shared().set_tenxer_mode(true);
+            assert!(hints.is_visible());
             chooser.move_to("other.txt");
             chooser.move_to("folder");
             assert_eq!(name.text(), "output.txt", "the cursor renamed the file");

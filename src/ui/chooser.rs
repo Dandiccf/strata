@@ -1146,6 +1146,9 @@ fn build_chooser_with_source(
     }
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.add_css_class("chooser-actions");
+    if let Some(hints) = save_hints(&request.kind, &theme) {
+        actions.append(&hints);
+    }
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     actions.append(&spacer);
@@ -1314,6 +1317,10 @@ fn build_chooser_with_source(
     if PreferenceManager::shared().tenxer_mode() {
         // The listing takes focus once it loads, so 10xer keys work at once.
         window.set_focus_visible(true);
+        if let Some(filename) = state.filename.as_ref() {
+            // The window's first focus selects the name; it must not look focused.
+            filename.select_region(0, 0);
+        }
         return Some(state);
     } else if let Some(filename) = state.filename.as_ref() {
         filename.grab_focus();
@@ -1474,6 +1481,37 @@ fn apply_external_parent(window: &gtk::Window, parent: Option<&WindowIdentifierT
     if !toplevel.set_transient_for_exported(handle) {
         tracing::debug!("Wayland compositor rejected the portal parent handle");
     }
+}
+
+/// A Save request's 10xer keys, beside Cancel and Save while the mode is on.
+fn save_hints(kind: &ChooserKind, preferences: &Rc<PreferenceManager>) -> Option<gtk::Box> {
+    let hints: &[(&str, &str)] = match kind {
+        ChooserKind::SaveFile { .. } => &[
+            ("Enter", "Save here"),
+            ("r", "Edit name"),
+            ("o", "Replace file"),
+        ],
+        ChooserKind::SaveFiles { .. } => &[("Enter", "Save here")],
+        ChooserKind::Open { .. } => return None,
+    };
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.add_css_class("chooser-save-hints");
+    row.set_valign(gtk::Align::Center);
+    for (index, (key, action)) in hints.iter().enumerate() {
+        let keycap = gtk::Label::new(Some(key));
+        keycap.add_css_class("sidebar-keycap");
+        if index > 0 {
+            keycap.set_margin_start(10);
+        }
+        let label = gtk::Label::new(Some(action));
+        label.add_css_class("shortcut-footer-chord-hint");
+        row.append(&keycap);
+        row.append(&label);
+    }
+    preferences.bind_preference(&row, PreferenceManager::tenxer_mode, |row, enabled| {
+        row.set_visible(enabled)
+    });
+    Some(row)
 }
 
 /// The footer carries 10xer prompts, chords, and feedback, so it shows only
