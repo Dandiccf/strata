@@ -1678,9 +1678,6 @@ impl BrowserView {
         self.leave_result_visual() || self.state.browser.leave_visual()
     }
 
-    /// Leaving 10xer mode ends its ranges, keyboard peek, find highlights,
-    /// footer filters and search, and forced recursion in every pane. The
-    /// fill, open Miller columns, and the preview stay.
     pub(in crate::ui) fn end_tenxer_session(&self) {
         self.leave_result_visual();
         self.state.browser.leave_visual();

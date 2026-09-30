@@ -138,7 +138,6 @@ impl TypeToSearch {
     }
 }
 
-/// Shares the window's 10xer map with a portal file chooser.
 pub(super) fn chooser_keys(
     window: &gtk::Window,
     view: &BrowserView,

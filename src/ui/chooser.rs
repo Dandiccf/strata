@@ -489,7 +489,6 @@ impl ChooserState {
         }
     }
 
-    /// 10xer mode always saves in the current folder.
     fn selected_folder(&self) -> Option<PathBuf> {
         if PreferenceManager::shared().tenxer_mode() {
             return None;
@@ -502,8 +501,6 @@ impl ChooserState {
         }
     }
 
-    /// In 10xer mode only **r** and typing change the name, so moving the
-    /// cursor never renames what **Enter** saves.
     fn update_selected_filename(&self) {
         let Some(filename) = self.filename.as_ref() else {
             return;
@@ -762,10 +759,18 @@ impl ChooserState {
         focus_button(&layout.cancel);
     }
 
-    /// **Enter** / **o** on a file in 10xer mode. A filled multiple selection
-    /// is accepted whole; otherwise the file itself completes the request.
     fn confirm_file(self: &Rc<Self>, entry: &FileEntry) {
         if self.completion.borrow().is_none() || !self.view.browser().allows_entry(entry) {
+            return;
+        }
+        if matches!(
+            &self.request.kind,
+            ChooserKind::Open {
+                directory: true,
+                ..
+            }
+        ) {
+            self.show_error("Choose folders only");
             return;
         }
         if matches!(
@@ -1278,8 +1283,7 @@ fn build_chooser_with_source(
         &preview,
         tenxer,
     );
-    // A closed chooser is freed only with its last reference, which its own
-    // closures can hold, so cleanup runs when gtk_window_destroy() unrealizes it.
+    // Destroy can be delayed by the chooser's own closures; unrealize breaks their bindings.
     let browser_for_close = browser.clone();
     window.connect_unrealize(move |window| {
         browser_for_close.clear_observer();
@@ -1315,10 +1319,8 @@ fn build_chooser_with_source(
     browser.navigate(Location::local(&state.request.initial_directory));
     window.present();
     if PreferenceManager::shared().tenxer_mode() {
-        // The listing takes focus once it loads, so 10xer keys work at once.
         window.set_focus_visible(true);
         if let Some(filename) = state.filename.as_ref() {
-            // The window's first focus selects the name; it must not look focused.
             filename.select_region(0, 0);
         }
         return Some(state);
@@ -1483,7 +1485,6 @@ fn apply_external_parent(window: &gtk::Window, parent: Option<&WindowIdentifierT
     }
 }
 
-/// A Save request's 10xer keys, beside Cancel and Save while the mode is on.
 fn save_hints(kind: &ChooserKind, preferences: &Rc<PreferenceManager>) -> Option<gtk::Box> {
     let hints: &[(&str, &str)] = match kind {
         ChooserKind::SaveFile { .. } => &[
@@ -1514,8 +1515,6 @@ fn save_hints(kind: &ChooserKind, preferences: &Rc<PreferenceManager>) -> Option
     Some(row)
 }
 
-/// The footer carries 10xer prompts, chords, and feedback, so it shows only
-/// while the mode is on. It manages its own visibility, hence the holder.
 fn chooser_footer(
     view: &BrowserView,
     preferences: &Rc<PreferenceManager>,
@@ -1615,10 +1614,6 @@ fn install_shortcuts(
             return glib::Propagation::Proceed;
         };
         let preferences = PreferenceManager::shared();
-        if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
-            preferences.set_text_size(size);
-            return glib::Propagation::Stop;
-        }
         if let Some(layer) = visible_modal_layer(&state.window) {
             let focused = gtk::prelude::RootExt::focus(&state.window);
             if !focused.is_some_and(|focus| focus == layer || focus.is_ancestor(&layer)) {
@@ -1626,14 +1621,27 @@ fn install_shortcuts(
             }
             return glib::Propagation::Proceed;
         }
+        let focused = gtk::prelude::RootExt::focus(&state.window);
+        if preferences.tenxer_mode()
+            && (state.name_has_focus(focused.as_ref()) || state.view.location_has_focus())
+            && !matches!(key, gtk::gdk::Key::F1 | gtk::gdk::Key::Escape)
+            && !(modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                && matches!(key, gtk::gdk::Key::m | gtk::gdk::Key::M))
+        {
+            return glib::Propagation::Proceed;
+        }
         if let Some(result) = tenxer.handle(key, modifiers) {
             return result;
+        }
+        if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
+            preferences.set_text_size(size);
+            return glib::Propagation::Stop;
         }
         let browser = state.view.browser();
         let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         let alt = modifiers.contains(gtk::gdk::ModifierType::ALT_MASK);
         let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-        let focused = gtk::prelude::RootExt::focus(&state.window);
         if focused
             .as_ref()
             .and_then(|focused| focused.ancestor(gtk::Popover::static_type()))
@@ -1727,7 +1735,6 @@ fn install_shortcuts(
             if state.dismiss_dropdown() {
                 return glib::Propagation::Stop;
             }
-            // Like the footer prompts, 10xer Esc leaves the name for the files.
             if preferences.tenxer_mode() && state.name_has_focus(focused.as_ref()) {
                 browser.focus_active();
                 return glib::Propagation::Stop;
@@ -1843,7 +1850,6 @@ fn install_shortcuts(
             }
             return glib::Propagation::Stop;
         }
-        // 10xer mode keeps Ctrl+B for paging, so its sidebar toggle is Ctrl+N.
         let toggles_sidebar = if preferences.tenxer_mode() {
             matches!(key, gtk::gdk::Key::n | gtk::gdk::Key::N)
         } else {
@@ -1946,7 +1952,6 @@ fn install_shortcuts(
                 browser.focus_active();
                 return glib::Propagation::Stop;
             }
-            // The Save name joins the files → header round trip.
             if in_header {
                 filename.grab_focus();
                 filename.select_region(0, -1);

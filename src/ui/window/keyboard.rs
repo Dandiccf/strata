@@ -95,8 +95,7 @@ pub(super) fn install(window: &impl IsA<gtk::Window>, sidebar: &SidebarView, bin
     release_controllers_on_close(window, &[keys.upcast(), wheel.upcast()]);
 }
 
-/// The dispatcher holds its window, so a closed window drops its controllers
-/// to release it.
+// Key controllers retain the dispatcher and its window; unrealize breaks the cycle.
 fn release_controllers_on_close(window: &gtk::Window, controllers: &[gtk::EventController]) {
     let controllers: Vec<_> = controllers.iter().map(ObjectExt::downgrade).collect();
     window.connect_unrealize(move |window| {
@@ -106,22 +105,14 @@ fn release_controllers_on_close(window: &gtk::Window, controllers: &[gtk::EventC
     });
 }
 
-/// A portal file chooser request's side of the 10xer map: whether its keys
-/// may fill a multiple selection, and how they finish or cancel the request.
 pub(in crate::ui) struct ChooserPolicy {
     pub(in crate::ui) multiple: bool,
-    /// **Enter** / **o** on a file, instead of launching it.
     pub(in crate::ui) confirm: Rc<dyn Fn(crate::model::FileEntry)>,
-    /// **Esc** once nothing is left to dismiss.
     pub(in crate::ui) cancel: Rc<dyn Fn()>,
-    /// Save requests: **Enter** in the files saves in the current folder.
     pub(in crate::ui) save: Option<Rc<dyn Fn()>>,
-    /// **r** / **F2** edit the Save name instead of renaming a file.
     pub(in crate::ui) edit_name: Option<Rc<dyn Fn()>>,
 }
 
-/// The chooser's own key controller asks this first; `None` leaves the key to
-/// the chooser's restricted map.
 pub(in crate::ui) struct ChooserKeys {
     dispatcher: Dispatcher,
     browser: std::rc::Weak<Browser>,
@@ -263,9 +254,6 @@ fn bind_history_prompts(dispatcher: &Dispatcher) {
         });
 }
 
-/// Leaving 10xer mode drops the footer's prompt, pending lookups, and armed
-/// **;** actions, and hands a focused prompt's keys back to the listing. The
-/// view clears its own listing state.
 fn clear_find_on_mode_exit(
     window: &gtk::Window,
     dispatcher: &Dispatcher,
@@ -476,7 +464,6 @@ struct Dispatcher {
     rename_target: Rc<RefCell<Option<crate::model::FileEntry>>>,
     armed_actions: Rc<RefCell<Option<files::ArmedActions>>>,
     open_with: files::OpenWithLookup,
-    /// Set in a portal file chooser, whose request limits and finishes the map.
     chooser: Option<ChooserPolicy>,
 }
 
@@ -546,8 +533,6 @@ impl Dispatcher {
                 sidebar.show_place_keycaps(chord == Some(crate::ui::tenxer_mode::Chord::Go));
             }
         });
-        // gtk_window_destroy() unrealizes while other references still exist, so the
-        // Widget::destroy signal is too late to drop a pending chord.
         let cancel_on_destroy = dispatcher.shortcuts.clone();
         let go_on_destroy = dispatcher.go.clone();
         let open_with_on_destroy = dispatcher.open_with.clone();
@@ -568,8 +553,6 @@ impl Dispatcher {
         dispatcher
     }
 
-    /// Only the 10xer map runs here. Window-wide stages such as global search,
-    /// clipboard, and undo never see a chooser's keys.
     fn handle_chooser_key(
         &self,
         browser: &Rc<Browser>,
@@ -582,7 +565,6 @@ impl Dispatcher {
         if !items::is_modifier_key(key) {
             self.open_with.invalidate();
         }
-        // The request's name and the location keep every typed key but F1.
         if self.text_focused()
             && !self.shortcuts.prompt_has_focus()
             && !self.preview_document_focused()

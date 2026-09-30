@@ -90,7 +90,6 @@ impl PreferenceChanges {
         (listener.refresh)(anchor.as_ref(), manager);
     }
 
-    /// Ends every binding anchored at or inside `root`.
     pub(super) fn release_within(&self, root: &gtk::Widget) {
         let released: Vec<_> = {
             let mut listeners = self.listeners.borrow_mut();

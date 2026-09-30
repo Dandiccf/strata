@@ -500,8 +500,6 @@ impl BrowserView {
         true
     }
 
-    /// **s** overrides **Include subfolders** only while 10xer mode is on,
-    /// including in panes that no longer have focus.
     pub(in crate::ui) fn release_forced_recursion(&self) {
         let columns: Vec<_> = self.state.columns.borrow().clone();
         for column in columns {

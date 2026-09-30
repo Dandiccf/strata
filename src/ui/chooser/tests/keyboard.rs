@@ -21,7 +21,6 @@ struct Chooser {
 }
 
 impl Chooser {
-    /// Entries ending in `/` are folders.
     fn open(kind: ChooserKind, mode: BrowserMode, tree: &[&str]) -> Self {
         Self::open_with(kind, mode, tree, true)
     }
@@ -98,7 +97,6 @@ impl Chooser {
             .map(|entry| entry.display_name)
     }
 
-    /// Walks the cursor with the view's own motion keys.
     fn move_to(&self, name: &str) {
         let next = if self.state.view.view_mode() == BrowserMode::Icons {
             Key::l
@@ -540,6 +538,66 @@ fn save_starts_in_the_files_r_edits_the_name_and_enter_saves_here() {
 
             assert!(chooser.press(Key::Return));
             assert_eq!(chooser.chosen(), [chooser.uri("report.txt")]);
+        },
+    );
+}
+
+#[test]
+fn save_name_and_location_do_not_dispatch_listing_shortcuts() {
+    crate::test_support::gtk_test(
+        "ui::chooser::tests::keyboard::save_name_and_location_do_not_dispatch_listing_shortcuts",
+        || {
+            let chooser = Chooser::open(
+                ChooserKind::SaveFile {
+                    current_name: Some("output.txt".into()),
+                },
+                BrowserMode::List,
+                &["existing.txt"],
+            );
+            let name = chooser.state.filename.clone().expect("name field");
+            let location = widget_with_class(chooser.state.window.upcast_ref(), "location-entry")
+                .and_downcast::<gtk::Entry>()
+                .expect("location field");
+            let browser = chooser.state.view.browser();
+            let original_location = browser.active_location();
+            for entry in [&name, &location] {
+                if entry == &location {
+                    chooser.state.view.begin_location_edit();
+                } else {
+                    entry.grab_focus();
+                }
+                let has_focus = || {
+                    gtk::prelude::RootExt::focus(&chooser.state.window)
+                        .is_some_and(|focus| focus == *entry || focus.is_ancestor(entry))
+                };
+                wait_until(has_focus);
+                for (key, modifiers) in [
+                    (Key::f, ModifierType::CONTROL_MASK),
+                    (Key::l, ModifierType::CONTROL_MASK),
+                    (Key::h, ModifierType::CONTROL_MASK),
+                    (
+                        Key::b,
+                        ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
+                    ),
+                    (Key::n, ModifierType::CONTROL_MASK),
+                    (
+                        Key::n,
+                        ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
+                    ),
+                    (Key::_1, ModifierType::CONTROL_MASK),
+                    (Key::F5, ModifierType::empty()),
+                    (Key::space, ModifierType::empty()),
+                ] {
+                    assert!(!chooser.press_with(key, modifiers), "{key:?} intercepted");
+                    assert!(has_focus(), "{key:?} moved focus");
+                    assert_eq!(browser.active_location(), original_location);
+                    assert_eq!(chooser.state.view.view_mode(), BrowserMode::List);
+                    assert!(!chooser.state.view.filter_has_focus());
+                    assert!(chooser.open_request());
+                }
+                assert!(chooser.press(Key::Escape));
+                assert!(chooser.state.view.item_view_has_focus());
+            }
         },
     );
 }

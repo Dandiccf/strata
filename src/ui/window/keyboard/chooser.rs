@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-//! The portal file chooser's limits on the 10xer map. Commands a request does
-//! not allow are refused here, at dispatch, not only hidden from view.
-
 use gtk::{
     gdk::{Key, ModifierType as Modifiers},
     glib::Propagation,
@@ -15,7 +12,6 @@ const UNAVAILABLE: &str = "Not available in the file chooser";
 const SINGLE: &str = "Only one item can be chosen";
 const LOCAL_ONLY: &str = "Only local folders can be opened here";
 
-/// Why the chooser refuses a key, or `None` when the key keeps its 10xer meaning.
 pub(in crate::ui::window) fn refusal(
     key: Key,
     modifiers: Modifiers,
@@ -53,7 +49,6 @@ pub(in crate::ui::window) fn refusal(
     (fills && !multiple).then_some(SINGLE)
 }
 
-/// The chooser lists local folders and Recent only.
 pub(in crate::ui::window) fn opens_here(location: &Location) -> bool {
     location.native_path().is_some() || location.is_recent_root()
 }
@@ -79,8 +74,6 @@ impl Dispatcher {
         true
     }
 
-    /// **Enter** in the files of a Save request saves in the current folder,
-    /// whatever the cursor is on.
     pub(super) fn chooser_save(&self, key: Key, modifiers: Modifiers) -> KeyResult {
         let save = self.chooser.as_ref()?.save.as_ref()?;
         if !matches!(key, Key::Return | Key::KP_Enter)
@@ -105,8 +98,6 @@ impl Dispatcher {
         true
     }
 
-    /// **Enter** / **o** on a file hands it to the request instead of an
-    /// application. Folders still open.
     pub(super) fn chooser_confirm(&self, browser: &Browser) -> bool {
         let Some(policy) = self.chooser.as_ref() else {
             return false;
@@ -123,7 +114,6 @@ impl Dispatcher {
         true
     }
 
-    /// With nothing left to dismiss, **Esc** cancels the request.
     pub(super) fn chooser_cancel(&self) -> bool {
         let Some(policy) = self.chooser.as_ref() else {
             return false;

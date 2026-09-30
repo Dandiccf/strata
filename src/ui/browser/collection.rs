@@ -335,7 +335,6 @@ impl FilterQueryBinding {
         self.scope.forced.get()
     }
 
-    /// Returns the field to the saved scope, re-running any text it still holds.
     pub(in crate::ui) fn release_forced_recursion(&self) {
         if self.force_recursive(false)
             && self
