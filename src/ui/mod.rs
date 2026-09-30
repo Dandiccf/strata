@@ -44,6 +44,7 @@ mod terminal;
 mod theme;
 mod thumbnail;
 pub(crate) mod thumbnail_cache;
+pub(crate) mod tooltips;
 mod top_bar_navigation;
 mod udiskie_preferences;
 mod virtual_preview;

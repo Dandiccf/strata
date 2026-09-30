@@ -233,6 +233,7 @@ fn main() -> gtk::glib::ExitCode {
     application.connect_handle_local_options(|_, _| ControlFlow::Continue(()));
     application.connect_startup(|_| install_x11_program_class());
     application.connect_startup(export_file_manager_interface);
+    application.connect_startup(|_| ui::tooltips::install());
     application.connect_activate(ui::present);
     application.connect_open(|application, files, _| {
         if files.is_empty() {

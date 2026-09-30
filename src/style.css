@@ -3369,6 +3369,15 @@ menubutton.column-header-action > button:active {
   padding: 0;
 }
 
+.strata-tooltip contents,
+.strata-tooltip label {
+  color: @theme_text;
+}
+
+.strata-tooltip contents {
+  padding: 6px 8px;
+}
+
 .column-menu {
   font-size: 0.88em;
   min-width: 170px;
