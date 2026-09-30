@@ -86,6 +86,8 @@ pub(crate) enum Chord {
     /// **g** while a document or archive preview owns the keys: only **g g**.
     PreviewTop,
     Copy,
+    Sort,
+    Action,
 }
 
 impl Chord {
@@ -93,6 +95,8 @@ impl Chord {
         match self {
             Self::Go | Self::PreviewTop => "g-",
             Self::Copy => "c-",
+            Self::Sort => ",-",
+            Self::Action => ";-",
         }
     }
 
@@ -108,6 +112,7 @@ impl Chord {
                 ("n", "Network"),
                 ("r", "Recent"),
                 ("k", "Documents"),
+                ("m", "Music"),
                 ("p", "Pictures"),
                 ("v", "Videos"),
                 ("1–9", "Pins"),
@@ -115,6 +120,14 @@ impl Chord {
             ],
             Self::PreviewTop => &[("g", "Top")],
             Self::Copy => &[("c", "Copy path"), ("n", "Copy name")],
+            Self::Sort => &[
+                ("a", "Name"),
+                ("m", "Modified"),
+                ("s", "Size"),
+                ("e", "Type"),
+                ("Shift", "Reverse"),
+            ],
+            Self::Action => &[],
         }
     }
 }
@@ -129,6 +142,7 @@ pub(crate) enum Prompt {
     Jump,
     Recent,
     Create,
+    Rename,
 }
 
 impl Prompt {
@@ -142,6 +156,7 @@ impl Prompt {
             Self::Jump => "jump \u{203a}",
             Self::Recent => "recent \u{203a}",
             Self::Create => "create \u{203a}",
+            Self::Rename => "rename \u{203a}",
         }
     }
 
@@ -159,6 +174,7 @@ impl Prompt {
             Self::Jump => "Jump to a visited folder",
             Self::Recent => "Jump to a recently visited folder",
             Self::Create => "Create a file, or a folder ending in /",
+            Self::Rename => "Rename the focused item",
         }
     }
 }

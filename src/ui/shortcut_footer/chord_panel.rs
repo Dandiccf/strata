@@ -45,12 +45,18 @@ impl ChordPanel {
         }
     }
 
-    pub(super) fn show(&self, pill: &gtk::Label, chord: Chord, armed: Rc<Cell<Option<Chord>>>) {
+    pub(super) fn show(
+        &self,
+        pill: &gtk::Label,
+        chord: Chord,
+        rows: &[(String, String)],
+        armed: Rc<Cell<Option<Chord>>>,
+    ) {
         let (Some(popover), Some(options)) = (self.popover.upgrade(), self.options.upgrade())
         else {
             return;
         };
-        fill(&options, chord.options());
+        fill(&options, rows);
         // A pill that was hidden has no allocation to anchor to yet.
         let popover = popover.downgrade();
         pill.add_tick_callback(move |pill, _| {
@@ -101,7 +107,7 @@ impl ChordPanel {
     }
 }
 
-fn fill(grid: &gtk::Grid, options: &[(&str, &str)]) {
+fn fill(grid: &gtk::Grid, options: &[(String, String)]) {
     while let Some(child) = grid.first_child() {
         grid.remove(&child);
     }

@@ -52,6 +52,7 @@ pub(in crate::ui::window) fn go_target(key: Key, pins: &[Location]) -> Option<Go
         Key::r => place(Location::uri("recent:///"), false),
         Key::d => user_folder(glib::UserDirectory::Downloads, "Downloads"),
         Key::k => user_folder(glib::UserDirectory::Documents, "Documents"),
+        Key::m => user_folder(glib::UserDirectory::Music, "Music"),
         Key::p => user_folder(glib::UserDirectory::Pictures, "Pictures"),
         Key::v => user_folder(glib::UserDirectory::Videos, "Videos"),
         _ => {
@@ -128,12 +129,14 @@ impl Dispatcher {
         if key == Key::Escape && mods.is_empty() {
             return Some(Propagation::Stop);
         }
-        let completed = mods.is_empty()
-            && match chord {
-                Chord::Go => self.complete_go(browser, key),
-                Chord::PreviewTop => key == Key::g && self.preview_to_top(),
-                Chord::Copy => self.complete_copy(key),
-            };
+        let completed = match chord {
+            Chord::Sort => (mods - Modifiers::SHIFT_MASK).is_empty() && self.complete_sort(key),
+            _ if !mods.is_empty() => false,
+            Chord::Go => self.complete_go(browser, key),
+            Chord::PreviewTop => key == Key::g && self.preview_to_top(),
+            Chord::Copy => self.complete_copy(key),
+            Chord::Action => self.complete_action(key),
+        };
         if !completed {
             self.shortcuts.show_feedback("Unknown chord");
         }
@@ -154,6 +157,7 @@ impl Dispatcher {
             GoTarget::Prompt => {
                 self.shortcuts.open_prompt(Prompt::Go);
             }
+            GoTarget::Place { location, .. } if self.refuse_remote_place(&location) => {}
             GoTarget::Place { location, validate } => {
                 self.view.keyboard_navigation();
                 if validate {

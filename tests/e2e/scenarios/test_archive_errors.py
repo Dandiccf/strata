@@ -339,7 +339,7 @@ def test_zipcrypto_collision_reopens_extract_dialog(strata, deflated, contents):
     assert dialog.find(role="label", name="This file is not a valid archive or is damaged.") is None
 
     strata.keyboard.type_text("zipsecret")
-    strata.pointer.click(strata.dialog_button("Extract"))
+    strata.keyboard.press("Return")
     extracted = fixture.path("some.txt")
     strata.wait(lambda: extracted.exists(), "the archive to extract with the correct password")
     assert extracted.read_text() == contents.decode()

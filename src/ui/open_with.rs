@@ -80,6 +80,97 @@ pub(super) fn filter_other_apps(
     unique
 }
 
+pub(super) struct Applications {
+    pub(super) recommended: Vec<gio::AppInfo>,
+    pub(super) other: Vec<gio::AppInfo>,
+    pub(super) default: Option<gio::AppInfo>,
+    pub(super) content_types: Vec<String>,
+}
+
+impl Applications {
+    pub(super) fn unavailable_reason(&self) -> Option<&'static str> {
+        if !self.recommended.is_empty() || !self.other.is_empty() {
+            None
+        } else if self.content_types.len() > 1 {
+            Some("No application can open all selected file types")
+        } else {
+            Some("No compatible applications were found")
+        }
+    }
+}
+
+/// Looks up the type of every file, then the handlers they all share. An
+/// unreadable file or broken link fails the whole lookup rather than letting
+/// another item decide. `None` means `current` stopped holding first.
+pub(super) async fn resolve(
+    files: &[gio::File],
+    current: impl Fn() -> bool,
+) -> Option<Result<Applications, &'static str>> {
+    let mut content_types = Vec::<String>::new();
+    for file in files {
+        if !current() {
+            return None;
+        }
+        let info = file
+            .query_info_future(
+                "standard::type,standard::content-type",
+                gio::FileQueryInfoFlags::NONE,
+                glib::Priority::DEFAULT,
+            )
+            .await;
+        if !current() {
+            return None;
+        }
+        let Ok(info) = info else {
+            return Some(Err("Unable to read the selected file type"));
+        };
+        if info.file_type() == gio::FileType::SymbolicLink {
+            return Some(Err(
+                "Broken symbolic links cannot be opened with an application",
+            ));
+        }
+        let Some(next_type) = info.content_type().map(|value| value.to_string()) else {
+            return Some(Err("Unable to determine the selected file type"));
+        };
+        if !content_types
+            .iter()
+            .any(|value| gio::content_type_equals(value, &next_type))
+        {
+            content_types.push(next_type);
+        }
+    }
+    if !current() {
+        return None;
+    }
+    let requires_uris = requires_uri_handlers(files);
+    let (recommended, other, default) = common_applications(&content_types, requires_uris);
+    Some(Ok(Applications {
+        recommended,
+        other,
+        default,
+        content_types,
+    }))
+}
+
+fn common_applications(
+    content_types: &[String],
+    requires_uris: bool,
+) -> (Vec<gio::AppInfo>, Vec<gio::AppInfo>, Option<gio::AppInfo>) {
+    let Some(first) = content_types.first() else {
+        return (vec![], vec![], None);
+    };
+    let (mut recommended, _) = categorized_apps(first, requires_uris);
+    let mut default = gio::AppInfo::default_for_type(first, requires_uris);
+    for content_type in &content_types[1..] {
+        let (next_rec, _) = categorized_apps(content_type, requires_uris);
+        recommended.retain(|app| next_rec.iter().any(|candidate| candidate.equal(app)));
+        let next_default = gio::AppInfo::default_for_type(content_type, requires_uris);
+        default = default.filter(|app| next_default.as_ref().is_some_and(|next| next.equal(app)));
+    }
+    let other = filter_other_apps(gio::AppInfo::all(), &recommended, requires_uris);
+    (recommended, other, default)
+}
+
 pub(super) fn launch(
     app: &gio::AppInfo,
     files: &[gio::File],

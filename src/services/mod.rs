@@ -14,6 +14,7 @@ pub(crate) mod model_preview;
 mod native_fs;
 mod navigation_history;
 mod operations;
+pub(crate) mod package_manager;
 mod preview;
 mod release_channel;
 pub(crate) mod rtf;
@@ -32,14 +33,15 @@ pub(crate) use document::{
     DocumentSpanStyle, DocumentTableCellLayout, DocumentUnit, DocumentUnitKind, document_kind,
     has_web_scheme, layout_document, parse_document, parse_markdown,
 };
+pub(crate) use file_source::sanitize_failure_message;
 pub use file_source::{
     DirectoryChange, DirectoryEvent, DirectoryRequest, FileSource, LoadHandle,
     LocationValidationError, MetadataOutcome, MetadataRequest, MetadataUpdate, RequestId,
     UriCredentials, backend_unavailable_message, sanitize_uri_credentials,
     validate_uri_credentials,
 };
-pub(crate) use install_source::ensure_self_managed;
 pub use install_source::{InstallSource, ManagedInstall};
+pub(crate) use install_source::{ensure_self_managed, installed_executable};
 pub use jobs::{
     ActionEventSink, ActionRunEvent, ActionRunRequest, ActionRunner, CancelHandle,
     InvocationSource, JobId, JobRequest, JobService, JobSnapshot, JobStatus, ScriptProgress,

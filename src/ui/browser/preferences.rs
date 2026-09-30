@@ -56,11 +56,16 @@ impl BrowserView {
             PreferenceManager::single_click_previews,
             Self::set_single_click_previews,
         );
-        self.bind_view_preference(manager, PreferenceManager::tenxer_mode, |view, enabled| {
-            if !enabled {
-                view.leave_visual();
-            }
-        });
+        let primed = Cell::new(false);
+        self.bind_view_preference(
+            manager,
+            PreferenceManager::tenxer_mode,
+            move |view, enabled| {
+                if primed.replace(true) && !enabled {
+                    view.end_tenxer_session();
+                }
+            },
+        );
         let interactive = self.state.interactive;
         self.bind_view_preference(
             manager,

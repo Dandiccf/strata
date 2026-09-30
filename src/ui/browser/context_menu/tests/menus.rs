@@ -194,7 +194,6 @@ fn context_hints_follow_the_active_map() {
             let menu = open_menu(&view, Some("notes.txt"));
             let hints = label_texts(&menu);
             assert!(!hints.iter().any(|hint| hint == "Space"), "{hints:?}");
-            assert!(hints.iter().any(|hint| hint == "F2"), "{hints:?}");
             let after = |label: &str| {
                 hints
                     .iter()
@@ -203,6 +202,7 @@ fn context_hints_follow_the_active_map() {
                     .map(String::as_str)
             };
             for (label, hint) in [
+                ("Rename", "R"),
                 ("Cut", "X"),
                 ("Copy", "Y"),
                 ("Move to Trash", "D"),

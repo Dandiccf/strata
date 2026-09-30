@@ -45,10 +45,12 @@ use super::{
     },
     preferences::PreferenceManager,
     preview::{PreviewDrawer, preview_target},
+    shortcut_footer::ShortcutFooter,
+    top_bar_navigation::TopBarNavigation,
     window::{
-        MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH, SidebarView, build_appearance_menu, build_sidebar,
-        home_directory, install_modal_focus_trap, is_sidebar_focus_shortcut, vim_focus_direction,
-        visible_modal_layer,
+        ChooserKeys, ChooserPolicy, MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH, SidebarView,
+        build_appearance_menu, build_sidebar, home_directory, install_modal_focus_trap,
+        is_sidebar_focus_shortcut, vim_focus_direction, visible_modal_layer,
     },
 };
 
@@ -457,15 +459,41 @@ impl ChooserState {
         }
     }
 
-    fn selected_folder(&self) -> Option<PathBuf> {
+    /// The selected results or the fill; in 10xer mode an unfilled cursor
+    /// row counts too. The automatic first-row selection counts only when
+    /// `load_cursor` allows it.
+    fn chosen_entries(&self, load_cursor: bool) -> Vec<FileEntry> {
         let browser = self.view.browser();
-        let entries = self.view.selected_search_results().unwrap_or_else(|| {
-            if browser.selection_is_load_cursor() {
-                Vec::new()
-            } else {
-                browser.selected_entries()
+        let entries = match self.view.selected_search_results() {
+            Some(results) => results,
+            None if browser.selection_is_load_cursor() => {
+                return if load_cursor {
+                    browser.selected_entries()
+                } else {
+                    Vec::new()
+                };
             }
-        });
+            None => browser.selected_entries(),
+        };
+        if entries.is_empty() && PreferenceManager::shared().tenxer_mode() {
+            return self.view.focused_target().into_iter().collect();
+        }
+        entries
+    }
+
+    fn has_fill(&self) -> bool {
+        let browser = self.view.browser();
+        match self.view.selected_search_results() {
+            Some(results) => !results.is_empty(),
+            None => !browser.selection_is_load_cursor() && !browser.selected_entries().is_empty(),
+        }
+    }
+
+    fn selected_folder(&self) -> Option<PathBuf> {
+        if PreferenceManager::shared().tenxer_mode() {
+            return None;
+        }
+        let entries = self.chosen_entries(false);
         if entries.len() == 1 && entries[0].is_directory() {
             entries[0].location.native_path().map(Path::to_path_buf)
         } else {
@@ -477,14 +505,10 @@ impl ChooserState {
         let Some(filename) = self.filename.as_ref() else {
             return;
         };
-        let browser = self.view.browser();
-        let entries = self.view.selected_search_results().unwrap_or_else(|| {
-            if browser.selection_is_load_cursor() {
-                Vec::new()
-            } else {
-                browser.selected_entries()
-            }
-        });
+        if PreferenceManager::shared().tenxer_mode() {
+            return;
+        }
+        let entries = self.chosen_entries(false);
         let selected = match entries.as_slice() {
             [entry] if !entry.is_directory() => Some(entry.location.clone()),
             _ => None,
@@ -511,8 +535,7 @@ impl ChooserState {
         if browser
             .active_location()
             .is_some_and(|location| location.is_recent_root())
-            && !browser.selection_is_load_cursor()
-            && let [entry] = browser.selected_entries().as_slice()
+            && let [entry] = self.chosen_entries(false).as_slice()
             && let Some(parent) = entry.location.native_path().and_then(Path::parent)
         {
             return Ok(parent.to_path_buf());
@@ -581,13 +604,7 @@ impl ChooserState {
                     self.show_error("Choose an accessible local folder");
                     return;
                 };
-                let entries = self.view.selected_search_results().unwrap_or_else(|| {
-                    if *directory && browser.selection_is_load_cursor() {
-                        Vec::new()
-                    } else {
-                        browser.selected_entries()
-                    }
-                });
+                let entries = self.chosen_entries(!*directory);
                 let entries = eligible_open_entries(entries, *directory)
                     .into_iter()
                     .filter(|entry| browser.allows_entry(entry))
@@ -739,7 +756,49 @@ impl ChooserState {
             }
         });
         layer.add_controller(escape);
-        focus_button(&layout.confirm);
+        focus_button(&layout.cancel);
+    }
+
+    fn confirm_file(self: &Rc<Self>, entry: &FileEntry) {
+        if self.completion.borrow().is_none() || !self.view.browser().allows_entry(entry) {
+            return;
+        }
+        if matches!(
+            &self.request.kind,
+            ChooserKind::Open {
+                directory: true,
+                ..
+            }
+        ) {
+            self.show_error("Choose folders only");
+            return;
+        }
+        if matches!(
+            &self.request.kind,
+            ChooserKind::Open {
+                directory: false,
+                multiple: true,
+            }
+        ) && self.has_fill()
+        {
+            self.accept();
+            return;
+        }
+        self.activate_file(&entry.location);
+    }
+
+    fn name_has_focus(&self, focused: Option<&gtk::Widget>) -> bool {
+        self.filename.as_ref().is_some_and(|filename| {
+            focused.is_some_and(|focused| focused == filename || focused.is_ancestor(filename))
+        })
+    }
+
+    fn edit_name(&self) {
+        let Some(filename) = self.filename.as_ref() else {
+            return;
+        };
+        filename.grab_focus();
+        filename.select_region(0, super::collection_edit::rename_stem_end(&filename.text()));
     }
 
     fn activate_file(self: &Rc<Self>, location: &Location) {
@@ -961,7 +1020,7 @@ fn build_chooser_with_source(
     header_content.append(&header_actions);
     header.set_title_widget(Some(&header_content));
 
-    let sidebar = build_sidebar(view.clone(), theme, true);
+    let sidebar = build_sidebar(view.clone(), theme.clone(), true);
     sidebar.schedule_after_first_paint(&window);
     let content = gtk::Paned::new(gtk::Orientation::Horizontal);
     content.set_wide_handle(false);
@@ -992,6 +1051,7 @@ fn build_chooser_with_source(
     preview.attach_split(&preview_split, &content, &view, Some(&sidebar));
     view.add_marquee_origin(&sidebar.widget, gtk::PackType::Start);
     view.add_marquee_origin(&preview.widget(), gtk::PackType::End);
+    let (footer, footer_holder) = chooser_footer(&view, &theme);
 
     let details = gtk::Box::new(gtk::Orientation::Vertical, 8);
     details.add_css_class("chooser-details");
@@ -1091,6 +1151,9 @@ fn build_chooser_with_source(
     }
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.add_css_class("chooser-actions");
+    if let Some(hints) = save_hints(&request.kind, &theme) {
+        actions.append(&hints);
+    }
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     actions.append(&spacer);
@@ -1114,6 +1177,7 @@ fn build_chooser_with_source(
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&header);
     root.append(&preview_split);
+    root.append(&footer_holder);
     root.append(&details_scroll);
     root.append(&actions);
     let blurred_root = BlurBin::new(&root);
@@ -1202,6 +1266,14 @@ fn build_chooser_with_source(
         }
         glib::Propagation::Proceed
     });
+    let tenxer = tenxer_keys(
+        &state,
+        &sidebar,
+        &sidebar_toggle,
+        &header_content,
+        &preview,
+        &footer,
+    );
     install_shortcuts(
         &window,
         &state,
@@ -1209,11 +1281,14 @@ fn build_chooser_with_source(
         &sidebar_toggle,
         header_content.upcast_ref(),
         &preview,
+        tenxer,
     );
-    let browser_for_destroy = browser.clone();
-    window.connect_destroy(move |_| {
-        browser_for_destroy.clear_observer();
+    // Destroy can be delayed by the chooser's own closures; unrealize breaks their bindings.
+    let browser_for_close = browser.clone();
+    window.connect_unrealize(move |window| {
+        browser_for_close.clear_observer();
         sidebar.disconnect();
+        PreferenceManager::shared().release_bindings_within(window);
     });
 
     let weak_window = glib::WeakRef::new();
@@ -1243,7 +1318,13 @@ fn build_chooser_with_source(
     window.set_default_size(dimensions.0, dimensions.1);
     browser.navigate(Location::local(&state.request.initial_directory));
     window.present();
-    if let Some(filename) = state.filename.as_ref() {
+    if PreferenceManager::shared().tenxer_mode() {
+        window.set_focus_visible(true);
+        if let Some(filename) = state.filename.as_ref() {
+            filename.select_region(0, 0);
+        }
+        return Some(state);
+    } else if let Some(filename) = state.filename.as_ref() {
         filename.grab_focus();
         filename.select_region(0, -1);
     } else {
@@ -1404,6 +1485,112 @@ fn apply_external_parent(window: &gtk::Window, parent: Option<&WindowIdentifierT
     }
 }
 
+fn save_hints(kind: &ChooserKind, preferences: &Rc<PreferenceManager>) -> Option<gtk::Box> {
+    let hints: &[(&str, &str)] = match kind {
+        ChooserKind::SaveFile { .. } => &[
+            ("Enter", "Save here"),
+            ("r", "Edit name"),
+            ("o", "Replace file"),
+        ],
+        ChooserKind::SaveFiles { .. } => &[("Enter", "Save here")],
+        ChooserKind::Open { .. } => return None,
+    };
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.add_css_class("chooser-save-hints");
+    row.set_valign(gtk::Align::Center);
+    for (index, (key, action)) in hints.iter().enumerate() {
+        let keycap = gtk::Label::new(Some(key));
+        keycap.add_css_class("sidebar-keycap");
+        if index > 0 {
+            keycap.set_margin_start(10);
+        }
+        let label = gtk::Label::new(Some(action));
+        label.add_css_class("shortcut-footer-chord-hint");
+        row.append(&keycap);
+        row.append(&label);
+    }
+    preferences.bind_preference(&row, PreferenceManager::tenxer_mode, |row, enabled| {
+        row.set_visible(enabled)
+    });
+    Some(row)
+}
+
+fn chooser_footer(
+    view: &BrowserView,
+    preferences: &Rc<PreferenceManager>,
+) -> (ShortcutFooter, gtk::Box) {
+    let footer = ShortcutFooter::new(view.view_mode());
+    footer.bind_preferences(preferences);
+    footer.observe_browser(&view.browser());
+    let updated = footer.clone();
+    view.connect_view_mode_changed(move |mode| updated.set_mode(mode));
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    holder.add_css_class("chooser-footer");
+    holder.append(footer.widget());
+    preferences.bind_preference(
+        &holder,
+        PreferenceManager::tenxer_mode,
+        |holder, enabled| holder.set_visible(enabled),
+    );
+    (footer, holder)
+}
+
+fn tenxer_keys(
+    state: &Rc<ChooserState>,
+    sidebar: &SidebarView,
+    sidebar_toggle: &gtk::ToggleButton,
+    header: &gtk::Box,
+    preview: &PreviewDrawer,
+    footer: &ShortcutFooter,
+) -> ChooserKeys {
+    let confirming = Rc::downgrade(state);
+    let cancelling = Rc::downgrade(state);
+    let saving = Rc::downgrade(state);
+    let naming = Rc::downgrade(state);
+    let save_request = matches!(
+        &state.request.kind,
+        ChooserKind::SaveFile { .. } | ChooserKind::SaveFiles { .. }
+    );
+    super::window::chooser_keys(
+        &state.window,
+        &state.view,
+        sidebar,
+        TopBarNavigation::new(header, &sidebar.widget, sidebar_toggle),
+        preview,
+        footer,
+        ChooserPolicy {
+            multiple: matches!(
+                &state.request.kind,
+                ChooserKind::Open { multiple: true, .. }
+            ),
+            confirm: Rc::new(move |entry| {
+                if let Some(state) = confirming.upgrade() {
+                    state.confirm_file(&entry);
+                }
+            }),
+            cancel: Rc::new(move || {
+                if let Some(state) = cancelling.upgrade() {
+                    state.cancel();
+                }
+            }),
+            save: save_request.then(|| {
+                Rc::new(move || {
+                    if let Some(state) = saving.upgrade() {
+                        state.accept();
+                    }
+                }) as Rc<dyn Fn()>
+            }),
+            edit_name: state.filename.is_some().then(|| {
+                Rc::new(move || {
+                    if let Some(state) = naming.upgrade() {
+                        state.edit_name();
+                    }
+                }) as Rc<dyn Fn()>
+            }),
+        },
+    )
+}
+
 fn install_shortcuts(
     window: &gtk::Window,
     state: &Rc<ChooserState>,
@@ -1411,6 +1598,7 @@ fn install_shortcuts(
     sidebar_toggle: &gtk::ToggleButton,
     header: &gtk::Widget,
     preview: &PreviewDrawer,
+    tenxer: ChooserKeys,
 ) {
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1426,10 +1614,6 @@ fn install_shortcuts(
             return glib::Propagation::Proceed;
         };
         let preferences = PreferenceManager::shared();
-        if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
-            preferences.set_text_size(size);
-            return glib::Propagation::Stop;
-        }
         if let Some(layer) = visible_modal_layer(&state.window) {
             let focused = gtk::prelude::RootExt::focus(&state.window);
             if !focused.is_some_and(|focus| focus == layer || focus.is_ancestor(&layer)) {
@@ -1437,11 +1621,27 @@ fn install_shortcuts(
             }
             return glib::Propagation::Proceed;
         }
+        let focused = gtk::prelude::RootExt::focus(&state.window);
+        if preferences.tenxer_mode()
+            && (state.name_has_focus(focused.as_ref()) || state.view.location_has_focus())
+            && !matches!(key, gtk::gdk::Key::F1 | gtk::gdk::Key::Escape)
+            && !(modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                && matches!(key, gtk::gdk::Key::m | gtk::gdk::Key::M))
+        {
+            return glib::Propagation::Proceed;
+        }
+        if let Some(result) = tenxer.handle(key, modifiers) {
+            return result;
+        }
+        if let Some(size) = preferences.text_size().for_shortcut(key, modifiers) {
+            preferences.set_text_size(size);
+            return glib::Propagation::Stop;
+        }
         let browser = state.view.browser();
         let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         let alt = modifiers.contains(gtk::gdk::ModifierType::ALT_MASK);
         let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-        let focused = gtk::prelude::RootExt::focus(&state.window);
         if focused
             .as_ref()
             .and_then(|focused| focused.ancestor(gtk::Popover::static_type()))
@@ -1533,6 +1733,10 @@ fn install_shortcuts(
                 return glib::Propagation::Stop;
             }
             if state.dismiss_dropdown() {
+                return glib::Propagation::Stop;
+            }
+            if preferences.tenxer_mode() && state.name_has_focus(focused.as_ref()) {
+                browser.focus_active();
                 return glib::Propagation::Stop;
             }
             if state.view.cancel_new_entry() || state.view.cancel_rename() {
@@ -1646,7 +1850,12 @@ fn install_shortcuts(
             }
             return glib::Propagation::Stop;
         }
-        if control && !shift && matches!(key, gtk::gdk::Key::b | gtk::gdk::Key::B) {
+        let toggles_sidebar = if preferences.tenxer_mode() {
+            matches!(key, gtk::gdk::Key::n | gtk::gdk::Key::N)
+        } else {
+            matches!(key, gtk::gdk::Key::b | gtk::gdk::Key::B)
+        };
+        if control && !shift && toggles_sidebar {
             sidebar_toggle.set_active(!sidebar_toggle.is_active());
             return glib::Propagation::Stop;
         }
@@ -1732,6 +1941,23 @@ fn install_shortcuts(
             popover.child_focus(direction);
             return glib::Propagation::Stop;
         }
+        if preferences.tenxer_mode()
+            && super::focus_navigation::plain_tab_direction(key, modifiers).is_some()
+            && let Some(filename) = state.filename.as_ref()
+        {
+            let in_header = focused
+                .as_ref()
+                .is_some_and(|focused| focused == &header || focused.is_ancestor(&header));
+            if state.name_has_focus(focused.as_ref()) {
+                browser.focus_active();
+                return glib::Propagation::Stop;
+            }
+            if in_header {
+                filename.grab_focus();
+                filename.select_region(0, -1);
+                return glib::Propagation::Stop;
+            }
+        }
         if !alt && let Some(focused) = focused.as_ref() {
             if super::focus_navigation::in_popover(focused) {
                 return glib::Propagation::Proceed;
@@ -1755,22 +1981,6 @@ fn install_shortcuts(
                 state.window.set_focus_visible(true);
             }
             return glib::Propagation::Stop;
-        }
-        let header_focused = focused
-            .as_ref()
-            .is_some_and(|focused| focused == &header || focused.is_ancestor(&header));
-        if preferences.tenxer_mode() && header_focused && !control && !alt && !shift {
-            match key {
-                gtk::gdk::Key::h | gtk::gdk::Key::j => {
-                    browser.focus_active();
-                    return glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::space => {
-                    super::focus_navigation::activate(state.window.upcast_ref());
-                    return glib::Propagation::Stop;
-                }
-                _ => {}
-            }
         }
         if preferences.tenxer_mode()
             && super::focus_navigation::plain_tab_direction(key, modifiers).is_some()
@@ -1801,37 +2011,6 @@ fn install_shortcuts(
                 }
                 _ => {}
             }
-        }
-        if sidebar_has_focus
-            && preferences.tenxer_mode()
-            && let Some(chord) = super::window::sidebar_chord(key, modifiers)
-        {
-            match chord {
-                super::window::SidebarChord::Move(delta) => {
-                    super::window::move_sidebar_focus(&sidebar_widget, delta);
-                }
-                super::window::SidebarChord::Activate => {
-                    let before = browser.active_location();
-                    super::window::activate_sidebar_focus(&sidebar_widget);
-                    if browser.active_location() != before {
-                        focus_before_sidebar.borrow_mut().take();
-                        if !state.view.item_view_has_focus() {
-                            browser.focus_active();
-                        }
-                    }
-                }
-                super::window::SidebarChord::Leave => {
-                    let restored = focus_before_sidebar
-                        .borrow_mut()
-                        .take()
-                        .is_some_and(|widget| widget.is_mapped() && widget.grab_focus());
-                    if !restored {
-                        browser.focus_active();
-                    }
-                }
-                super::window::SidebarChord::Swallow => {}
-            }
-            return glib::Propagation::Stop;
         }
         if sidebar_has_focus
             && !preferences.tenxer_mode()
@@ -2034,7 +2213,13 @@ fn install_shortcuts(
         }
         glib::Propagation::Stop
     });
-    window.add_controller(keys);
+    window.add_controller(keys.clone());
+    let keys = keys.downgrade();
+    window.connect_unrealize(move |window| {
+        if let Some(keys) = keys.upgrade() {
+            window.remove_controller(&keys);
+        }
+    });
 }
 
 fn is_folder_accept_shortcut(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> bool {

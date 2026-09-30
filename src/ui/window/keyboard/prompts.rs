@@ -103,7 +103,8 @@ impl Dispatcher {
             }
             Key::Escape
                 if kind.is_some_and(|kind| {
-                    matches!(kind, Prompt::Go | Prompt::Create) || kind.picks_history()
+                    matches!(kind, Prompt::Go | Prompt::Create | Prompt::Rename)
+                        || kind.picks_history()
                 }) =>
             {
                 self.return_to_listing(browser)
@@ -137,6 +138,7 @@ impl Dispatcher {
                 self.shortcuts.step_candidate(delta);
                 show_candidate_hint(&self.shortcuts);
             }
+            Key::Up | Key::KP_Up | Key::Down | Key::KP_Down if kind == Some(Prompt::Rename) => {}
             Key::Up | Key::KP_Up => self.view.step_cursor_unfocused(-1),
             Key::Down | Key::KP_Down => self.view.step_cursor_unfocused(1),
             _ => return Propagation::Proceed,
@@ -180,6 +182,10 @@ impl Dispatcher {
             }
             Some(Prompt::Create) => {
                 self.submit_create(browser, &text);
+                return;
+            }
+            Some(Prompt::Rename) => {
+                self.submit_rename(browser, &text);
                 return;
             }
             _ if text.is_empty() => true,
@@ -237,6 +243,28 @@ impl Dispatcher {
         };
         self.shortcuts
             .prompt_sink(Prompt::Create)
+            .show(None, Some(&hint));
+    }
+
+    fn submit_rename(&self, browser: &Browser, text: &str) {
+        let Some(entry) = self.rename_target.borrow().clone() else {
+            return self.return_to_listing(browser);
+        };
+        let hint = match self.view.rename_typed_entry(entry, text) {
+            Ok(()) => return self.return_to_listing(browser),
+            Err(CreateRefusal::Invalid(message)) => message.to_owned(),
+            Err(CreateRefusal::Exists(name)) => {
+                format!("\u{201c}{name}\u{201d} already exists")
+            }
+            Err(CreateRefusal::Unsupported) => {
+                self.return_to_listing(browser);
+                self.shortcuts
+                    .show_feedback("Can\u{2019}t rename items here");
+                return;
+            }
+        };
+        self.shortcuts
+            .prompt_sink(Prompt::Rename)
             .show(None, Some(&hint));
     }
 

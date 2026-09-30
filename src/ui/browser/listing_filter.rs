@@ -500,6 +500,17 @@ impl BrowserView {
         true
     }
 
+    pub(in crate::ui) fn release_forced_recursion(&self) {
+        let columns: Vec<_> = self.state.columns.borrow().clone();
+        for column in columns {
+            column.with_query_binding(FilterQueryBinding::release_forced_recursion);
+        }
+        let panes = self.state.mode_views.borrow().pane_searches();
+        for search in panes {
+            search.with_query_binding(FilterQueryBinding::release_forced_recursion);
+        }
+    }
+
     /// Clears the filters 10xer left behind a closed funnel in every pane.
     pub(in crate::ui) fn clear_hidden_filters(&self) {
         self.state.listing_filter.focus_on_arrival.set(false);

@@ -8,13 +8,14 @@ use crate::ui::window::keyboard::chords::{GoTarget, go_target};
 struct Places {
     home: PathBuf,
     downloads: PathBuf,
+    music: PathBuf,
     pictures: PathBuf,
     config: PathBuf,
     first_pin: PathBuf,
     second_pin: PathBuf,
 }
 
-/// Downloads and Pictures exist; Documents and Videos are configured but
+/// Downloads, Music, and Pictures exist; Documents and Videos are configured but
 /// missing. Pins are stored beta, Downloads (hidden as a standard place), alpha.
 fn disposable_places() -> Places {
     let home = PathBuf::from(std::env::var_os("HOME").expect("isolated HOME"));
@@ -22,6 +23,7 @@ fn disposable_places() -> Places {
         PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("isolated config home"));
     let places = Places {
         downloads: home.join("Downloads"),
+        music: home.join("Audio Library"),
         pictures: home.join("Pictures"),
         config: home.join(".config"),
         first_pin: home.join("pins/beta"),
@@ -30,6 +32,7 @@ fn disposable_places() -> Places {
     };
     for directory in [
         &places.downloads,
+        &places.music,
         &places.pictures,
         &places.config,
         &places.first_pin,
@@ -42,6 +45,7 @@ fn disposable_places() -> Places {
         config_home.join("user-dirs.dirs"),
         "XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n\
          XDG_DOCUMENTS_DIR=\"$HOME/Documents\"\n\
+         XDG_MUSIC_DIR=\"$HOME/Audio Library\"\n\
          XDG_PICTURES_DIR=\"$HOME/Pictures\"\n\
          XDG_VIDEOS_DIR=\"$HOME/Videos\"\n",
     )
@@ -133,6 +137,7 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             preferences.set_tenxer_mode(true);
             preferences.set_sidebar_show_downloads(true);
             preferences.set_sidebar_show_documents(true);
+            preferences.set_sidebar_show_music(true);
             preferences.set_sidebar_show_pictures(true);
             preferences.set_sidebar_show_videos(true);
             fixture.shortcuts.bind_preferences(&preferences);
@@ -148,11 +153,12 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             wait_until(|| {
                 fixture.shortcuts.chord_options().is_some_and(|options| {
                     options.contains(&option("h", "Home"))
+                        && options.contains(&option("m", "Music"))
                         && options.contains(&option("1–9", "Pins"))
                 })
             });
             let keycaps = visible_keycaps(&fixture);
-            for key in ["h", "d", "k", "p", "v", "1", "2"] {
+            for key in ["h", "d", "k", "m", "p", "v", "1", "2"] {
                 assert!(
                     keycaps.contains(&key.to_owned()),
                     "{key} keycap in {keycaps:?}"
@@ -181,6 +187,7 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
                     &places.home.join("Documents"),
                     "No Documents folder",
                 ),
+                (Key::m, &places.music, "No Music folder"),
                 (Key::p, &places.pictures, "No Pictures folder"),
                 (Key::v, &places.home.join("Videos"), "No Videos folder"),
                 (Key::c, &places.config, "No .config folder"),
@@ -221,6 +228,7 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
             for (key, destination) in [
                 (Key::h, &places.home),
                 (Key::d, &places.downloads),
+                (Key::m, &places.music),
                 (Key::p, &places.pictures),
                 (Key::c, &places.config),
                 (Key::_1, &places.first_pin),

@@ -463,3 +463,39 @@ def test_open_with_incompatible_types_offers_other_apps(incompatible_files, stra
     assert "Review Text Viewer" in dump
     strata.keyboard.press("Escape")
     strata.wait(lambda: strata.dialog() is None, "the chooser to close")
+
+
+@pytest.mark.preferences(
+    tenxer_mode=True,
+    type_to_search=False,
+    single_click_previews=False,
+)
+def test_tenxer_open_with_uses_the_fill_and_launches_only_on_accept(open_with_app, strata):
+    output, associations, contents = open_with_app
+    strata.select_entry_with_keyboard("documents")
+    strata.keyboard.press("space")
+    strata.select_entry_with_keyboard("todo.txt")
+    strata.keyboard.press("space")
+    strata.select_entry_with_keyboard("readme.md")
+
+    strata.keyboard.press("O")
+    dialog = strata.wait_for_dialog()
+    assert "Review Text Viewer" in dialog.dump()
+    strata.keyboard.press("Escape")
+    strata.wait(lambda: strata.dialog() is None, "Esc to cancel the chooser")
+    assert not output.exists(), "cancelling launches nothing"
+
+    strata.keyboard.press("O")
+    strata.wait_for_dialog()
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: output.exists() and len(output.read_text().splitlines()) == 2,
+        "the application to receive the whole fill",
+    )
+    received = {Gio.File.new_for_commandline_arg(line).get_path() for line in output.read_text().splitlines()}
+    assert received == {
+        str(strata.fixture.path("documents")),
+        str(strata.fixture.path("todo.txt")),
+    }
+    assert associations.read_text() == contents
+    strata.wait(lambda: strata.dialog() is None, "the chooser to close")

@@ -43,15 +43,57 @@ struct ListColumnLayout {
     cells: Rc<Vec<RefCell<Vec<glib::WeakRef<gtk::Widget>>>>>,
     name_manually_resized: Rc<Cell<bool>>,
     scale: Rc<Cell<f64>>,
+    chooser: bool,
 }
 
 impl ListColumnLayout {
-    fn new() -> Self {
+    fn new(browser: &Browser) -> Self {
+        let chooser = browser.is_chooser_mode();
+        let preferences = super::preferences::PreferenceManager::shared();
+        let saved = if chooser {
+            preferences.chooser_list_columns()
+        } else {
+            preferences.browser_list_columns()
+        };
+        let widths = saved.map_or(LIST_COLUMN_WIDTHS, |saved| {
+            let mut widths = [
+                saved.name.unwrap_or(LIST_COLUMN_WIDTHS[0]),
+                saved.mode,
+                saved.size,
+                saved.kind,
+                saved.modified,
+            ];
+            for (index, width) in widths.iter_mut().enumerate() {
+                *width = list_column_width(index, *width);
+            }
+            widths
+        });
         Self {
-            widths: Rc::new(LIST_COLUMN_WIDTHS.into_iter().map(Cell::new).collect()),
+            widths: Rc::new(widths.into_iter().map(Cell::new).collect()),
             cells: Rc::new((0..5).map(|_| RefCell::new(Vec::new())).collect()),
-            name_manually_resized: Rc::new(Cell::new(false)),
+            name_manually_resized: Rc::new(Cell::new(
+                saved.is_some_and(|saved| saved.name.is_some()),
+            )),
             scale: Rc::new(Cell::new(1.0)),
+            chooser,
+        }
+    }
+
+    fn remember(&self) {
+        let scale = self.scale.get();
+        let unscaled = |index: usize| (f64::from(self.widths[index].get()) / scale).round() as i32;
+        let saved = Some(super::preferences::ListColumns {
+            name: self.name_manually_resized.get().then(|| unscaled(0)),
+            mode: unscaled(1),
+            size: unscaled(2),
+            kind: unscaled(3),
+            modified: unscaled(4),
+        });
+        let preferences = super::preferences::PreferenceManager::shared();
+        if self.chooser {
+            preferences.set_chooser_list_columns(saved);
+        } else {
+            preferences.set_browser_list_columns(saved);
         }
     }
 }
@@ -247,7 +289,35 @@ impl PaneSection {
     }
 }
 
-type ListSorting = Rc<Cell<(SortKey, SortDirection)>>;
+type ListSorting = Rc<HeadingSort>;
+
+struct HeadingSort {
+    current: Cell<(SortKey, SortDirection)>,
+    arrows: RefCell<Vec<(SortKey, gtk::Image)>>,
+}
+
+impl HeadingSort {
+    fn get(&self) -> (SortKey, SortDirection) {
+        self.current.get()
+    }
+
+    fn show(&self, key: SortKey, direction: SortDirection) {
+        self.current.set((key, direction));
+        for (arrow_key, arrow) in self.arrows.borrow().iter() {
+            arrow.set_visible(*arrow_key == key);
+            if *arrow_key == key {
+                crate::assets::set_primary_icon(
+                    arrow,
+                    if direction == SortDirection::Ascending {
+                        crate::assets::icons::ARROW_UP
+                    } else {
+                        crate::assets::icons::ARROW_DOWN
+                    },
+                );
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Pane {
@@ -966,6 +1036,14 @@ impl ModeViews {
             pane.filter_button.clone()?,
             pane.search.clone(),
         ))
+    }
+
+    pub(in crate::ui) fn pane_searches(&self) -> Vec<super::inline_search::InlineSearch> {
+        self.icons_panes
+            .iter()
+            .chain(self.list_pane.iter())
+            .map(|pane| pane.search.clone())
+            .collect()
     }
 
     pub(in crate::ui) fn hidden_filter_entries(&self) -> Vec<gtk::Entry> {
@@ -2330,7 +2408,13 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
             depth,
             Some((source_index_for_setup.clone(), filtered_for_setup.clone())),
             peek_for_setup.clone(),
-            (None, Some(icon.upcast_ref()), &content_click, false),
+            (
+                None,
+                Some(icon.upcast_ref()),
+                &content_click,
+                false,
+                slow_click,
+            ),
         );
         item.set_child(Some(&card));
         if let Some(parent) = card.parent() {
@@ -2651,22 +2735,22 @@ fn list_headings(
     let headings = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     headings.add_css_class("list-headings");
     let preferences = browser.column_preferences(depth).unwrap_or_default();
-    let sorting = Rc::new(Cell::new((
-        preferences.sort_key,
-        preferences.sort_direction,
-    )));
-    let arrows: Rc<RefCell<Vec<(SortKey, gtk::Image)>>> = Rc::new(RefCell::new(Vec::new()));
+    let sorting = Rc::new(HeadingSort {
+        current: Cell::new((preferences.sort_key, preferences.sort_direction)),
+        arrows: RefCell::default(),
+    });
 
-    for (index, (text, key, width)) in [
-        ("Name", Some(SortKey::Name), LIST_COLUMN_WIDTHS[0]),
-        ("Mode", None, LIST_COLUMN_WIDTHS[1]),
-        ("Size", Some(SortKey::Size), LIST_COLUMN_WIDTHS[2]),
-        ("Type", Some(SortKey::Type), LIST_COLUMN_WIDTHS[3]),
-        ("Modified", Some(SortKey::Modified), LIST_COLUMN_WIDTHS[4]),
+    for (index, (text, key)) in [
+        ("Name", Some(SortKey::Name)),
+        ("Mode", None),
+        ("Size", Some(SortKey::Size)),
+        ("Type", Some(SortKey::Type)),
+        ("Modified", Some(SortKey::Modified)),
     ]
     .into_iter()
     .enumerate()
     {
+        let width = columns.widths[index].get();
         let cell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         cell.add_css_class("list-heading-cell");
         register_list_column_cell(&columns, index, &cell);
@@ -2694,10 +2778,12 @@ fn list_headings(
         if let Some(key) = key {
             button.set_cursor_from_name(Some("pointer"));
             let weak_browser = Rc::downgrade(browser);
-            let sorting_for_click = sorting.clone();
-            let arrows_for_click = arrows.clone();
+            let sorting_for_click = Rc::downgrade(&sorting);
             button.connect_clicked(move |_| {
-                let (current_key, current_direction) = sorting_for_click.get();
+                let Some(sorting) = sorting_for_click.upgrade() else {
+                    return;
+                };
+                let (current_key, current_direction) = sorting.get();
                 let direction = if current_key == key {
                     match current_direction {
                         SortDirection::Ascending => SortDirection::Descending,
@@ -2706,25 +2792,12 @@ fn list_headings(
                 } else {
                     SortDirection::Ascending
                 };
-                sorting_for_click.set((key, direction));
-                for (arrow_key, arrow) in arrows_for_click.borrow().iter() {
-                    arrow.set_visible(*arrow_key == key);
-                    if *arrow_key == key {
-                        crate::assets::set_primary_icon(
-                            arrow,
-                            if direction == SortDirection::Ascending {
-                                crate::assets::icons::ARROW_UP
-                            } else {
-                                crate::assets::icons::ARROW_DOWN
-                            },
-                        );
-                    }
-                }
+                sorting.show(key, direction);
                 if let Some(browser) = weak_browser.upgrade() {
                     browser.set_sort(depth, key, direction);
                 }
             });
-            arrows.borrow_mut().push((key, arrow));
+            sorting.arrows.borrow_mut().push((key, arrow));
         }
         let button_overlay = gtk::Overlay::new();
         button_overlay.set_child(Some(&button));
@@ -2823,6 +2896,7 @@ fn column_resize_handle(
                 index,
                 list_column_width(index, natural),
             );
+            columns_for_autofit.remember();
             gesture.set_state(gtk::EventSequenceState::Denied);
             return;
         }
@@ -2853,6 +2927,7 @@ fn column_resize_handle(
         let width = (f64::from(starting_width.get()) + offset_x).round() as i32;
         set_list_column_width(&columns_for_update, index, list_column_width(index, width));
     });
+    resize.connect_drag_end(move |_, _, _| columns.remember());
     handle.add_controller(resize);
     handle
 }
@@ -2978,7 +3053,7 @@ fn build_list_pane(
     }
     let (filter_entry, filter_revealer, filter_button) = filter_controls("Filter list (Ctrl+F)");
     actions.append(&filter_button);
-    let columns = ListColumnLayout::new();
+    let columns = ListColumnLayout::new(&browser);
     let (shell, header, content, model, stack, status, spinner, truncated_hint) = pane_base(
         title,
         BrowserMode::List,
@@ -3476,14 +3551,12 @@ fn collection_with_marquee(
     overlay.set_vexpand(true);
     super::scrolling::install_autoscroll(&scroll, &overlay);
 
-    let is_item = if list_rows {
-        super::marquee::item_content_predicate(
-            targets.clone(),
-            Rc::new(super::pointer::hits_list_item_content),
-        )
+    let content: super::marquee::ItemPredicate = if list_rows {
+        Rc::new(super::pointer::hits_list_item_content)
     } else {
         Rc::new(super::pointer::hits_item_content)
     };
+    let is_item = super::marquee::item_content_predicate(targets.clone(), content);
     let marquee = super::marquee::install(super::marquee::MarqueeSetup {
         view: view.clone(),
         surface: scroll.clone().upcast(),
@@ -3633,9 +3706,11 @@ fn install_list_drag_drop(
         Option<&gtk::Widget>,
         &gtk::GestureClick,
         bool,
+        Rc<SlowClickRename>,
     ),
 ) {
-    let (drag_icon, multi_drag_icon, content_click, list_rows) = drag_icon_and_content_click;
+    let (drag_icon, multi_drag_icon, content_click, list_rows, intent) =
+        drag_icon_and_content_click;
     if transfer_handler.borrow().is_none() {
         return;
     }
@@ -3652,15 +3727,16 @@ fn install_list_drag_drop(
     let prepare_row = row.downgrade();
     drag.connect_prepare(move |source, x, y| {
         let prepare_row = prepare_row.upgrade()?;
-        if list_rows {
-            if !super::pointer::hits_list_item_content(&prepare_row, x, y)
-                || prepare_row
-                    .pick(x, y, gtk::PickFlags::DEFAULT)
-                    .is_some_and(|target| crate::ui::focus_navigation::editable(&target))
-            {
-                return None;
-            }
-        } else if !super::pointer::hits_icon_card_content(&prepare_row, x, y) {
+        if prepare_row
+            .pick(x, y, gtk::PickFlags::DEFAULT)
+            .is_some_and(|target| crate::ui::focus_navigation::editable(&target))
+            || (!intent.was_selected.get()
+                && if list_rows {
+                    !super::pointer::hits_list_item_content(&prepare_row, x, y)
+                } else {
+                    !super::pointer::hits_icon_card_content(&prepare_row, x, y)
+                })
+        {
             return None;
         }
         source.set_actions(super::browser::drag_actions_for_modifiers(

@@ -1908,6 +1908,10 @@ impl Browser {
         self.focused_item().map(|(_, _, entry)| entry)
     }
 
+    pub fn cursor_entry(&self, depth: usize) -> Option<FileEntry> {
+        self.state.borrow().cursor_entry(depth)
+    }
+
     fn entry_at_location(&self, location: &Location) -> Option<FileEntry> {
         self.state
             .borrow()

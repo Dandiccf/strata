@@ -178,6 +178,7 @@ impl ModeViews {
         if let BrowserEvent::SortingFinished { depth } | BrowserEvent::ColumnReloaded { depth } =
             event
         {
+            let preferences = self.browser.column_preferences(*depth);
             self.update_panes(*depth, |pane| {
                 if let Some(button) = &pane.sort_direction_button {
                     super::super::browser::sync_column_sort_direction(
@@ -185,6 +186,9 @@ impl ModeViews {
                         *depth,
                         button,
                     );
+                }
+                if let (Some(sorting), Some(preferences)) = (&pane.sorting, preferences) {
+                    sorting.show(preferences.sort_key, preferences.sort_direction);
                 }
             });
         }

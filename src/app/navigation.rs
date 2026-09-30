@@ -1769,6 +1769,15 @@ impl NavigationState {
             .position(|entry| &entry.location == child)
     }
 
+    pub fn cursor_entry(&self, depth: usize) -> Option<FileEntry> {
+        let column = self.columns.get(depth)?;
+        column
+            .selected
+            .and_then(|position| column.entries.get(position))
+            .filter(|entry| column.preferences.show_hidden || !entry.is_hidden)
+            .cloned()
+    }
+
     pub fn focused_entry(&self) -> Option<(usize, usize, FileEntry)> {
         let depth = self.active_column?;
         let column = self.columns.get(depth)?;

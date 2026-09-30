@@ -551,6 +551,9 @@ impl Dispatcher {
     /// nothing when there is none rather than the hidden directory's cursor.
     fn activate_focused(&self, browser: &Rc<Browser>) {
         self.view.keyboard_navigation();
+        if self.chooser_confirm(browser) {
+            return;
+        }
         if let Some(entry) = self.view.selected_search_result() {
             if entry.is_directory() {
                 browser.navigate(entry.location);
