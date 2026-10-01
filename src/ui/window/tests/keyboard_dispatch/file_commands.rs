@@ -600,6 +600,80 @@ fn ctrl_alt_n_groups_selected_items_into_a_named_folder() {
 }
 
 #[test]
+fn abandoned_group_naming_keeps_a_later_rename_separate() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::file_commands::abandoned_group_naming_keeps_a_later_rename_separate",
+        || {
+            for mode in [BrowserMode::Columns, BrowserMode::Icons, BrowserMode::List] {
+                for dismissal in ["pending-escape", "unmap", "rename-failure"] {
+                    let fixture = KeyboardFixture::new();
+                    fixture.view.set_view_mode(mode);
+                    let directory = fixture._directory.path();
+                    let browser = fixture.view.browser();
+                    wait_until(|| {
+                        browser
+                            .select_entries_by_name_at(0, &["a.txt".to_owned(), "b.txt".to_owned()])
+                    });
+                    if dismissal == "pending-escape" {
+                        let keys = RefCell::new(Some(fixture.keys.clone()));
+                        browser.observe(move |event| {
+                            if matches!(event, BrowserEvent::TransferStarted { .. })
+                                && let Some(keys) = keys.take()
+                            {
+                                assert!(keys.emit_by_name::<bool>(
+                                    "key-pressed",
+                                    &[&Key::Escape, &0u32, &ModifierType::empty()]
+                                ));
+                            }
+                        });
+                    }
+                    focus_files(&fixture);
+                    assert!(
+                        fixture.press(Key::n, ModifierType::CONTROL_MASK | ModifierType::ALT_MASK)
+                    );
+                    wait_until(|| {
+                        directory.join("new folder/a.txt").exists()
+                            && directory.join("new folder/b.txt").exists()
+                    });
+                    if dismissal != "pending-escape" {
+                        wait_until(|| fixture.view.rename_is_active());
+                        let field = fixture.view.active_rename_field().expect("gesture field");
+                        if dismissal == "unmap" {
+                            field.set_visible(false);
+                        } else {
+                            field.set_text("c.txt");
+                            field.emit_activate();
+                            wait_until(|| modal_visible(&fixture.overlay));
+                            close_modal(&fixture);
+                        }
+                        wait_until(|| !fixture.view.rename_is_active());
+                    }
+                    wait_until(|| browser.select_entries_by_name_at(0, &["new folder".to_owned()]));
+                    focus_files(&fixture);
+                    plain(&fixture, Key::F2);
+                    wait_until(|| fixture.view.rename_is_active());
+                    let field = fixture.view.active_rename_field().expect("later rename");
+                    field.set_text("later");
+                    field.emit_activate();
+                    wait_until(|| directory.join("later/a.txt").exists());
+                    wait_until(|| fixture.press(Key::z, ModifierType::CONTROL_MASK));
+                    wait_until(|| directory.join("new folder/a.txt").exists());
+                    assert!(directory.join("new folder/b.txt").exists());
+                    assert!(!directory.join("a.txt").exists());
+                    assert!(!directory.join("later").exists());
+                    wait_until(|| fixture.press(Key::z, ModifierType::CONTROL_MASK));
+                    wait_until(|| {
+                        directory.join("a.txt").exists()
+                            && directory.join("b.txt").exists()
+                            && !directory.join("new folder").exists()
+                    });
+                }
+            }
+        },
+    );
+}
+
+#[test]
 fn tenxer_move_and_copy_prompts_send_targets_to_a_typed_folder() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::file_commands::tenxer_move_and_copy_prompts_send_targets_to_a_typed_folder",

@@ -900,50 +900,29 @@ impl ViewState {
                 let mut accepted = accepted.clone();
                 let mut remaining = collisions.clone();
                 let mut group = group;
-                if let Some(state) = group.as_mut() {
-                    match choice {
-                        ConflictChoice::Replace => {
-                            accepted.push(UndoMoveItem {
-                                record: record.clone(),
+                match choice {
+                    ConflictChoice::Replace => {
+                        accepted.push(UndoMoveItem {
+                            record: record.clone(),
+                            conflict: TransferConflict::ReplaceExisting,
+                        });
+                        if apply_to_all {
+                            accepted.extend(remaining.drain(..).map(|record| UndoMoveItem {
+                                record,
                                 conflict: TransferConflict::ReplaceExisting,
-                            });
-                            if apply_to_all {
-                                accepted.extend(remaining.drain(..).map(|record| UndoMoveItem {
-                                    record,
-                                    conflict: TransferConflict::ReplaceExisting,
-                                }));
-                            }
-                        }
-                        ConflictChoice::Merge | ConflictChoice::KeepBoth => {
-                            unreachable!("merge and keep-both are not offered for replay conflicts")
-                        }
-                        ConflictChoice::Skip if apply_to_all => {
-                            remaining.clear();
-                            state.skipped = true;
-                        }
-                        ConflictChoice::Skip => {
-                            state.skipped = true;
+                            }));
                         }
                     }
-                } else {
-                    match choice {
-                        ConflictChoice::Replace => {
-                            accepted.push(UndoMoveItem {
-                                record: record.clone(),
-                                conflict: TransferConflict::ReplaceExisting,
-                            });
-                            if apply_to_all {
-                                accepted.extend(remaining.drain(..).map(|record| UndoMoveItem {
-                                    record,
-                                    conflict: TransferConflict::ReplaceExisting,
-                                }));
-                            }
+                    ConflictChoice::Merge | ConflictChoice::KeepBoth => {
+                        unreachable!("merge and keep-both are not offered for replay conflicts")
+                    }
+                    ConflictChoice::Skip => {
+                        if apply_to_all {
+                            remaining.clear();
                         }
-                        ConflictChoice::Merge | ConflictChoice::KeepBoth => {
-                            unreachable!("merge and keep-both are not offered for replay conflicts")
+                        if let Some(group) = group.as_mut() {
+                            group.skipped = true;
                         }
-                        ConflictChoice::Skip if apply_to_all => remaining.clear(),
-                        ConflictChoice::Skip => {}
                     }
                 }
                 state.resolve_replay_collisions(redo, generation, remaining, accepted, group);

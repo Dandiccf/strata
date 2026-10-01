@@ -129,6 +129,7 @@ pub(super) struct PendingEntryRename {
     parent: Location,
     reveal_generation: u64,
     move_sources: std::cell::RefCell<Vec<Location>>,
+    created: std::cell::RefCell<Option<Location>>,
 }
 
 pub(in crate::ui) fn set_rename_label(label: &gtk::Widget, name: &str) {
@@ -156,7 +157,7 @@ impl super::BrowserView {
         let weak = Rc::downgrade(&self.state);
         click.connect_pressed(move |gesture, _, x, y| {
             let Some(state) = weak.upgrade() else { return };
-            state.pending_new_entry.take();
+            state.cancel_new_entry();
             let target = gesture
                 .widget()
                 .and_then(|root| root.pick(x, y, gtk::PickFlags::DEFAULT));
@@ -181,6 +182,7 @@ impl super::BrowserView {
         let weak = Rc::downgrade(&self.state);
         scroll.connect_scroll(move |_, _, _| {
             if let Some(state) = weak.upgrade() {
+                state.cancel_new_entry();
                 state.yield_rename_reveal();
             }
             gtk::glib::Propagation::Proceed
@@ -740,6 +742,7 @@ impl ViewState {
         let Some(pending) = self.pending_rename.take() else {
             return;
         };
+        self.browser.clear_group_folder_for(&pending.old_location);
         self.update_rename_labels(&pending.old_location, None, &pending.old_name);
     }
 
@@ -823,6 +826,7 @@ impl ViewState {
         else {
             return;
         };
+        pending.created.replace(Some(location.clone()));
         let location = location.clone();
         let weak = Rc::downgrade(self);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -847,7 +851,7 @@ impl ViewState {
                 || state.rename_reveal_generation.get() != pending.reveal_generation
                 || state.browser.location_at(pending.depth).as_ref() != Some(&pending.parent)
             {
-                state.pending_new_entry.take();
+                state.cancel_new_entry();
                 return gtk::glib::ControlFlow::Break;
             }
             let Some(snapshot) = state
@@ -893,6 +897,7 @@ impl ViewState {
                 }
                 if !selected.replace(true) {
                     if state.mode_views.borrow().mode() == BrowserMode::Columns {
+                        state.pending_new_entry.take();
                         state.browser.reveal_created_entry(pending.depth, position);
                         // Revealing the child synchronously truncates columns and cancels
                         // pending editors. Retain this creation's authority for the next frame.
@@ -979,6 +984,7 @@ impl ViewState {
                 parent: location.clone(),
                 reveal_generation: self.rename_reveal_generation.get(),
                 move_sources: std::cell::RefCell::new(move_sources),
+                created: std::cell::RefCell::new(None),
             })));
         if is_directory {
             self.browser.create_new_folder(location);
@@ -988,7 +994,13 @@ impl ViewState {
     }
 
     pub(super) fn cancel_new_entry(&self) -> bool {
-        self.pending_new_entry.take().is_some()
+        let pending = self.pending_new_entry.take();
+        if let Some(pending) = &pending
+            && let Some(created) = pending.created.borrow().as_ref()
+        {
+            self.browser.clear_group_folder_for(created);
+        }
+        pending.is_some()
     }
 
     pub(in crate::ui) fn schedule_click_rename(
@@ -1113,12 +1125,24 @@ impl ViewState {
         if self.rename_operation_pending() {
             return false;
         }
-        self.cancel_new_entry();
         self.sync_mode_selection();
         let Some((depth, source_position, entry)) = self.browser.rename_item() else {
+            self.cancel_new_entry();
             return false;
         };
-        self.begin_rename_item(depth, source_position, entry)
+        let taking_over = self
+            .pending_new_entry
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.created.borrow().as_ref() == Some(&entry.location));
+        if !taking_over {
+            self.cancel_new_entry();
+        }
+        let started = self.begin_rename_item(depth, source_position, entry);
+        if started && taking_over {
+            self.pending_new_entry.take();
+        }
+        started
     }
 
     fn begin_rename_item(
@@ -1209,6 +1233,13 @@ impl ViewState {
         let weak = Rc::downgrade(self);
         let reveal_generation = self.rename_reveal_generation.get();
         let mut target = crate::ui::collection_edit::EditTarget::from(edit.clone());
+        let browser = Rc::downgrade(&self.browser);
+        let location = entry.location.clone();
+        target.cancelled = Some(Rc::new(move || {
+            if let Some(browser) = browser.upgrade() {
+                browser.clear_group_folder_for(&location);
+            }
+        }));
         target.reveal = Some(Rc::new(move |field| {
             if let Some(viewport) = viewport.upgrade() {
                 constrain_rename_to_viewport(field, &viewport);
@@ -1243,6 +1274,10 @@ impl ViewState {
                 }
             }),
         );
+    }
+
+    pub(in crate::ui) fn cancel_group_naming(&self, location: &Location) {
+        self.browser.clear_group_folder_for(location);
     }
 
     pub(super) fn cancel_rename(&self) -> bool {

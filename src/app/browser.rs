@@ -412,6 +412,7 @@ struct UndoState {
     history: Vec<PendingUndo>,
     redo: Vec<PendingUndo>,
     group_folder: Option<Location>,
+    group_rename_finished: bool,
 }
 
 impl UndoState {
@@ -482,7 +483,7 @@ impl UndoState {
                 Fold::Fuse {
                     folder: created,
                     records,
-                    done: false,
+                    done: self.group_rename_finished,
                 }
             }
             Some(UndoEntry::Rename(record)) => match tail(1).map(|top| &top.entry) {
@@ -2360,11 +2361,27 @@ impl Browser {
     }
 
     pub fn expect_group_folder(&self, created: Location) {
-        PENDING_UNDO.with(|pending| pending.borrow_mut().group_folder = Some(created));
+        PENDING_UNDO.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            pending.group_folder = Some(created);
+            pending.group_rename_finished = false;
+        });
     }
 
     pub fn clear_group_folder(&self) {
-        PENDING_UNDO.with(|pending| pending.borrow_mut().group_folder = None);
+        PENDING_UNDO.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            pending.group_rename_finished = true;
+            if matches!(pending.history.last().map(|entry| &entry.entry), Some(UndoEntry::Group { folder, .. }) if Some(folder) == pending.group_folder.as_ref()) {
+                pending.group_folder = None;
+            }
+        });
+    }
+
+    pub fn clear_group_folder_for(&self, location: &Location) {
+        if PENDING_UNDO.with(|pending| pending.borrow().group_folder.as_ref() == Some(location)) {
+            self.clear_group_folder();
+        }
     }
 
     pub fn discard_pending_replay(&self, redo: bool, generation: u64) {
