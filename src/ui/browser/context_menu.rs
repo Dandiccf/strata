@@ -22,6 +22,7 @@ use std::rc::Rc;
 mod actions;
 mod commands;
 mod keyboard;
+mod presentation;
 
 const CONTEXT_MENU_EDGE_MARGIN: i32 = 16;
 
@@ -810,7 +811,11 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         ContextHint::Preview,
     );
     let print = item_context_option(crate::assets::icons::PRINTER, "Print", ContextHint::None);
-    let restore = item_context_option(crate::assets::icons::UNDO_2, "Restore", ContextHint::None);
+    let restore = item_context_option(
+        crate::assets::icons::UNDO_2,
+        "Restore",
+        ContextHint::Restore,
+    );
     restore.set_visible(in_trash);
     let pin = item_context_option(
         crate::assets::icons::PIN,
@@ -836,12 +841,12 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let move_to = item_context_option(
         crate::assets::icons::FOLDER_INPUT,
         "Move to…",
-        ContextHint::None,
+        ContextHint::MoveTo,
     );
     let copy_to = item_context_option(
         crate::assets::icons::FOLDER_OUTPUT,
         "Copy to…",
-        ContextHint::None,
+        ContextHint::CopyTo,
     );
     let group = item_context_option(
         crate::assets::icons::FOLDER_PLUS,
@@ -953,7 +958,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let restore_multiple = item_context_option(
         crate::assets::icons::UNDO_2,
         "Restore items",
-        ContextHint::None,
+        ContextHint::Restore,
     );
     restore_multiple.set_visible(in_trash);
     let copy_multiple = item_context_option(crate::assets::icons::COPY, "Copy", ContextHint::Copy);
@@ -975,12 +980,12 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let move_multiple = item_context_option(
         crate::assets::icons::FOLDER_INPUT,
         "Move to…",
-        ContextHint::None,
+        ContextHint::MoveTo,
     );
     let copy_to_multiple = item_context_option(
         crate::assets::icons::FOLDER_OUTPUT,
         "Copy to…",
-        ContextHint::None,
+        ContextHint::CopyTo,
     );
     let group_multiple = item_context_option(
         crate::assets::icons::FOLDER_PLUS,
@@ -1825,7 +1830,7 @@ fn item_context_danger_option(icon: &str, label: &str, hint: ContextHint) -> gtk
 }
 
 fn item_context_option_with_icon(icon: gtk::Image, label: &str, hint: ContextHint) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     button.add_css_class("item-context-option");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     icon.add_css_class("item-context-icon");
@@ -1868,7 +1873,7 @@ pub(in crate::ui) fn context_menu_option(
     label: &str,
     hint: ContextHint,
 ) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     let (row, _, _) = context_menu_row(icon, label, hint, &button);
     button.add_css_class("folder-context-option");
     button.set_child(Some(&row));
@@ -1962,7 +1967,9 @@ impl OpenWithSelection {
 }
 
 fn set_open_with_explanation(button: &gtk::Button, explanation: Option<&str>) {
-    button.set_tooltip_text(explanation);
+    if let Some(option) = button.downcast_ref::<presentation::MenuOption>() {
+        option.set_menu_description(explanation.unwrap_or(""));
+    }
     button.update_property(&[gtk::accessible::Property::Description(
         explanation.unwrap_or(""),
     )]);
