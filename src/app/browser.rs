@@ -2363,6 +2363,10 @@ impl Browser {
         PENDING_UNDO.with(|pending| pending.borrow_mut().group_folder = Some(created));
     }
 
+    pub fn clear_group_folder(&self) {
+        PENDING_UNDO.with(|pending| pending.borrow_mut().group_folder = None);
+    }
+
     pub fn discard_pending_replay(&self, redo: bool, generation: u64) {
         if claim_replay(redo, Some(generation)).is_some() {
             finish_replay(redo, generation, true);
@@ -2436,6 +2440,60 @@ impl Browser {
             });
             return self.undo_move(generation, items);
         }
+        drop(provider);
+        self.dispatch_group_undo(generation, folder, items)
+    }
+
+    pub fn undo_group_retaining_folder(
+        self: &Rc<Self>,
+        generation: u64,
+        items: Vec<UndoMoveItem>,
+    ) -> bool {
+        if items.is_empty() || self.current_operation.get().is_some() {
+            return false;
+        }
+        let Some((generation, entry)) = claim_replay(false, Some(generation)) else {
+            return false;
+        };
+        let UndoEntry::Group { folder, .. } = entry else {
+            finish_replay(false, generation, false);
+            return false;
+        };
+        if self.operation_provider.borrow().is_none() {
+            finish_replay(false, generation, false);
+            return false;
+        }
+        self.dispatch_group_undo(generation, folder, items)
+    }
+
+    pub fn discard_group_keep_folder(&self, redo: bool, generation: u64) {
+        let Some((generation, entry)) = claim_replay(redo, Some(generation)) else {
+            return;
+        };
+        if let UndoEntry::Group { folder, .. } = entry {
+            PENDING_UNDO.with(|pending| {
+                if let Some(pending) =
+                    UndoState::find_in(pending.borrow_mut().stack_mut(redo), generation)
+                {
+                    pending.entry = UndoEntry::Copy(vec![folder]);
+                    pending.claimed = false;
+                }
+            });
+        } else {
+            finish_replay(redo, generation, true);
+        }
+    }
+
+    fn dispatch_group_undo(
+        self: &Rc<Self>,
+        generation: u64,
+        folder: Location,
+        items: Vec<UndoMoveItem>,
+    ) -> bool {
+        let Some(provider) = self.operation_provider.borrow().clone() else {
+            finish_replay(false, generation, false);
+            return false;
+        };
         retain_replay_move_items(false, generation, &items);
         let total = items.len();
         let mut refresh_locations = undo_move_parents(&items);

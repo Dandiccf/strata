@@ -195,6 +195,7 @@ pub(in crate::ui) fn queue_rename(
     name: String,
 ) {
     if name == entry.display_name || validate_basename(&name).is_err() {
+        browser.clear_group_folder();
         return;
     }
     // A rename can synchronously refresh models; dispatch after GTK's focus walk.
@@ -1249,12 +1250,17 @@ impl ViewState {
         let mode_rename = self.mode_views.borrow().take_rename();
         let cancelled = mode_rename.is_some();
         drop(mode_rename);
-        crate::ui::collection_edit::cancel(&self.active_rename) || cancelled
+        let cancelled = crate::ui::collection_edit::cancel(&self.active_rename) || cancelled;
+        if cancelled {
+            self.browser.clear_group_folder();
+        }
+        cancelled
     }
 
     fn submit_rename_entry(self: &Rc<Self>, entry: FileEntry, name: String) {
         let valid_change = name != entry.display_name && validate_basename(&name).is_ok();
         if !valid_change {
+            self.browser.clear_group_folder();
             return;
         }
         let generation = self.start_pending_rename(&entry, name.clone());

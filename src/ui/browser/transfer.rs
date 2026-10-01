@@ -95,6 +95,12 @@ struct ConflictActions {
     focus: ConflictFocus,
 }
 
+#[derive(Clone, Copy)]
+struct GroupReplay {
+    had_missing: bool,
+    skipped: bool,
+}
+
 struct TransferDialogOptions {
     base: PathBuf,
     search_root: PathBuf,
@@ -777,6 +783,7 @@ impl ViewState {
     ) -> bool {
         let mut accepted = Vec::new();
         let mut collisions = Vec::new();
+        let mut missing = 0;
         for record in records {
             let (item_at, destination) = if redo {
                 (&record.original, &record.current)
@@ -784,6 +791,7 @@ impl ViewState {
                 (&record.current, &record.original)
             };
             if !location_exists(item_at) {
+                missing += 1;
                 continue;
             }
             if location_exists(destination) {
@@ -796,10 +804,23 @@ impl ViewState {
             }
         }
         if accepted.is_empty() && collisions.is_empty() {
-            self.browser.discard_pending_replay(redo, generation);
+            if grouped && !redo && missing > 0 {
+                self.browser.discard_group_keep_folder(redo, generation);
+            } else {
+                self.browser.discard_pending_replay(redo, generation);
+            }
             return false;
         }
-        self.resolve_replay_collisions(redo, generation, collisions, accepted, grouped);
+        self.resolve_replay_collisions(
+            redo,
+            generation,
+            collisions,
+            accepted,
+            grouped.then_some(GroupReplay {
+                had_missing: missing > 0,
+                skipped: false,
+            }),
+        );
         true
     }
 
@@ -832,13 +853,20 @@ impl ViewState {
         generation: u64,
         mut collisions: Vec<MoveRecord>,
         accepted: Vec<UndoMoveItem>,
-        grouped: bool,
+        group: Option<GroupReplay>,
     ) {
         if collisions.is_empty() {
             if accepted.is_empty() {
                 self.browser.discard_pending_replay(redo, generation);
-            } else if grouped {
-                self.browser.undo_group(generation, accepted);
+            } else if let Some(state) = group {
+                if state.skipped {
+                    self.browser.undo_group(generation, accepted);
+                } else if state.had_missing {
+                    self.browser
+                        .undo_group_retaining_folder(generation, accepted);
+                } else {
+                    self.browser.undo_group(generation, accepted);
+                }
             } else if redo {
                 self.browser.redo_move(generation, accepted);
             } else {
@@ -871,26 +899,54 @@ impl ViewState {
             Rc::new(move |choice, apply_to_all| {
                 let mut accepted = accepted.clone();
                 let mut remaining = collisions.clone();
-                match choice {
-                    ConflictChoice::Replace => {
-                        accepted.push(UndoMoveItem {
-                            record: record.clone(),
-                            conflict: TransferConflict::ReplaceExisting,
-                        });
-                        if apply_to_all {
-                            accepted.extend(remaining.drain(..).map(|record| UndoMoveItem {
-                                record,
+                let mut group = group;
+                if let Some(state) = group.as_mut() {
+                    match choice {
+                        ConflictChoice::Replace => {
+                            accepted.push(UndoMoveItem {
+                                record: record.clone(),
                                 conflict: TransferConflict::ReplaceExisting,
-                            }));
+                            });
+                            if apply_to_all {
+                                accepted.extend(remaining.drain(..).map(|record| UndoMoveItem {
+                                    record,
+                                    conflict: TransferConflict::ReplaceExisting,
+                                }));
+                            }
+                        }
+                        ConflictChoice::Merge | ConflictChoice::KeepBoth => {
+                            unreachable!("merge and keep-both are not offered for replay conflicts")
+                        }
+                        ConflictChoice::Skip if apply_to_all => {
+                            remaining.clear();
+                            state.skipped = true;
+                        }
+                        ConflictChoice::Skip => {
+                            state.skipped = true;
                         }
                     }
-                    ConflictChoice::Merge | ConflictChoice::KeepBoth => {
-                        unreachable!("merge and keep-both are not offered for replay conflicts")
+                } else {
+                    match choice {
+                        ConflictChoice::Replace => {
+                            accepted.push(UndoMoveItem {
+                                record: record.clone(),
+                                conflict: TransferConflict::ReplaceExisting,
+                            });
+                            if apply_to_all {
+                                accepted.extend(remaining.drain(..).map(|record| UndoMoveItem {
+                                    record,
+                                    conflict: TransferConflict::ReplaceExisting,
+                                }));
+                            }
+                        }
+                        ConflictChoice::Merge | ConflictChoice::KeepBoth => {
+                            unreachable!("merge and keep-both are not offered for replay conflicts")
+                        }
+                        ConflictChoice::Skip if apply_to_all => remaining.clear(),
+                        ConflictChoice::Skip => {}
                     }
-                    ConflictChoice::Skip if apply_to_all => remaining.clear(),
-                    ConflictChoice::Skip => {}
                 }
-                state.resolve_replay_collisions(redo, generation, remaining, accepted, grouped);
+                state.resolve_replay_collisions(redo, generation, remaining, accepted, group);
             }),
         );
     }
