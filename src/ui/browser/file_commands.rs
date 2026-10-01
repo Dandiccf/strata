@@ -81,9 +81,6 @@ impl BrowserView {
             .unwrap_or_default()
     }
 
-    /// "New Folder with Selection" (Ctrl+Alt+N): group the command targets into
-    /// a fresh folder beside them. Returns false when the focused listing
-    /// cannot host one, leaving a plain create as the caller's fallback.
     pub fn create_new_folder_for_selection(&self) -> bool {
         let entries = self.command_targets();
         if entries.is_empty() {

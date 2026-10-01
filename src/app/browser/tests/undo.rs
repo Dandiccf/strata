@@ -1702,29 +1702,6 @@ fn a_completed_grouping_gesture_collapses_into_one_undo() {
 }
 
 #[test]
-fn a_grouping_without_a_rename_collapses_to_the_created_name() {
-    let browser = Browser::new(Rc::new(FakeFileSource));
-    let created = Location::local("/fixture/new folder");
-    push_pending_undo(UndoEntry::Copy(vec![created.clone()]));
-    browser.expect_group_folder(created.clone());
-    push_pending_undo(UndoEntry::Move(vec![MoveRecord {
-        original: Location::local("/fixture/report.txt"),
-        current: Location::local("/fixture/new folder/report.txt"),
-    }]));
-
-    assert_eq!(
-        pending_undo_entry(),
-        Some(UndoEntry::Group {
-            folder: created.clone(),
-            records: vec![MoveRecord {
-                original: Location::local("/fixture/report.txt"),
-                current: Location::local("/fixture/new folder/report.txt"),
-            }],
-        })
-    );
-}
-
-#[test]
 fn group_folding_leaves_an_interleaved_entry_untouched() {
     let browser = Browser::new(Rc::new(FakeFileSource));
     let created = Location::local("/fixture/new folder");
@@ -1806,4 +1783,87 @@ fn undoing_a_group_moves_back_and_trashes_the_folder_in_one_operation() {
     );
     assert_eq!(pending_undo_entry(), None);
     assert!(peek_replay(true).is_none(), "a group undo offers no redo");
+}
+
+#[test]
+fn failed_or_cancelled_group_cleanup_remains_undoable() {
+    for cancelled in [false, true] {
+        let browser = Browser::new(Rc::new(FakeFileSource));
+        browser.set_operation_provider(Rc::new(ImmediateOperationProvider));
+        let folder = Location::local("/fixture/grouped");
+        let record = MoveRecord {
+            original: Location::local("/fixture/report.txt"),
+            current: Location::local("/fixture/grouped/report.txt"),
+        };
+        push_pending_undo(UndoEntry::Group {
+            folder: folder.clone(),
+            records: vec![record.clone()],
+        });
+        let (generation, entry) = claim_pending_undo(None).expect("undo claim");
+        let request_id = browser.begin_operation();
+        browser.transfer_operation.set(Some(true));
+        browser.undo_claim.replace(Some((generation, entry)));
+        let emit = browser.operation_callback(request_id, false, HashSet::new());
+        if cancelled {
+            emit(OperationEvent::Cancelled {
+                request_id,
+                result: CancelledOperation {
+                    completed: vec![record.current],
+                    ..Default::default()
+                },
+            });
+        } else {
+            emit(OperationEvent::TransferFailed {
+                request_id,
+                completed_locations: vec![record.current],
+                message: "injected cleanup failure".to_owned(),
+            });
+        }
+        assert_eq!(
+            pending_undo_entry(),
+            Some(UndoEntry::Copy(vec![folder.clone()]))
+        );
+        UNDO_COPY_REQUESTS.with(|requests| requests.borrow_mut().clear());
+        let (generation, locations) = browser.pending_undo_copy().expect("cleanup undo");
+        assert!(browser.undo_copy(generation, locations));
+        assert_eq!(
+            UNDO_COPY_REQUESTS.with(|requests| requests.borrow().clone()),
+            vec![vec![folder]]
+        );
+        assert_eq!(pending_undo_entry(), None);
+    }
+}
+
+#[test]
+fn skipping_a_grouped_item_does_not_trash_its_folder() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    browser.set_operation_provider(Rc::new(ImmediateOperationProvider));
+    UNDO_MOVE_CLEANUPS.with(|requests| requests.borrow_mut().clear());
+    let moved = MoveRecord {
+        original: Location::local("/fixture/report.txt"),
+        current: Location::local("/fixture/grouped/report.txt"),
+    };
+    push_pending_undo(UndoEntry::Group {
+        folder: Location::local("/fixture/grouped"),
+        records: vec![
+            moved.clone(),
+            MoveRecord {
+                original: Location::local("/fixture/skipped.txt"),
+                current: Location::local("/fixture/grouped/skipped.txt"),
+            },
+        ],
+    });
+    let (generation, _) = browser.pending_undo_group().expect("group undo");
+    assert!(browser.undo_group(
+        generation,
+        vec![UndoMoveItem {
+            record: moved,
+            conflict: TransferConflict::FailIfExists,
+        }]
+    ));
+    assert_eq!(
+        UNDO_MOVE_CLEANUPS.with(|requests| requests.borrow().clone()),
+        vec![Vec::<Location>::new()]
+    );
+    assert_eq!(pending_undo_entry(), None);
 }

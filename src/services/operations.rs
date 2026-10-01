@@ -91,8 +91,6 @@ pub struct UndoMoveItem {
 pub struct UndoMoveRequest {
     pub id: OperationRequestId,
     pub items: Vec<UndoMoveItem>,
-    /// Locations trashed once every item has moved back — the created folder
-    /// of a "New Folder with Selection" undo.
     pub cleanup_locations: Vec<Location>,
 }
 

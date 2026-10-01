@@ -178,7 +178,7 @@ impl Dispatcher {
         };
         if event.control()
             && !event.shift()
-            && event.without(Modifiers::ALT_MASK | Modifiers::SUPER_MASK)
+            && event.without(Modifiers::ALT_MASK)
             && toggles_sidebar
         {
             toggle.set_active(!toggle.is_active());

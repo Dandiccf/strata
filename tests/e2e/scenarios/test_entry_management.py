@@ -370,8 +370,6 @@ def test_new_folder_with_selection_groups_items_and_names_it(strata, mode):
     assert not fixture.path("todo.txt").exists()
     strata.entry("grouped", root)
 
-    # The whole gesture is one undo: sources move back out and the folder —
-    # including the name it was given — is trashed.
     strata.keyboard.press("ctrl+z")
     strata.wait(
         lambda: fixture.path("readme.md").is_file()

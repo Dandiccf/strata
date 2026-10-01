@@ -738,8 +738,6 @@ impl ViewState {
         self.replay_move(false, generation, records, false)
     }
 
-    /// Reverts "New Folder with Selection": the move replays back and the
-    /// created folder is trashed by the same operation.
     pub(super) fn undo_group(self: &Rc<Self>, generation: u64, records: Vec<MoveRecord>) -> bool {
         self.replay_move(false, generation, records, true)
     }

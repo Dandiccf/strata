@@ -3833,6 +3833,20 @@ textview > popover.menu > contents > scrolledwindow > viewport > stack {
   min-width: 190px;
 }
 
+.item-context-header {
+  padding: 6px 8px 7px;
+}
+
+.item-context-title {
+  color: @theme_accent;
+  font-weight: 700;
+}
+
+.item-context-summary {
+  color: @theme_dim_text;
+  font-size: 0.82em;
+}
+
 .actions-context-popover separator,
 .folder-context-menu separator,
 .item-context-menu separator,

@@ -128,8 +128,6 @@ pub(super) struct PendingEntryRename {
     depth: usize,
     parent: Location,
     reveal_generation: u64,
-    /// "New Folder with Selection" items moved into the created directory once
-    /// its row materializes. Empty for plain new entries.
     move_sources: std::cell::RefCell<Vec<Location>>,
 }
 
@@ -828,9 +826,8 @@ impl ViewState {
         let weak = Rc::downgrade(self);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let selected = std::cell::Cell::new(false);
-        // Sources queued for the "New Folder with Selection" move. The rename
-        // editor opens only once they leave the listing: earlier, the removal
-        // splice would rebind the edited row and tear down the field.
+        // Opening rename before the source rows disappear lets their removal
+        // rebind the edited row and tear down the field.
         let group_sources = std::cell::RefCell::new(Vec::new());
         // Wait for the refreshed listing and the virtualized row to be allocated.
         self.overlay.add_tick_callback(move |_, _| {
@@ -866,10 +863,6 @@ impl ViewState {
                 })
                 .flatten();
             if let Some(position) = position {
-                // A created directory with pending sources means "New Folder
-                // with Selection": move the grouped items into it. The move is
-                // queued before the rename editor opens so the operation can
-                // start without waiting for the name.
                 let move_sources = if state
                     .browser
                     .entry_at(pending.depth, position)
@@ -932,8 +925,6 @@ impl ViewState {
         });
     }
 
-    /// "New Folder with Selection": the fresh directory receives `entries` once
-    /// the create lands, while the usual pending-rename flow names it.
     pub(super) fn new_folder_with_selection(
         self: &Rc<Self>,
         depth: usize,

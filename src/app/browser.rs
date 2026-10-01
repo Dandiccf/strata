@@ -281,8 +281,6 @@ pub enum UndoEntry {
         originals: HashMap<Location, TrashedOriginal>,
     },
     Rename(RenameRecord),
-    /// "New Folder with Selection": the records move back out and `folder`
-    /// (tracked through its inline rename) is trashed in one replay.
     Group {
         folder: Location,
         records: Vec<MoveRecord>,
@@ -413,8 +411,6 @@ struct UndoState {
     next_generation: u64,
     history: Vec<PendingUndo>,
     redo: Vec<PendingUndo>,
-    /// Created folder of a "New Folder with Selection" gesture; while set, its
-    /// create+move(+rename) tail folds into a single `Group` entry as it lands.
     group_folder: Option<Location>,
 }
 
@@ -452,10 +448,6 @@ impl UndoState {
         }
     }
 
-    /// Folds a "New Folder with Selection" tail into one `Group` entry. The
-    /// move's `Move` fuses with the `Copy` create below it once their records
-    /// line up; a `Rename` of that folder landing on a fused group is absorbed
-    /// so the undo still targets the live name. Any other push ends the tail.
     fn fold_group_tail(&mut self) {
         let Some(created) = self.group_folder.clone() else {
             return;
@@ -468,8 +460,6 @@ impl UndoState {
                 .filter(|top| !top.claimed)
         };
         enum Fold {
-            /// Replace the top two entries with one `Group`. `done` ends the
-            /// gesture's tail (the folder's rename landed).
             Fuse {
                 folder: Location,
                 records: Vec<MoveRecord>,
@@ -495,30 +485,27 @@ impl UndoState {
                     done: false,
                 }
             }
-            Some(UndoEntry::Rename(record)) => {
-                match tail(1).map(|top| &top.entry) {
-                    Some(UndoEntry::Group { folder, records }) if *folder == record.original => {
-                        let folder = record.current.clone();
-                        // Repoint the move-back at the folder's live name.
-                        Fold::Fuse {
-                            records: records
-                                .iter()
-                                .map(|moved| MoveRecord {
-                                    original: moved.original.clone(),
-                                    current: moved
-                                        .original
-                                        .file_name()
-                                        .and_then(|name| folder.child(&name))
-                                        .unwrap_or_else(|| moved.current.clone()),
-                                })
-                                .collect(),
-                            folder,
-                            done: true,
-                        }
+            Some(UndoEntry::Rename(record)) => match tail(1).map(|top| &top.entry) {
+                Some(UndoEntry::Group { folder, records }) if *folder == record.original => {
+                    let folder = record.current.clone();
+                    Fold::Fuse {
+                        records: records
+                            .iter()
+                            .map(|moved| MoveRecord {
+                                original: moved.original.clone(),
+                                current: moved
+                                    .original
+                                    .file_name()
+                                    .and_then(|name| folder.child(&name))
+                                    .unwrap_or_else(|| moved.current.clone()),
+                            })
+                            .collect(),
+                        folder,
+                        done: true,
                     }
-                    _ => Fold::Clear,
                 }
-            }
+                _ => Fold::Clear,
+            },
             _ => Fold::Clear,
         };
         match fold {
@@ -589,6 +576,12 @@ fn finish_stack(stack: &mut Vec<PendingUndo>, generation: u64, completed: bool) 
         return;
     };
     entry.claimed = false;
+    if !completed
+        && let UndoEntry::Group { folder, records } = &entry.entry
+        && records.is_empty()
+    {
+        entry.entry = UndoEntry::Copy(vec![folder.clone()]);
+    }
     if completed || entry.entry.is_empty() {
         stack.retain(|pending| pending.generation != generation);
     }
@@ -2366,8 +2359,6 @@ impl Browser {
         }
     }
 
-    /// "New Folder with Selection" marker: the gesture's create+move(+rename)
-    /// tail folds into a single `Group` undo as its entries are recorded.
     pub fn expect_group_folder(&self, created: Location) {
         PENDING_UNDO.with(|pending| pending.borrow_mut().group_folder = Some(created));
     }
@@ -2419,9 +2410,6 @@ impl Browser {
         self.replay_rename(false, generation)
     }
 
-    /// A "New Folder with Selection" undo replays its move through the same
-    /// transfer machinery, then trashes the created folder as the operation's
-    /// last step so the whole gesture reverts atomically.
     pub fn undo_group(self: &Rc<Self>, generation: u64, items: Vec<UndoMoveItem>) -> bool {
         if items.is_empty() || self.current_operation.get().is_some() {
             return false;
@@ -2429,7 +2417,7 @@ impl Browser {
         let Some((generation, entry)) = claim_replay(false, Some(generation)) else {
             return false;
         };
-        let UndoEntry::Group { folder, .. } = entry else {
+        let UndoEntry::Group { folder, records } = entry else {
             finish_replay(false, generation, false);
             return false;
         };
@@ -2437,6 +2425,17 @@ impl Browser {
             finish_replay(false, generation, false);
             return false;
         };
+        if items.len() != records.len() {
+            PENDING_UNDO.with(|pending| {
+                if let Some(pending) =
+                    UndoState::find_in(&mut pending.borrow_mut().history, generation)
+                {
+                    pending.entry = UndoEntry::Move(records);
+                    pending.claimed = false;
+                }
+            });
+            return self.undo_move(generation, items);
+        }
         retain_replay_move_items(false, generation, &items);
         let total = items.len();
         let mut refresh_locations = undo_move_parents(&items);

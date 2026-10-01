@@ -8,7 +8,9 @@ use crate::ui::browser::clipboard::{copy_locations, copy_names, locations_equal}
 use crate::ui::browser::customization::show_customize_modal;
 use crate::ui::browser::desktop::{can_open_terminal, launch_terminal};
 use crate::ui::browser::entry::{entry_icon, entry_supports_printing};
-use crate::ui::browser::paths::{can_remove_location, is_trash_item, is_trash_location};
+use crate::ui::browser::paths::{
+    can_remove_location, compact_display_path, is_trash_item, is_trash_location,
+};
 use crate::ui::browser::{PinStatus, ViewState};
 use crate::ui::browser_modes::BrowserMode;
 use crate::ui::preferences::PreferenceManager;
@@ -641,6 +643,8 @@ pub(in crate::ui) type ContextMenuTarget = (ContextMenuTrigger, f64, f64);
 pub(in crate::ui) type ContextTarget = (Option<usize>, FileEntry);
 pub(in crate::ui) type ContextResolver = Rc<dyn Fn(&gtk::Widget) -> Option<ContextTarget>>;
 
+const ITEM_CONTEXT_SUMMARY_MAX_CHARS: i32 = 30;
+
 /// GTK consumes the outside press while autohiding a popover, but the release
 /// reaches the window. Re-resolve that release so one secondary click retargets.
 fn install_secondary_release_retarget(
@@ -777,6 +781,20 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     content.add_css_class("item-context-menu");
     let remaining = gtk::Box::new(gtk::Orientation::Vertical, 0);
     remaining.add_css_class("item-context-menu");
+    let header = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    header.add_css_class("item-context-header");
+    let heading = gtk::Label::new(None);
+    heading.add_css_class("item-context-title");
+    heading.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    heading.set_max_width_chars(ITEM_CONTEXT_SUMMARY_MAX_CHARS);
+    heading.set_xalign(0.0);
+    let summary = gtk::Label::new(None);
+    summary.add_css_class("item-context-summary");
+    summary.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    summary.set_max_width_chars(ITEM_CONTEXT_SUMMARY_MAX_CHARS);
+    summary.set_xalign(0.0);
+    header.append(&heading);
+    header.append(&summary);
 
     let single = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let single_open = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -906,8 +924,9 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         "Extract to…",
         ContextHint::None,
     );
+    let group_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
     single_open.append(&group);
-    single_open.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    single_open.append(&group_separator);
     single_open.append(&open);
     single_open.append(&open_with);
     single_open.append(&preview);
@@ -1024,8 +1043,9 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         "Properties",
         ContextHint::Properties,
     );
+    let group_multiple_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
     multiple_open.append(&group_multiple);
-    multiple_open.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    multiple_open.append(&group_multiple_separator);
     multiple_open.append(&open_multiple);
     multiple_open.append(&open_with_multiple);
     multiple_open.append(&restore_multiple);
@@ -1051,7 +1071,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let action_section = actions::ActionMenuSection::new(
         &content,
         &remaining,
-        None,
+        Some(header.upcast_ref()),
         state.overlay.upcast_ref(),
         Some([copy_to.clone(), copy_to_multiple.clone()]),
     );
@@ -1555,6 +1575,8 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
                 });
             group.set_visible(groupable);
             group_multiple.set_visible(groupable);
+            group_separator.set_visible(groupable);
+            group_multiple_separator.set_visible(groupable);
             let rename_visible = !is_trash_location(&entry.location);
             rename.set_visible(rename_visible);
             let can_compress = entries
@@ -1598,9 +1620,13 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
                 !in_trash && entries.len() == 1 && entry.location.native_path().is_some(),
             );
             if entries.len() > 1 {
+                heading.set_text(&format!("{} items selected", entries.len()));
+                summary.set_text(&selected_items_summary(&entries));
                 single.set_visible(false);
                 multiple.set_visible(true);
             } else {
+                heading.set_text(&entry.display_name);
+                summary.set_text(&compact_display_path(&entry.location));
                 single.set_visible(true);
                 multiple.set_visible(false);
             }
@@ -1733,6 +1759,24 @@ pub(super) fn rename_context_entry(
         return;
     }
     state.begin_search_result_rename(depth, &entry);
+}
+
+fn selected_items_summary(entries: &[FileEntry]) -> String {
+    let mut names = entries
+        .iter()
+        .take(3)
+        .map(|entry| entry.display_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if entries.len() > 3 {
+        names.push_str(", …");
+    }
+    let max_chars = ITEM_CONTEXT_SUMMARY_MAX_CHARS as usize;
+    if names.chars().count() > max_chars {
+        names = names.chars().take(max_chars - 1).collect();
+        names.push('…');
+    }
+    names
 }
 
 pub(super) fn context_entries(
