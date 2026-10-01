@@ -17,7 +17,7 @@ use std::{
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
-const STALL_TIMEOUT: Duration = Duration::from_secs(60);
+const BODY_TIMEOUT: Duration = Duration::from_secs(60);
 const STALE_DOWNLOAD_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_NAME_BYTES: usize = 255;
 const CHUNK: usize = 64 * 1024;
@@ -33,8 +33,6 @@ pub(crate) enum RemoteDownload {
     Failed(String),
 }
 
-/// A pasted `http(s)://` URL the chooser should fetch, or `None` when the
-/// input is anything else (local path, other scheme, malformed).
 pub(crate) fn remote_file_url(input: &str) -> Option<String> {
     let input = input.trim();
     let (scheme, rest) = input.split_once("://")?;
@@ -42,15 +40,11 @@ pub(crate) fn remote_file_url(input: &str) -> Option<String> {
         return None;
     }
     match rest.split(['/', '?', '#']).next() {
-        // Credentials in the authority are rejected like the location input's
-        // embedded-password rule instead of being passed to the fetch.
         Some(host) if !host.is_empty() && !host.contains('@') => Some(input.to_owned()),
         _ => None,
     }
 }
 
-/// Basename hint for display; the server can still override it via
-/// `Content-Disposition` once the download starts.
 pub(crate) fn remote_file_name(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
     let path = rest.split_once('/')?.1;
@@ -59,8 +53,6 @@ pub(crate) fn remote_file_name(url: &str) -> Option<String> {
     sanitize_file_name(&percent_decode(last)?)
 }
 
-/// Streams a pasted web URL to a temp file on a worker thread so the GTK
-/// loop stays responsive. `cancelled` aborts the fetch on its next chunk.
 pub(crate) fn download_remote(url: String, cancelled: Arc<AtomicBool>) -> Receiver<RemoteDownload> {
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
@@ -86,9 +78,11 @@ fn fetch(
         return Err("Download cancelled".to_owned());
     }
     let config = ureq::Agent::config_builder()
+        // A remote server must not redirect the portal into host-only services.
+        .max_redirects(0)
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(RESPONSE_TIMEOUT))
-        .timeout_recv_body(Some(STALL_TIMEOUT))
+        .timeout_recv_body(Some(BODY_TIMEOUT))
         .build();
     let agent: ureq::Agent = config.into();
     let mut response = agent
@@ -96,6 +90,9 @@ fn fetch(
         .header("User-Agent", "strata-file-manager")
         .call()
         .map_err(|error| format!("Could not download the file: {error}"))?;
+    if response.status().is_redirection() {
+        return Err("The URL redirects elsewhere; paste the direct file URL instead".to_owned());
+    }
     let disposition = response
         .headers()
         .get("content-disposition")
@@ -142,8 +139,10 @@ fn fetch(
             let _sent = progress.send(RemoteDownload::Progress { downloaded, total });
         }
     }
-    // The folder must outlive the chooser window: the requesting app opens
-    // the file after the portal request has already completed.
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Download cancelled".to_owned());
+    }
+    // The requesting app opens the file after the portal request completes.
     let _persisted = directory.keep();
     Ok(path)
 }
@@ -173,7 +172,6 @@ fn filename_from_disposition(header: &str) -> Option<String> {
     plain
 }
 
-/// Splits on `;` but leaves semicolons inside quoted strings intact.
 fn split_header_params(header: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
@@ -221,8 +219,7 @@ fn percent_decode(encoded: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Keeps only the basename: a hostile `Content-Disposition` or URL path must
-/// never escape the temp folder.
+// Server-provided names must never escape the temporary directory.
 fn sanitize_file_name(name: &str) -> Option<String> {
     let name = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
     if name.is_empty()
@@ -259,9 +256,7 @@ fn truncate_name(name: &str) -> String {
     name[..end].to_owned()
 }
 
-/// Removes temp folders left behind by previous downloads (crashes, kills).
-/// Called at portal startup and before each fetch; only touches
-/// `strata-download-*` directories older than a day.
+// Completed downloads must survive long enough for the requesting app to open them.
 pub(crate) fn prune_stale_downloads() {
     prune_stale_downloads_in(&std::env::temp_dir());
 }

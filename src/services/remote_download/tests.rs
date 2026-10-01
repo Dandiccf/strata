@@ -67,7 +67,7 @@ fn filename_from_disposition_prefers_filename_star() {
 }
 
 #[test]
-fn filename_from_disposition_handles_quoted_and_escaped_names() {
+fn filename_from_disposition_handles_quoted_names() {
     assert_eq!(
         filename_from_disposition("attachment; filename=\"quarterly report.pdf\""),
         Some("quarterly report.pdf".to_owned())
@@ -105,6 +105,10 @@ fn truncate_name_preserves_extension_on_long_names() {
     assert!(truncated.ends_with(".txt"));
     assert!(truncated.starts_with('a'));
 
+    let unicode = truncate_name(&format!("{}.txt", "€".repeat(100)));
+    assert!(unicode.len() <= MAX_NAME_BYTES);
+    assert!(unicode.ends_with(".txt"));
+
     let no_ext = truncate_name(&"b".repeat(300));
     assert_eq!(no_ext.len(), MAX_NAME_BYTES);
 }
@@ -136,8 +140,6 @@ fn download_writes_body_and_names_file_from_disposition() {
         fs::read_to_string(&path).expect("downloaded body"),
         "binary"
     );
-    // The temp folder persists for the requesting app to consume.
-    assert!(directory.exists());
     let _cleanup = fs::remove_dir_all(directory);
 }
 
@@ -178,15 +180,50 @@ fn download_honors_precancelled_flag() {
 fn prune_removes_only_stale_strata_download_dirs() {
     let tmp = tempfile::tempdir().expect("temp fixture");
     let fresh_ours = tmp.path().join(format!("{DOWNLOAD_PREFIX}fresh"));
+    let stale_ours = tmp.path().join(format!("{DOWNLOAD_PREFIX}stale"));
     let unrelated_dir = tmp.path().join("other-app-dir");
     let stray_file = tmp.path().join(format!("{DOWNLOAD_PREFIX}file"));
     fs::create_dir(&fresh_ours).expect("fresh dir");
     fs::create_dir(&unrelated_dir).expect("unrelated dir");
+    fs::create_dir(&stale_ours).expect("stale dir");
+    fs::write(stale_ours.join("body"), b"old").expect("stale body");
+    let stale_time = SystemTime::now() - STALE_DOWNLOAD_AGE - Duration::from_secs(60);
+    let times = fs::FileTimes::new().set_modified(stale_time);
+    fs::File::open(&stale_ours)
+        .expect("stale dir")
+        .set_times(times)
+        .expect("age fixture");
+    fs::File::open(&unrelated_dir)
+        .expect("unrelated dir")
+        .set_times(times)
+        .expect("age unrelated fixture");
     fs::write(&stray_file, b"x").expect("stray file");
 
     prune_stale_downloads_in(tmp.path());
 
+    assert!(!stale_ours.exists());
     assert!(fresh_ours.exists());
     assert!(unrelated_dir.exists());
     assert!(stray_file.exists());
+}
+
+#[test]
+fn download_rejects_redirects_without_requesting_the_target() {
+    let target = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("target listener");
+    target.set_nonblocking(true).expect("nonblocking listener");
+    let target_port = target.local_addr().expect("target address").port();
+    let response = format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/private\r\ncontent-length: 0\r\n\r\n"
+    );
+    let base = crate::test_support::serve_http_once(response.into_bytes());
+    let receiver = download_remote(format!("{base}/redirect"), Arc::new(AtomicBool::new(false)));
+    let event = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("redirect rejected promptly");
+    assert!(
+        matches!(event, RemoteDownload::Failed(message) if message.contains("direct file URL"))
+    );
+    assert!(
+        matches!(target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
 }
