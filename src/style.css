@@ -3287,6 +3287,10 @@ entry.form-control.shortcut-footer-prompt:focus-within {
   font-size: 0.85em;
 }
 
+.chooser-download-progress {
+  color: @theme_accent;
+}
+
 .column-header {
   background: transparent;
   border-top: 3px solid transparent;
