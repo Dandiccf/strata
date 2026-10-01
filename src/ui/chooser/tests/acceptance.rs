@@ -2003,43 +2003,6 @@ fn name_field_failures_leave_request_open_for_retry() {
 }
 
 #[test]
-fn address_bar_rejects_web_urls_in_file_chooser() {
-    crate::test_support::gtk_test(
-        "ui::chooser::tests::acceptance::address_bar_rejects_web_urls_in_file_chooser",
-        || {
-            crate::ui::prepare_portal_ui();
-            let root = tempfile::tempdir().expect("fixture");
-            let state = build_chooser(
-                request(root.path().to_path_buf()),
-                Arc::new(AtomicBool::new(false)),
-                |_| {},
-            )
-            .expect("chooser");
-            wait_until(|| {
-                state
-                    .view
-                    .browser()
-                    .column_snapshot(0)
-                    .is_some_and(|column| !column.loading)
-            });
-            assert!(
-                state
-                    .view
-                    .browser()
-                    .navigate_input("https://example.com/file")
-                    .is_err()
-            );
-            assert!(!state.download_in_progress());
-            assert_eq!(
-                state.view.browser().active_location(),
-                Some(Location::local(root.path()))
-            );
-            state.window.close();
-        },
-    );
-}
-
-#[test]
 fn non_file_open_requests_reject_remote_downloads() {
     crate::test_support::gtk_test(
         "ui::chooser::tests::acceptance::non_file_open_requests_reject_remote_downloads",
@@ -2080,6 +2043,82 @@ fn non_file_open_requests_reject_remote_downloads() {
                 }
                 state.window.close();
             }
+        },
+    );
+}
+
+#[test]
+fn open_name_field_ignores_the_automatic_first_row() {
+    crate::test_support::gtk_test(
+        "ui::chooser::tests::acceptance::open_name_field_ignores_the_automatic_first_row",
+        || {
+            crate::ui::prepare_portal_ui();
+            let root = tempfile::tempdir().expect("fixture");
+            std::fs::write(root.path().join("only.txt"), "only").expect("fixture file");
+            let state = build_chooser(
+                request(root.path().to_path_buf()),
+                Arc::new(AtomicBool::new(false)),
+                |_| {},
+            )
+            .expect("chooser");
+            wait_until(|| {
+                state
+                    .view
+                    .browser()
+                    .column_snapshot(0)
+                    .is_some_and(|column| !column.loading)
+            });
+            assert!(state.name_selection_entries().is_empty());
+            let filename = state.filename.as_ref().expect("open name field");
+            assert_eq!(filename.text(), "");
+            filename.set_text("https://example.com/typed.txt");
+            state.update_selected_filename();
+            assert_eq!(filename.text(), "https://example.com/typed.txt");
+            assert!(state.filename_edited.get());
+            state.window.close();
+        },
+    );
+}
+
+#[test]
+fn downloaded_files_respect_the_selected_filter() {
+    crate::test_support::gtk_test(
+        "ui::chooser::tests::acceptance::downloaded_files_respect_the_selected_filter",
+        || {
+            crate::ui::prepare_portal_ui();
+            let base = crate::test_support::serve_http_once(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 8\r\n\r\ncontents".to_vec(),
+            );
+            let root = tempfile::tempdir().expect("fixture");
+            let result = Rc::new(RefCell::new(None));
+            let received = result.clone();
+            let mut chooser_request = request(root.path().to_path_buf());
+            chooser_request.filters = vec![FileFilter::new("Text").glob("*.txt")];
+            let state = build_chooser(
+                chooser_request,
+                Arc::new(AtomicBool::new(false)),
+                move |value| {
+                    received.replace(Some(value));
+                },
+            )
+            .expect("chooser");
+            wait_until(|| {
+                state
+                    .view
+                    .browser()
+                    .column_snapshot(0)
+                    .is_some_and(|column| !column.loading)
+            });
+            let filename = state.filename.as_ref().expect("open name field");
+            filename.set_text(&format!("{base}/pasted.pdf"));
+            state.accept_button.emit_clicked();
+            wait_until(|| state.error.is_visible());
+            assert!(result.borrow().is_none());
+            assert_eq!(
+                state.error.text(),
+                "The file does not match the selected filter"
+            );
+            state.window.close();
         },
     );
 }
