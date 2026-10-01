@@ -25,6 +25,8 @@ Keyboard navigation suppresses stale row-hover effects and pending folder peeks 
 
 Pressing blank column content focuses that directory, including empty directories, without closing descendants. Releasing a plain click on empty space clears file selections across columns. When returning to an inactive column, it also selects that column's first visible entry as the range anchor. Holding or dragging does not clear selections before marquee intent is resolved. Row clicks, controls, scrollbars, context menus, and marquee selection keep their own interactions. Returning to a column by keyboard preserves a multi-selection; Ctrl+A selects the focused column, not the deepest open column.
 
+**Shift+Up/Down** extends the selection from the range anchor by one item, **Shift+Page Up/Page Down** by one page. After Escape clears the selection, the range starts at the cursor.
+
 Copy/cut use the selection in the focused column, never a hovered row. In Columns, Delete/Shift+Delete with no selected items does nothing: an open parent-path marker is not an implicit deletion target. The separate List/Icons parent-deletion fallback is tracked in #300.
 
 Background selection updates from directory loading must not move keyboard focus to an inactive column.
@@ -107,7 +109,9 @@ Inside the preview, **Up/Down** (or **k/j**) move the highlight, **Right/l/Enter
 opens the highlighted folder, and **Left/h** returns to the parent. Left at the
 archive root and Right/Enter on a member file do nothing. Navigating never
 extracts anything or touches the filesystem; **Space** and **Escape** still
-close the preview.
+close the preview. In [10xer mode](10xer-mode.md#preview-keyboard-ownership),
+**h** at the archive root returns to the listing, **Space** is swallowed, and
+**Shift+Tab** / **Esc** return or close.
 
 ## Shortcut footer
 
@@ -116,9 +120,9 @@ Every mode has a compact footer with **F1 · Shortcuts** on the left and clipboa
 ## 10xer mode
 
 **Settings → General → Browsing → 10xer mode** (off by default,
-toggle with **Ctrl+Shift+M**, leave with **q**) hides window Search and
-pane Close/filter/refresh/sort chrome and installs Yazi-style keys. **q** leaves
-the mode and does not close the window. While the mode is on, the footer shows
+toggle with **Ctrl+Shift+M**) hides window Search and
+pane Close/filter/refresh/sort chrome and installs Yazi-style keys.
+**Ctrl+Shift+M** is the only key that leaves the mode. While the mode is on, the footer shows
 **10X** at the right, immediately before the item count.
 Typed input uses the footer prompt, never the pane filter revealer or the
 global search dialog. See [10xer mode](10xer-mode.md) for the keymap.
@@ -134,16 +138,17 @@ separate order described in [Escape precedence](10xer-mode.md#escape-precedence)
 The F1 / `~` popover and **Settings → Keybindings** share the active map's
 presentation data and live-update when the mode changes. Default F1 navigation
 is specific to the current view; Settings includes the all-view overview.
-Context-menu shortcut hints follow
-that map (`x` cut, `y` yank, `p` paste, `d` / `D` trash / delete, `r` rename,
-`i` next column or folder peek). Default-map hints that are unbound or remapped (`Y` for copy
-path, `Space` for preview, `Ctrl+R` for rename) are hidden.
+Context-menu hints use `x`, `y`, `p`, `d` / `D`, `r`, `i`, and `M` / `C` / `R`
+(Move to, Copy to, Restore) only when those commands perform the action. `i` toggles a file's preview without taking focus, or is the next column or folder peek for a directory.
+Until those verbs run, the menu keeps the shortcuts that still work and hides
+the unbound defaults (`Y` for copy path, `Space` for preview, and `Ctrl+R` for
+rename). Planned commands are not shown as working.
 
 While a pane shows its search-results page (including filtered results), the footer
 shows the displayed result total in both default and 10xer mode, including
 **0 items** on a miss.
 Selecting results does not replace that total with the hidden directory's selection;
-its tooltip gives the result file/folder breakdown. Dismissing results restores the
+its accessible description gives the result file/folder breakdown. Dismissing results restores the
 ordinary directory count or selection summary.
 
 With no selection in the ordinary listing, the footer shows the directory's item count. Selections show a folder/file breakdown, such as **1 folder, 2 files selected (64 MB)**. Sizes sum available metadata for selected files only; folder contents are not scanned or included. Missing file sizes are marked incomplete or unavailable.
@@ -169,9 +174,9 @@ From the sidebar, Right returns to the item you left (or the current file view i
 
 **Settings → General → Browsing → Keep arrows in file list** (off by default) stops arrow keys from leaving the file list. Use **Ctrl+Shift+B** to focus the sidebar, or use the mouse. **Ctrl+\\** toggles it live. The file chooser respects the same preference.
 
-**Alt+Left / Alt+Right / Alt+Up** remain Back / Forward / Parent in every mode. In the default map, List/Columns retain Miller-column navigation: **Right enters folders or moves into an existing pane to the right**. On a focused file with no pane to the right, Right does nothing; it never opens or previews the file. **Enter** opens files; with **Type to search** off, `l` still activates. Backspace and the existing `h` / `l` directory shortcuts remain available. In [10xer mode](10xer-mode.md), arrows and Tab stay in the Columns, List, and Icons panes. The sidebar, window header, footer, and other controls outside those panes stay pointer-operated, and a Tab or arrow key while one of them has focus returns to the file list. **Ctrl+Shift+B** stays with the file list while the mode is on. List and Columns **l** / **→** open a directory or enter a file's preview when possible. Icons **h** / **j** / **k** / **l** and arrows always move to the next icon in that direction, including across search-result icons; they never preview or change location. **i** opens the next Miller column without focusing it, or toggles the folder-peek popover in List and Icons. It does not preview a file.
+**Alt+Left / Alt+Right / Alt+Up** remain Back / Forward / Parent in every mode. In the default map, List/Columns retain Miller-column navigation: **Right enters folders or moves into an existing pane to the right**. On a focused file with no pane to the right, Right does nothing; it never opens or previews the file. **Enter** opens files; with **Type to search** off, `l` still activates. Backspace and the existing `h` / `l` directory shortcuts remain available. In [10xer mode](10xer-mode.md), arrows stay in the Columns, List, and Icons panes. **Tab** moves from the file list to the window header, where **Enter** / **Space** activate the focused control and **h** / **j** return to the files. **Ctrl+Shift+B** focuses a visible sidebar; a hidden sidebar stays hidden until the header toggle shows it. In the sidebar, **j** / **k** and **Up** / **Down** move between places and device controls, **l** / **Enter** / **Space** activate the focused one, and **h** / **Left** / **Backspace** return to the files without changing the selection. A **Tab** or arrow key from the footer still returns to the file list. List and Columns **l** / **→** open a directory or enter a file's preview when possible. Icons **h** / **j** / **k** / **l** and arrows always move to the next icon in that direction, including across search-result icons; they never preview or change location. On a file, **i** toggles the preview without moving focus. On a directory it opens the next Miller column without focusing it, or toggles the folder-peek popover in List and Icons.
 
-In Columns, the pane to the right mirrors keyboard selection like Finder: **Up/Down** onto a folder shows its contents without moving focus, onto a previewable file opens Quick Preview, and onto any other file closes the child pane. Pointer selection keeps the configured click behavior. **Settings → General → Browsing → Mirror columns selection** (on by default) toggles the mirroring. 10xer mode leaves that preference saved and does not mirror: cursor movement does not open a child column or a preview. **l** / **→** enters a directory or a file preview, and **i** opens the next column or toggles folder peek. The saved value applies again after leaving the mode.
+In Columns, the pane to the right mirrors keyboard selection like Finder: **Up/Down** onto a folder shows its contents without moving focus, onto a previewable file opens Quick Preview, and onto any other file closes the child pane. Pointer selection keeps the configured click behavior. **Settings → General → Browsing → Mirror columns selection** (on by default) toggles the mirroring. 10xer mode follows the same preference for its cursor in Columns; see [10xer mode](10xer-mode.md). **l** / **→** enters a directory or a file preview, and **i** toggles a file's preview or opens the next column / toggles folder peek for a directory.
 
 ## Opening and navigating the context menu
 

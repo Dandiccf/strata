@@ -80,6 +80,97 @@ pub(super) fn filter_other_apps(
     unique
 }
 
+pub(super) struct Applications {
+    pub(super) recommended: Vec<gio::AppInfo>,
+    pub(super) other: Vec<gio::AppInfo>,
+    pub(super) default: Option<gio::AppInfo>,
+    pub(super) content_types: Vec<String>,
+}
+
+impl Applications {
+    pub(super) fn unavailable_reason(&self) -> Option<&'static str> {
+        if !self.recommended.is_empty() || !self.other.is_empty() {
+            None
+        } else if self.content_types.len() > 1 {
+            Some("No application can open all selected file types")
+        } else {
+            Some("No compatible applications were found")
+        }
+    }
+}
+
+/// Looks up the type of every file, then the handlers they all share. An
+/// unreadable file or broken link fails the whole lookup rather than letting
+/// another item decide. `None` means `current` stopped holding first.
+pub(super) async fn resolve(
+    files: &[gio::File],
+    current: impl Fn() -> bool,
+) -> Option<Result<Applications, &'static str>> {
+    let mut content_types = Vec::<String>::new();
+    for file in files {
+        if !current() {
+            return None;
+        }
+        let info = file
+            .query_info_future(
+                "standard::type,standard::content-type",
+                gio::FileQueryInfoFlags::NONE,
+                glib::Priority::DEFAULT,
+            )
+            .await;
+        if !current() {
+            return None;
+        }
+        let Ok(info) = info else {
+            return Some(Err("Unable to read the selected file type"));
+        };
+        if info.file_type() == gio::FileType::SymbolicLink {
+            return Some(Err(
+                "Broken symbolic links cannot be opened with an application",
+            ));
+        }
+        let Some(next_type) = info.content_type().map(|value| value.to_string()) else {
+            return Some(Err("Unable to determine the selected file type"));
+        };
+        if !content_types
+            .iter()
+            .any(|value| gio::content_type_equals(value, &next_type))
+        {
+            content_types.push(next_type);
+        }
+    }
+    if !current() {
+        return None;
+    }
+    let requires_uris = requires_uri_handlers(files);
+    let (recommended, other, default) = common_applications(&content_types, requires_uris);
+    Some(Ok(Applications {
+        recommended,
+        other,
+        default,
+        content_types,
+    }))
+}
+
+fn common_applications(
+    content_types: &[String],
+    requires_uris: bool,
+) -> (Vec<gio::AppInfo>, Vec<gio::AppInfo>, Option<gio::AppInfo>) {
+    let Some(first) = content_types.first() else {
+        return (vec![], vec![], None);
+    };
+    let (mut recommended, _) = categorized_apps(first, requires_uris);
+    let mut default = gio::AppInfo::default_for_type(first, requires_uris);
+    for content_type in &content_types[1..] {
+        let (next_rec, _) = categorized_apps(content_type, requires_uris);
+        recommended.retain(|app| next_rec.iter().any(|candidate| candidate.equal(app)));
+        let next_default = gio::AppInfo::default_for_type(content_type, requires_uris);
+        default = default.filter(|app| next_default.as_ref().is_some_and(|next| next.equal(app)));
+    }
+    let other = filter_other_apps(gio::AppInfo::all(), &recommended, requires_uris);
+    (recommended, other, default)
+}
+
 pub(super) fn launch(
     app: &gio::AppInfo,
     files: &[gio::File],
@@ -161,6 +252,7 @@ fn install_list_tab_navigation(
     content: &gtk::Box,
     search_entry: &gtk::SearchEntry,
     list: &gtk::ListBox,
+    always_use: &gtk::CheckButton,
     close: &gtk::Button,
     cancel: &gtk::Button,
 ) {
@@ -168,6 +260,7 @@ fn install_list_tab_navigation(
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let search = search_entry.downgrade();
     let list = list.downgrade();
+    let always = always_use.downgrade();
     let close = close.downgrade();
     let cancel = cancel.downgrade();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
@@ -180,9 +273,10 @@ fn install_list_tab_navigation(
         {
             return glib::Propagation::Proceed;
         }
-        let (Some(search), Some(list), Some(close), Some(cancel)) = (
+        let (Some(search), Some(list), Some(always), Some(close), Some(cancel)) = (
             search.upgrade(),
             list.upgrade(),
+            always.upgrade(),
             close.upgrade(),
             cancel.upgrade(),
         ) else {
@@ -200,10 +294,12 @@ fn install_list_tab_navigation(
                 false
             }
         };
+        // A hidden widget still accepts focus grabs, so gate on visibility like the list.
+        let focus_always = || always.is_visible() && always.grab_focus();
         let moved = if focus == search || focus.is_ancestor(&search) {
             if backward {
                 close.grab_focus()
-            } else if focus_selected_row() {
+            } else if focus_selected_row() || focus_always() {
                 true
             } else {
                 cancel.grab_focus()
@@ -216,10 +312,10 @@ fn install_list_tab_navigation(
                     close.grab_focus()
                 }
             } else {
-                cancel.grab_focus()
+                focus_always() || cancel.grab_focus()
             }
         } else if backward && focus == cancel {
-            if focus_selected_row() {
+            if focus_always() || focus_selected_row() {
                 true
             } else if search.is_visible() {
                 search.grab_focus()
@@ -229,7 +325,7 @@ fn install_list_tab_navigation(
         } else if !backward && focus == close {
             if search.is_visible() {
                 search.grab_focus()
-            } else if focus_selected_row() {
+            } else if focus_selected_row() || focus_always() {
                 true
             } else {
                 cancel.grab_focus()
@@ -321,6 +417,7 @@ fn create_app_row(app: &gio::AppInfo, display: &gtk::gdk::Display) -> gtk::ListB
 pub(super) fn show(
     parent: &impl IsA<gtk::Widget>,
     files: Vec<gio::File>,
+    content_types: Vec<String>,
     recommended_apps: Vec<gio::AppInfo>,
     other_apps: Vec<gio::AppInfo>,
     context: OpenWithContext,
@@ -364,10 +461,20 @@ pub(super) fn show(
     list.set_selection_mode(gtk::SelectionMode::Single);
     list.set_activate_on_single_click(false);
     list.update_property(&[gtk::accessible::Property::Label("Applications")]);
+
+    let always_use = super::controls::form_check_button(if content_types.len() > 1 {
+        "Always use for these file types"
+    } else {
+        "Always use for this file type"
+    });
+    always_use.set_visible(false);
+    layout.actions.prepend(&always_use);
+
     install_list_tab_navigation(
         &layout.content,
         &search_entry,
         &list,
+        &always_use,
         &layout.close,
         &layout.cancel,
     );
@@ -452,6 +559,7 @@ pub(super) fn show(
     layout.body.append(&empty_search);
 
     let has_apps = !entries.is_empty();
+    always_use.set_visible(has_apps && !content_types.is_empty());
     if !has_apps {
         search_entry.set_visible(false);
         list_scroll.set_visible(false);
@@ -680,6 +788,7 @@ pub(super) fn show(
 
     let open_dismiss = dismiss.clone();
     let open_files = files;
+    let open_content_types = content_types;
     let entries_for_open = entries_rc;
     let open_parent = parent.as_ref().downgrade();
     let selected_list = list.downgrade();
@@ -693,6 +802,13 @@ pub(super) fn show(
         let Some(entry) = entries_for_open.iter().find(|e| e.row == row) else {
             return;
         };
+        if always_use.is_active() {
+            for content_type in &open_content_types {
+                if let Err(error) = entry.app.set_as_default_for_type(content_type) {
+                    tracing::warn!(%content_type, %error, "unable to set default application");
+                }
+            }
+        }
         let context = list.display().app_launch_context();
         if let Err(error) = launch(&entry.app, &open_files, Some(&context)) {
             let detail = error.to_string();

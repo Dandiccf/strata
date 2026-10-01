@@ -145,6 +145,15 @@ impl Dispatcher {
         let toggle = self.top_bar.sidebar_toggle();
         if is_sidebar_focus_shortcut(event.key, event.modifiers) {
             if self.type_to_search.preferences.tenxer_mode() {
+                if !toggle.is_active() {
+                    return Some(Propagation::Stop);
+                }
+                if self.sidebar.contains(&event.focused) {
+                    self.sidebar.restore(browser, true);
+                } else {
+                    self.sidebar.previous.replace(event.focused.clone());
+                    self.sidebar.state.focus_active_place();
+                }
                 return Some(Propagation::Stop);
             }
             self.view.keyboard_navigation();
@@ -162,7 +171,12 @@ impl Dispatcher {
             }
             return Some(Propagation::Stop);
         }
-        if event.control() && !event.shift() && matches!(event.key, Key::b | Key::B) {
+        let toggles_sidebar = if self.type_to_search.preferences.tenxer_mode() {
+            matches!(event.key, Key::n | Key::N)
+        } else {
+            matches!(event.key, Key::b | Key::B)
+        };
+        if event.control() && !event.shift() && toggles_sidebar {
             toggle.set_active(!toggle.is_active());
             return Some(Propagation::Stop);
         }
@@ -270,7 +284,8 @@ impl Dispatcher {
     pub(super) fn context_menu_command(&self, event: &KeyEvent) -> KeyResult {
         if is_context_menu_shortcut(event.key, event.modifiers)
             && !event.text_has_focus()
-            && self.view.open_focused_context_menu()
+            && (super::sidebar::open_sidebar_context_menu(&self.sidebar.widget)
+                || self.view.open_focused_context_menu())
         {
             return Some(Propagation::Stop);
         }

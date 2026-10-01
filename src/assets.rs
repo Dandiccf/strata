@@ -77,6 +77,7 @@ pub mod icons {
     pub const PIN: &str = "strata-pin";
     pub const PLAY: &str = "strata-play";
     pub const MINUS: &str = "strata-minus";
+    pub const MUSIC: &str = "strata-music-2";
     pub const PLUS: &str = "strata-plus";
     pub const PRINTER: &str = "strata-printer";
     pub const PICTURES: &str = "strata-image";
@@ -84,9 +85,11 @@ pub mod icons {
     pub const ROUTE: &str = "strata-route";
     pub const SCISSORS: &str = "strata-scissors";
     pub const SEARCH: &str = "strata-search";
+    pub const SEND_HORIZONTAL: &str = "strata-send-horizontal";
     pub const SETTINGS: &str = "strata-settings";
     pub const SETTINGS_2: &str = "strata-settings-2";
     pub const REFRESH: &str = "strata-refresh";
+    pub const SHREDDER: &str = "strata-shredder";
     pub const SLIDERS: &str = "strata-sliders-horizontal";
     pub const TERMINAL: &str = "strata-terminal";
     pub const TRASH: &str = "strata-trash";

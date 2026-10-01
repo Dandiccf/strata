@@ -2,6 +2,8 @@
 
 import tomllib
 
+import pytest
+
 from harness.tree import Atspi
 
 
@@ -174,3 +176,43 @@ def test_batch_rename_template_confirms_before_renaming_and_opens_jobs(strata):
         renamed = f"{index:03d}_{name}"
         assert strata.fixture.path(renamed).read_bytes() == contents
         assert not strata.fixture.path(name).exists()
+
+
+@pytest.fixture
+def numbered_action(test_environment):
+    output = test_environment.root / "numbered-action"
+    directory = test_environment.config_home / "strata/actions/record-names"
+    directory.mkdir(parents=True)
+    (directory / "action.toml").write_text(
+        'schema_version = 1\nid = "record-names"\nname = "Record names"\nmenu = "top"\n\n'
+        '[when]\nextensions = ["txt"]\n\n'
+        '[run]\nruntime = "command"\nprogram = "/bin/sh"\nconfirm = true\n'
+        f'args = ["-c", "printf \'%s\\\\n\' \\"$@\\" >> \'{output}\'", "sh", "{{paths}}"]\n'
+    )
+    return output
+
+
+@pytest.mark.preferences(tenxer_mode=True, type_to_search=False, single_click_previews=False)
+def test_tenxer_numbered_action_confirms_before_running(numbered_action, strata):
+    strata.select_entry_with_keyboard("todo.txt")
+
+    strata.keyboard.press(";")
+    strata.wait(lambda: strata.window.find(role="label", name=";-") is not None, "the armed action chord")
+    strata.keyboard.press("2")
+    strata.wait(lambda: strata.window.find(role="label", name="No action 2") is not None, "a vacant slot")
+
+    strata.keyboard.press(";")
+    strata.keyboard.press("1")
+    confirmation = strata.wait(lambda: strata.window.find(role="dialog", name="Run this action?"), "confirmation")
+    strata.pointer.click(confirmation.find(role="button", name="Cancel"))
+    strata.wait(lambda: strata.window.find(role="dialog", name="Run this action?") is None, "cancelled confirmation")
+    assert not numbered_action.exists()
+    strata.wait_for_focused_entry("todo.txt")
+
+    strata.keyboard.press(";")
+    strata.keyboard.press("1")
+    confirmation = strata.wait(lambda: strata.window.find(role="dialog", name="Run this action?"), "confirmation")
+    strata.pointer.click(confirmation.find(role="button", name="Run"))
+    strata.wait(lambda: numbered_action.exists(), "the action to run")
+    assert numbered_action.read_text().splitlines() == [str(strata.fixture.path("todo.txt"))]
+    strata.wait(lambda: strata.window.find(role="label", name_matches="Done in ") is not None, "Jobs to show the run")

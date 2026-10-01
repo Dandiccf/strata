@@ -10,6 +10,8 @@ Folder-only requests hide regular files in both directory listings and recursive
 
 In Save dialogs, selecting a file copies its name into the name input without accepting the dialog. The automatic initial selection does not change the suggested name or destination. Selecting a folder changes the destination without changing the name. In Recent, select a file to save in its containing folder, or navigate to a local folder first.
 
+Resizing a Miller column or a List heading in the chooser saves that width as the chooser default, so the next request opens with it. Regular Strata windows also remember widths, using separate browser defaults.
+
 Wayland applications can provide an exported parent handle. X11 parent handles are not attached; these requests appear as standalone windows.
 
 ### Initial size in split-window layouts
@@ -164,6 +166,11 @@ On a desktop that does not manage the frontend as a systemd user unit, log out a
   folder-selection request.
 - Escape dismisses the innermost menu, inline edit, filter, preview, or confirmation
   before cancelling the request. Confirmation dialogs initially focus Cancel.
+- With [10xer mode](10xer-mode.md#file-chooser) on, the chooser uses that keymap
+  and footer within the request's limits: **Enter** / **o** choose a file, and
+  **Esc** cancels only after dismissing prompts, filters, search, and preview.
+  Save dialogs start in the files: **r** edits the name, and **Enter** saves in
+  the current folder.
 
 The X11 keyboard and context-menu regression tests require `xdotool` (or
 `STRATA_TEST_XDOTOOL`) and isolated XDG directories. Run each alone under a test display:

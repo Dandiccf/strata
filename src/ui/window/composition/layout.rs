@@ -55,8 +55,12 @@ impl Header {
             build_appearance_menu(browser, &browser.browser(), preferences.clone(), preview);
         let settings = header_action(icons::SETTINGS, "Settings");
         let close = header_action(icons::X, "Close window");
-        let closing_window = window.clone();
-        close.connect_clicked(move |_| closing_window.close());
+        let closing_window = window.downgrade();
+        close.connect_clicked(move |_| {
+            if let Some(window) = closing_window.upgrade() {
+                window.close();
+            }
+        });
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         actions.add_css_class("header-actions");
         actions.append(&search);
@@ -190,7 +194,11 @@ fn bind_sidebar_layout(
         let Some(sidebar) = weak_sidebar.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        if weak_preview.is_open() {
+        // An empty Icons placeholder owns the rail even when it cannot fit.
+        if weak_preview.is_open()
+            || weak_preview.is_suspended()
+            || weak_preview.reserves_empty_preview()
+        {
             return glib::ControlFlow::Continue;
         }
         let available = content

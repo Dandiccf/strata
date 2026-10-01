@@ -93,7 +93,7 @@ const TARGETS: &[Target] = &[
         id: "sidebar-places",
         page: "general",
         title: "Items shown in sidebar",
-        aliases: "sidebar places hide show home trash network recent shares desktop documents downloads pictures videos folder",
+        aliases: "sidebar places hide show home trash network recent shares desktop documents downloads music pictures videos folder",
     },
     Target {
         id: "opening",
@@ -574,11 +574,11 @@ impl Search {
             .map(|button| {
                 (
                     button.downgrade(),
-                    match button.tooltip_text().as_deref() {
-                        Some("General") => "general",
-                        Some("Appearance") => "theme",
-                        Some("Keybindings") => "keybindings",
-                        Some("Updates") => "updates",
+                    match button.widget_name().as_str() {
+                        "General" => "general",
+                        "Appearance" => "theme",
+                        "Keybindings" => "keybindings",
+                        "Updates" => "updates",
                         _ => "about",
                     },
                 )
