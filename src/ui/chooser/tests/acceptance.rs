@@ -1785,13 +1785,10 @@ fn item_menu_offers_compress_for_native_folder() {
             wait_until(|| {
                 browser
                     .column_snapshot(0)
-                    .is_some_and(|column| !column.loading)
+                    .is_some_and(|column| !column.loading && column.count == 2)
             });
             browser.select(0, 0);
             browser.focus_active();
-            for _ in 0..100 {
-                glib::MainContext::default().iteration(false);
-            }
             let visible_popovers = || {
                 descendants(state.window.upcast_ref())
                     .into_iter()
@@ -1803,10 +1800,18 @@ fn item_menu_offers_compress_for_native_folder() {
                 .iter()
                 .map(|popover| popover.as_ptr())
                 .collect::<Vec<_>>();
-            let _opened = state.view.open_focused_context_menu();
-            for _ in 0..50 {
-                glib::MainContext::default().iteration(false);
-            }
+            wait_until(|| {
+                if visible_popovers()
+                    .iter()
+                    .any(|candidate| !before.contains(&candidate.as_ptr()))
+                {
+                    return true;
+                }
+                state.view.open_focused_context_menu()
+                    && visible_popovers()
+                        .iter()
+                        .any(|candidate| !before.contains(&candidate.as_ptr()))
+            });
             let popover = visible_popovers()
                 .into_iter()
                 .find(|candidate| !before.contains(&candidate.as_ptr()))
