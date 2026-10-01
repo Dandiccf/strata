@@ -223,7 +223,7 @@ impl ViewState {
             BrowserEvent::SortingStarted { depth } => {
                 self.overlay.set_cursor_from_name(Some("wait"));
                 if let Some(column) = self.columns.borrow().get(*depth) {
-                    column.spinner.set_tooltip_text(Some("Sorting…"));
+                    crate::ui::accessibility::set_description(&column.spinner, Some("Sorting…"));
                     column.spinner.set_visible(true);
                     column.spinner.start();
                     set_column_busy(column, true);
@@ -242,7 +242,7 @@ impl ViewState {
                         &column.sort_direction_button,
                     );
                     stop_column_spinner(column);
-                    column.spinner.set_tooltip_text(None);
+                    crate::ui::accessibility::set_description(&column.spinner, None);
                     set_column_busy(column, false);
                 }
             }

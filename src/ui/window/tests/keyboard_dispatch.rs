@@ -1354,16 +1354,10 @@ fn appearance_menu_shows_i_preview_while_tenxer_is_on() {
             let toggle = widget_with_class(popover.upcast_ref(), "preview-panel-option")
                 .expect("preview panel option");
             assert_eq!(preview_shortcut(&toggle), "Space");
-            assert_eq!(
-                toggle.tooltip_text().as_deref(),
-                Some("Toggle preview panel while browsing (Space)")
-            );
+            assert!(toggle.tooltip_text().is_none());
             preferences.set_tenxer_mode(true);
             assert_eq!(preview_shortcut(&toggle), "i");
-            assert_eq!(
-                toggle.tooltip_text().as_deref(),
-                Some("Toggle preview panel while browsing (i)")
-            );
+            assert!(toggle.tooltip_text().is_none());
             preferences.set_tenxer_mode(false);
             assert_eq!(preview_shortcut(&toggle), "Space");
             window.destroy();

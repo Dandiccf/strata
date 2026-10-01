@@ -24,6 +24,7 @@ use std::rc::Rc;
 mod actions;
 mod commands;
 mod keyboard;
+mod presentation;
 
 const CONTEXT_MENU_EDGE_MARGIN: i32 = 16;
 
@@ -1839,7 +1840,7 @@ fn item_context_danger_option(icon: &str, label: &str, hint: ContextHint) -> gtk
 }
 
 fn item_context_option_with_icon(icon: gtk::Image, label: &str, hint: ContextHint) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     button.add_css_class("item-context-option");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     icon.add_css_class("item-context-icon");
@@ -1882,7 +1883,7 @@ pub(in crate::ui) fn context_menu_option(
     label: &str,
     hint: ContextHint,
 ) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     let (row, _, _) = context_menu_row(icon, label, hint, &button);
     button.add_css_class("folder-context-option");
     button.set_child(Some(&row));
@@ -1976,7 +1977,9 @@ impl OpenWithSelection {
 }
 
 fn set_open_with_explanation(button: &gtk::Button, explanation: Option<&str>) {
-    button.set_tooltip_text(explanation);
+    if let Some(option) = button.downcast_ref::<presentation::MenuOption>() {
+        option.set_menu_description(explanation.unwrap_or(""));
+    }
     button.update_property(&[gtk::accessible::Property::Description(
         explanation.unwrap_or(""),
     )]);
