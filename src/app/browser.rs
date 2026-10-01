@@ -18,8 +18,7 @@ use crate::{
         OperationProvider, OperationRequestId, PasteItem, PasteRequest, RenameRecord,
         RenameRequest, RequestId, RestoreRequest, RestoreSource, RestoreTrashItem,
         TransferConflict, TrashedOriginal, UndoCopyRequest, UndoMergeRequest, UndoMoveItem,
-        UndoMoveRequest, UndoRenameRequest, remote_file_url, validate_basename,
-        validate_uri_credentials,
+        UndoMoveRequest, UndoRenameRequest, validate_basename, validate_uri_credentials,
     },
 };
 
@@ -165,11 +164,6 @@ pub enum BrowserEvent {
     },
     OpenRequested {
         location: Location,
-    },
-    /// Chooser mode only: the location entry submitted an http(s) URL for the
-    /// chooser to download and offer as its selection.
-    RemoteFileRequested {
-        url: String,
     },
     RenameCompleted {
         request_id: OperationRequestId,
@@ -886,12 +880,6 @@ impl Browser {
             .filter(|current| current.display_path() == input)
         {
             self.navigate_validated(current, true);
-            return Ok(());
-        }
-        if self.chooser_mode.get()
-            && let Some(url) = remote_file_url(input)
-        {
-            self.emit(BrowserEvent::RemoteFileRequested { url });
             return Ok(());
         }
         let location = match base.filter(|_| is_relative_path_input(input)) {

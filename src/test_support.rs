@@ -154,8 +154,6 @@ pub(crate) fn gtk_test_with_env(
     assert!(status.success(), "{name} failed");
 }
 
-/// Binds a loopback listener that consumes exactly one HTTP request, writes
-/// `response` verbatim, then closes. Returns the `http://127.0.0.1:port` base.
 pub(crate) fn serve_http_once(response: Vec<u8>) -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("loopback listener");

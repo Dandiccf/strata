@@ -4,7 +4,9 @@ Strata can serve the XDG Desktop Portal FileChooser interface for portal-aware a
 
 The chooser is deliberately limited to local files and folders. It uses the main app's sidebar, Columns/Icons/List views, List type grouping, filters, metadata, previews, and themed controls. Recent appears when enabled in sidebar preferences and supported by the desktop's recent-files backend; only local targets are listed. Overwrite confirmation uses the same in-window modal as the app.
 
-Pasting an `http://` or `https://` file URL into the location bar (Ctrl+L) — or into the name field of a Save dialog — downloads the remote file to a temporary folder and returns that local path to the requesting application, mirroring the Windows common-dialog behavior. A floating indicator in the lower-right corner shows progress and offers cancellation while browsing stays interactive; Escape cancels the download before the chooser itself. Downloads are named from `Content-Disposition` or the URL path and persist under a `strata-download-*` folder in the temp directory after the chooser closes, so the requesting app can still open them; folders older than a day are swept when the portal starts or a new download begins. The feature applies to file open and SaveFile requests only — directory and SaveFiles requests reject pasted URLs.
+File-open requests include a **Name** field. Type an existing filename in the current folder, or paste a direct `http://` or `https://` file URL, then click **Open** or press Enter. A URL downloads to a temporary local file returned to the requesting application. Progress and a cancel button appear at the bottom-left of the action bar; Escape cancels the download before the chooser itself. The address bar remains navigation-only, and downloads are unavailable in folder and Save requests.
+
+Downloads are named from `Content-Disposition` or the URL path and persist under a `strata-download-*` folder in the temp directory after the chooser closes, so the requesting app can still open them. Folders older than a day are swept when the portal starts or a new download begins. URLs with credentials and automatic redirects are rejected; use the direct file URL.
 
 Folder-only requests hide regular files in both directory listings and recursive results. File requests keep folders available for navigation. Changing a file-type filter refreshes the current results without clearing the search query; selection and acceptance follow the new filter.
 
@@ -195,7 +197,7 @@ gdbus call --session \
   org.freedesktop.impl.portal.FileChooser version
 ```
 
-The second command should report `uint32 4`. Then open or save a file from a portal-aware application. Only local locations appear in this initial picker; entering a non-web remote URI shows an unsupported-location error, while an `http(s)` URL starts a download and returns the temporary local file.
+The second command should report `uint32 4`. Then open or save a file from a portal-aware application. Only local locations appear in the picker; entering a remote URI in the address bar shows an unsupported-location error. File-open requests accept direct `http(s)` URLs through the Name field.
 
 Portal backend selection happens before a request is sent. Keeping the existing backend after `strata;` lets the frontend choose it when Strata's `.portal` metadata is absent. It does not provide live failover if an already-selected Strata backend crashes during a request.
 
@@ -232,7 +234,7 @@ Use `--folder /absolute/path` for your own files, `--theme classic-light` for a 
 Check these interactions:
 
 - Single-selection requests remain single-selection with Ctrl/Shift clicks, including grouped List sections. Multiple-selection requests return all selected files.
-- Ctrl+L edits the location; Ctrl+F opens the browser filter; F5 refreshes; Ctrl+H or Ctrl+. toggles hidden files. Non-web remote locations show an error; a pasted `http(s)` URL downloads to a temp file and completes the request.
+- Ctrl+L edits the location; Ctrl+F opens the browser filter; F5 refreshes; Ctrl+H or Ctrl+. toggles hidden files. Remote locations in the address bar show an error. For file-open requests, paste a direct `http(s)` URL in Name and click Open to download and select a temporary local file.
 - Space opens/closes a preview. Escape dismisses a filter/menu/preview before cancelling the chooser.
 - Ctrl+Shift+N or the **New Folder** icon beside Refresh immediately creates `new folder` (or the first free `new folder (1)`, `(2)`, etc.) and selects its entire name for editing. Enter or clicking away commits a valid name. Escape or an empty/invalid name keeps the allocated default name; the directory is not deleted. Existing files and folders follow the same rename rules; files retain extension-aware name selection. In folder requests, Ctrl+Enter accepts the current folder when the file view has focus.
 - The SaveFile fixture suggests an existing filename. **Save** opens a themed overwrite confirmation; cancelling it leaves the chooser open. **Replace** returns the destination.
