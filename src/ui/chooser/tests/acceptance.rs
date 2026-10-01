@@ -1673,11 +1673,9 @@ fn save_file_with_selected_file_saves_to_active_folder() {
                 state.accept_button.emit_clicked();
                 assert!(result.borrow().is_none());
                 assert!(filename.has_css_class("error"));
-                assert_eq!(filename.tooltip_text().as_deref(), Some(message));
-                assert!(
-                    !state.error.is_visible(),
-                    "filename errors belong to the field, not a second banner"
-                );
+                assert!(filename.tooltip_text().is_none());
+                assert!(state.error.is_visible());
+                assert_eq!(state.error.text(), message);
                 assert!(!root.path().join("bad").exists());
             }
             filename.set_text("new_file.txt");

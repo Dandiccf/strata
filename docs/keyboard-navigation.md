@@ -148,7 +148,7 @@ While a pane shows its search-results page (including filtered results), the foo
 shows the displayed result total in both default and 10xer mode, including
 **0 items** on a miss.
 Selecting results does not replace that total with the hidden directory's selection;
-its tooltip gives the result file/folder breakdown. Dismissing results restores the
+its accessible description gives the result file/folder breakdown. Dismissing results restores the
 ordinary directory count or selection summary.
 
 With no selection in the ordinary listing, the footer shows the directory's item count. Selections show a folder/file breakdown, such as **1 folder, 2 files selected (64 MB)**. Sizes sum available metadata for selected files only; folder contents are not scanned or included. Missing file sizes are marked incomplete or unavailable.

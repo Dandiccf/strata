@@ -20,7 +20,7 @@ Turn it on in **Settings → General → Browsing → 10xer mode**, or with
 Keybindings** lists that same active map as an all-view overview. While the mode
 is on, Settings and the reference show **(experimental feature, under active
 development)**. The footer shows only the **10X** pill; the experimental note is
-in its tooltip and accessible description.
+in its accessible description.
 
 Paste destinations, cursor versus filled selection, and pointer ownership stay
 as in [keyboard navigation](keyboard-navigation.md).
@@ -442,7 +442,7 @@ focused item. Opening **f** again pre-fills the current query. Empty Enter,
 **Esc** from the prompt, or **Esc** from the list clears it. Moving focus out of
 the prompt keeps what was typed. View rebuilds keep the filter and the funnel
 collapsed. While a filter is active, the footer count is the displayed result
-count, including zero, with a file/folder breakdown in its tooltip; motion,
+count, including zero, with a file/folder breakdown in its accessible description; motion,
 **Enter**, and **Ctrl+R** act on the results, never on the hidden directory's
 cursor or fill.
 
@@ -464,8 +464,8 @@ directory otherwise. Empty **Esc** cancels without retaining search results.
 The footer count is the displayed hit count, not the hidden directory's fill.
 At its left end, the footer shows the search hit under the cursor as a path
 relative to the searched folder. When space is short, an ellipsis replaces the
-end of its folder part so the file name stays readable; the tooltip has the full
-path. **f** filters show no path. Pressing **s** again while hits are showing
+end of its folder part so the file name stays readable; the accessible name has
+the full path. **f** filters show no path. Pressing **s** again while hits are showing
 pre-fills their query. A new query,
 navigation (including opening a directory hit), leaving the mode, or closing the
 window discards the previous query's pending hits; a view change keeps the

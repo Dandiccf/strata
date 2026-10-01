@@ -354,7 +354,6 @@ impl BrowserView {
             .hexpand(true)
             .width_chars(36)
             .placeholder_text("Enter a path or URI…")
-            .tooltip_text(super::accessibility::LOCATION_LABEL)
             .build();
         location_entry.add_css_class("location-entry");
         let confirm_location = gtk::Button::builder()
@@ -521,7 +520,7 @@ impl BrowserView {
 
         let global_activity_spinner = gtk::Spinner::new();
         global_activity_spinner.add_css_class("global-activity-spinner");
-        global_activity_spinner.set_tooltip_text(Some("Working…"));
+        crate::ui::accessibility::set_description(&global_activity_spinner, Some("Working…"));
         global_activity_spinner.set_visible(false);
         let location_control = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         location_control.add_css_class("location-control");
@@ -2340,7 +2339,7 @@ impl ViewState {
     fn begin_global_activity(self: &Rc<Self>, label: impl Into<String>) -> GlobalActivity {
         let label = label.into();
         let id = self.global_activity.borrow_mut().begin(label.clone());
-        self.global_activity_spinner.set_tooltip_text(Some(&label));
+        crate::ui::accessibility::set_description(&self.global_activity_spinner, Some(&label));
         self.global_activity_spinner.set_visible(true);
         self.global_activity_spinner.start();
         GlobalActivity {
@@ -2356,12 +2355,14 @@ impl ViewState {
             activity.current_label().map(str::to_owned)
         };
         if let Some(label) = current {
-            self.global_activity_spinner.set_tooltip_text(Some(&label));
+            crate::ui::accessibility::set_description(&self.global_activity_spinner, Some(&label));
         } else {
             self.global_activity_spinner.stop();
             self.global_activity_spinner.set_visible(false);
-            self.global_activity_spinner
-                .set_tooltip_text(Some("Working…"));
+            crate::ui::accessibility::set_description(
+                &self.global_activity_spinner,
+                Some("Working…"),
+            );
         }
     }
 

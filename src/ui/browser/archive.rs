@@ -395,7 +395,7 @@ impl ViewState {
             let archive_name = normalized_archive_name(&name, format);
             if let Err(message) = validate_basename(&archive_name) {
                 name_for_confirm.add_css_class("error");
-                name_for_confirm.set_tooltip_text(Some(message));
+                crate::ui::accessibility::set_description(&name_for_confirm, Some(message));
                 name_for_confirm.grab_focus();
                 return;
             }
