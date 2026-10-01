@@ -1918,9 +1918,9 @@ fn pasted_url_in_open_name_field_downloads_and_returns_temp_path() {
 }
 
 #[test]
-fn open_name_field_checks_local_files_before_accepting() {
+fn name_field_failures_leave_request_open_for_retry() {
     crate::test_support::gtk_test(
-        "ui::chooser::tests::acceptance::open_name_field_checks_local_files_before_accepting",
+        "ui::chooser::tests::acceptance::name_field_failures_leave_request_open_for_retry",
         || {
             crate::ui::prepare_portal_ui();
             let root = tempfile::tempdir().expect("fixture");
@@ -1960,6 +1960,16 @@ fn open_name_field_checks_local_files_before_accepting() {
                 assert!(state.error.is_visible(), "{invalid}");
                 assert!(result.borrow().is_none(), "{invalid}");
             }
+            let base = crate::test_support::serve_http_once(
+                b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_vec(),
+            );
+            filename.set_text(&format!("{base}/missing.txt"));
+            filename.emit_activate();
+            wait_until(|| !state.download_in_progress());
+            assert!(state.error.is_visible());
+            assert!(state.error.text().contains("404"));
+            assert!(visible_modal_layer(&state.window).is_none());
+            assert!(result.borrow().is_none());
             filename.set_text("folder");
             filename.emit_activate();
             wait_until(|| {

@@ -427,6 +427,7 @@ struct ChooserState {
     choices: Vec<ChoiceControl>,
     read_only: Option<gtk::CheckButton>,
     error: gtk::Label,
+    action_status: gtk::Stack,
     destination_check: Cell<bool>,
     accept_generation: Cell<u64>,
     accept_button: gtk::Button,
@@ -473,7 +474,7 @@ impl ChooserState {
         self.accept_generation
             .set(self.accept_generation.get().wrapping_add(1));
         self.cancel_download();
-        self.error.set_visible(false);
+        self.clear_error();
         let cancelled = Arc::new(AtomicBool::new(false));
         *self.download_cancel.borrow_mut() = Some(cancelled.clone());
         let state = Rc::downgrade(self);
@@ -526,11 +527,7 @@ impl ChooserState {
                         state.dismiss_download_progress();
                         state.accept_button.set_sensitive(true);
                         if state.download_cancel.borrow_mut().take().is_some() {
-                            crate::ui::modal::show_error_dialog(
-                                &state.window,
-                                "Download failed",
-                                &message,
-                            );
+                            state.show_error(&message);
                         }
                         break glib::ControlFlow::Break;
                     }
@@ -539,6 +536,7 @@ impl ChooserState {
                         state.dismiss_download_progress();
                         state.accept_button.set_sensitive(true);
                         state.download_cancel.borrow_mut().take();
+                        state.show_error("The download stopped unexpectedly. Try again.");
                         break glib::ControlFlow::Break;
                     }
                 }
@@ -599,9 +597,12 @@ impl ChooserState {
     fn show_error(&self, message: &str) {
         self.error.set_label(message);
         self.error.set_visible(true);
-        if let Some(details) = self.error.ancestor(gtk::ScrolledWindow::static_type()) {
-            details.set_visible(true);
-        }
+        self.action_status.set_visible_child_name("error");
+    }
+
+    fn clear_error(&self) {
+        self.error.set_visible(false);
+        self.action_status.set_visible_child_name("normal");
     }
 
     /// The selected results or the fill; in 10xer mode an unfilled cursor
@@ -759,7 +760,7 @@ impl ChooserState {
         {
             return;
         }
-        self.error.set_visible(false);
+        self.clear_error();
         match &self.request.kind {
             ChooserKind::Open {
                 directory,
@@ -1379,13 +1380,13 @@ fn build_chooser_with_source(
     });
     options.set_visible(options.first_child().is_some());
 
-    let error = gtk::Label::new(None);
-    error.add_css_class("form-message");
-    error.add_css_class("error");
-    error.set_xalign(0.0);
-    error.set_wrap(true);
+    let error = gtk::Label::builder()
+        .accessible_role(gtk::AccessibleRole::Alert)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    error.add_css_class("form-field-error");
     error.set_visible(false);
-    details.append(&error);
 
     let cancel = gtk::Button::with_label("Cancel");
     cancel.add_css_class("action-dialog-cancel");
@@ -1404,13 +1405,20 @@ fn build_chooser_with_source(
     actions.add_css_class("chooser-actions");
     let download_holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     download_holder.set_visible(false);
-    actions.append(&download_holder);
+    let normal_status = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    normal_status.append(&download_holder);
     if let Some(hints) = save_hints(&request.kind, &theme) {
-        actions.append(&hints);
+        normal_status.append(&hints);
     }
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    actions.append(&spacer);
+    let action_status = gtk::Stack::builder()
+        .hexpand(true)
+        .hhomogeneous(false)
+        .vhomogeneous(true)
+        .build();
+    action_status.add_named(&normal_status, Some("normal"));
+    action_status.add_named(&error, Some("error"));
+    action_status.set_visible_child_name("normal");
+    actions.append(&action_status);
     actions.append(&cancel);
     actions.append(&accept);
     let details_scroll = gtk::ScrolledWindow::builder()
@@ -1454,6 +1462,7 @@ fn build_chooser_with_source(
         choices,
         read_only,
         error,
+        action_status,
         destination_check: Cell::new(false),
         accept_generation: Cell::new(0),
         accept_button: accept.clone(),
