@@ -28,7 +28,7 @@ use gtk::{gio, glib, prelude::*};
 use crate::{
     adapters::{LocalFileSource, LocalOperationProvider, LocalPreviewProvider},
     app::BrowserEvent,
-    model::{FileEntry, Location},
+    model::{EntryKind, FileEntry, Location, MetadataValue},
     portal::{
         ChooserKind, ChooserRequest, check_destinations, local_uri, open_selection, safe_filename,
         writable_from_read_only,
@@ -568,6 +568,30 @@ impl ChooserState {
     }
 
     fn complete_remote(&self, path: PathBuf) {
+        let name = path
+            .file_name()
+            .map(|name| name.to_os_string())
+            .unwrap_or_default();
+        let entry = FileEntry {
+            location: Location::local(&path),
+            thumbnail_path: None,
+            native_name: name.clone(),
+            display_name: name.to_string_lossy().into_owned(),
+            kind: EntryKind::File,
+            size: MetadataValue::Unknown,
+            modified_unix_seconds: MetadataValue::Unknown,
+            recent_unix_seconds: MetadataValue::Unknown,
+            mode: MetadataValue::Unknown,
+            image_dimensions: MetadataValue::Unknown,
+            child_count: MetadataValue::Unknown,
+            duration_seconds: MetadataValue::Unknown,
+            is_hidden: false,
+        };
+        if !self.view.browser().allows_entry(&entry) {
+            self.accept_button.set_sensitive(true);
+            self.show_error("The file does not match the selected filter");
+            return;
+        }
         self.complete_paths(
             vec![path],
             self.read_only
@@ -647,19 +671,21 @@ impl ChooserState {
     }
 
     fn name_selection_entries(&self) -> Vec<FileEntry> {
-        self.chosen_entries(matches!(
-            self.request.kind,
-            ChooserKind::Open {
-                directory: false,
-                ..
-            }
-        ))
+        if self.view.selected_search_results().is_some() {
+            return self.chosen_entries(true);
+        }
+        let browser = self.view.browser();
+        if browser.selection_is_load_cursor() && browser.selected_entries().len() <= 1 {
+            return Vec::new();
+        }
+        self.chosen_entries(true)
     }
 
     fn update_selected_filename(&self) {
         let Some(filename) = self.filename.as_ref() else {
             return;
         };
+
         if PreferenceManager::shared().tenxer_mode() {
             return;
         }
@@ -850,13 +876,12 @@ impl ChooserState {
                         state.filename_edited.set(false);
                     }
                 }
-                Ok(entry) if state.view.browser().allows_entry(&entry) => state.complete_remote(
-                    entry
-                        .location
-                        .native_path()
-                        .expect("local filename")
-                        .to_path_buf(),
-                ),
+                Ok(entry) if state.view.browser().allows_entry(&entry) => {
+                    match entry.location.native_path() {
+                        Some(path) => state.complete_remote(path.to_path_buf()),
+                        None => state.show_error("Choose an existing, accessible file"),
+                    }
+                }
                 Ok(_) => state.show_error("The file does not match the selected filter"),
                 Err(_) => state.show_error("Choose an existing, accessible file"),
             }

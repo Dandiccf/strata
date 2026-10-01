@@ -3282,6 +3282,10 @@ entry.form-control.shortcut-footer-prompt:focus-within {
   color: @theme_text;
 }
 
+.chooser-download .job-progress {
+  margin-top: 0;
+}
+
 .chooser-download-status {
   color: @theme_dim_text;
   font-size: 0.85em;
