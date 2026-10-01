@@ -1122,13 +1122,13 @@ impl PreviewState {
         self.current.replace(Some(entry.clone()));
         crate::assets::set_primary_icon(&self.icon, super::browser::entry_icon(&entry));
         self.title.set_text(&entry.display_name);
-        self.title
-            .set_tooltip_text(Some(&entry.location.display_path()));
+        crate::ui::accessibility::set_description(
+            &self.title,
+            Some(&entry.location.display_path()),
+        );
         self.size.set_text(&metadata_size(&entry));
         crate::util::set_modified_date(&self.modified, Some(&entry), "—");
         self.content_type.set_text(file_extension(&entry));
-        self.content_type
-            .set_tooltip_text(Some(file_extension(&entry)));
         self.load.borrow_mut().take();
         self.pdf_loads.borrow_mut().clear();
 
@@ -1284,8 +1284,6 @@ impl PreviewState {
 
     fn render(self: &Rc<Self>, preview: Preview) {
         self.content_type.set_text(&preview.content_type);
-        self.content_type
-            .set_tooltip_text(Some(&preview.content_type));
         self.clear_content();
         match preview.content {
             PreviewContent::Text { content, truncated } => {
@@ -1441,7 +1439,6 @@ impl PreviewState {
     }
 
     fn render_archive(self: &Rc<Self>, tree: ArchivePreviewTree, focus_tree: bool) {
-        self.set_archive_preview_active(true);
         let weak = Rc::downgrade(self);
         let navigate = Rc::new(move |depth: usize| {
             if let Some(state) = weak.upgrade() {
@@ -1485,7 +1482,9 @@ impl PreviewState {
                 browser.move_cursor(1);
             }
             gtk::gdk::Key::Left => {
-                browser.go_up();
+                if !browser.go_up() {
+                    return false;
+                }
             }
             gtk::gdk::Key::Right | gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
                 browser.open_cursor();
@@ -1495,12 +1494,6 @@ impl PreviewState {
         drop(browsers);
         self.reassert_keyboard_owner();
         true
-    }
-
-    fn set_archive_preview_active(&self, active: bool) {
-        if let Some(browser) = self.sizing.browser() {
-            browser.set_archive_preview_active(active);
-        }
     }
 
     fn archive_list_has_focus(&self, focused: Option<&gtk::Widget>) -> bool {
@@ -1790,7 +1783,7 @@ impl PreviewState {
             };
             let binding_name = format!("pdf-page-{page_index}");
             overlay.set_widget_name(&binding_name);
-            overlay.set_tooltip_text(None);
+            crate::ui::accessibility::set_description(&overlay, None);
             let target_width = page_width_for_bind.get();
             overlay.set_size_request(if target_width > 0 { target_width } else { -1 }, 560);
             picture.set_paintable(gtk::gdk::Paintable::NONE);
@@ -1903,7 +1896,10 @@ impl PreviewState {
                         request_id: response_id,
                         ..
                     } if response_id == request_id => {
-                        overlay.set_tooltip_text(Some("Unable to render this PDF page"));
+                        crate::ui::accessibility::set_description(
+                            &overlay,
+                            Some("Unable to render this PDF page"),
+                        );
                     }
                     PreviewEvent::Progress { .. }
                     | PreviewEvent::Ready(_)
@@ -2472,7 +2468,6 @@ impl PreviewState {
         self.text_view.take();
         self.text_scroll.take();
         self.archive_browser.take();
-        self.set_archive_preview_active(false);
         self.clear_password_entry();
         clear_box(&self.content);
         self.keep_keys_in_content(owned);

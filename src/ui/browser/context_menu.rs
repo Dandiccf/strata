@@ -24,6 +24,7 @@ use std::rc::Rc;
 mod actions;
 mod commands;
 mod keyboard;
+mod presentation;
 
 const CONTEXT_MENU_EDGE_MARGIN: i32 = 16;
 
@@ -171,7 +172,7 @@ fn restore_context_focus(state: &ViewState, depth: usize) {
     }
 }
 
-fn context_search_active(state: &ViewState, depth: usize) -> bool {
+pub(super) fn context_search_active(state: &ViewState, depth: usize) -> bool {
     if state.mode_views.borrow().mode() != BrowserMode::Columns {
         return state
             .mode_views
@@ -828,7 +829,11 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         ContextHint::Preview,
     );
     let print = item_context_option(crate::assets::icons::PRINTER, "Print", ContextHint::None);
-    let restore = item_context_option(crate::assets::icons::UNDO_2, "Restore", ContextHint::None);
+    let restore = item_context_option(
+        crate::assets::icons::UNDO_2,
+        "Restore",
+        ContextHint::Restore,
+    );
     restore.set_visible(in_trash);
     let pin = item_context_option(
         crate::assets::icons::PIN,
@@ -854,11 +859,16 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let move_to = item_context_option(
         crate::assets::icons::FOLDER_INPUT,
         "Move to…",
-        ContextHint::None,
+        ContextHint::MoveTo,
     );
     let copy_to = item_context_option(
         crate::assets::icons::FOLDER_OUTPUT,
         "Copy to…",
+        ContextHint::CopyTo,
+    );
+    let group = item_context_option(
+        crate::assets::icons::FOLDER_PLUS,
+        "New Folder with Selection",
         ContextHint::None,
     );
     let rename = item_context_option(crate::assets::icons::PENCIL, "Rename", ContextHint::Rename);
@@ -914,6 +924,9 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         "Extract to…",
         ContextHint::None,
     );
+    let group_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    single_open.append(&group);
+    single_open.append(&group_separator);
     single_open.append(&open);
     single_open.append(&open_with);
     single_open.append(&preview);
@@ -964,7 +977,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let restore_multiple = item_context_option(
         crate::assets::icons::UNDO_2,
         "Restore items",
-        ContextHint::None,
+        ContextHint::Restore,
     );
     restore_multiple.set_visible(in_trash);
     let copy_multiple = item_context_option(crate::assets::icons::COPY, "Copy", ContextHint::Copy);
@@ -986,11 +999,16 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let move_multiple = item_context_option(
         crate::assets::icons::FOLDER_INPUT,
         "Move to…",
-        ContextHint::None,
+        ContextHint::MoveTo,
     );
     let copy_to_multiple = item_context_option(
         crate::assets::icons::FOLDER_OUTPUT,
         "Copy to…",
+        ContextHint::CopyTo,
+    );
+    let group_multiple = item_context_option(
+        crate::assets::icons::FOLDER_PLUS,
+        "New Folder with Selection",
         ContextHint::None,
     );
     let cut_multiple = item_context_option(crate::assets::icons::SCISSORS, "Cut", ContextHint::Cut);
@@ -1025,6 +1043,9 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         "Properties",
         ContextHint::Properties,
     );
+    let group_multiple_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    multiple_open.append(&group_multiple);
+    multiple_open.append(&group_multiple_separator);
     multiple_open.append(&open_multiple);
     multiple_open.append(&open_with_multiple);
     multiple_open.append(&restore_multiple);
@@ -1381,6 +1402,11 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             state.duplicate_entries(&entries);
         });
     }
+    for button in [&group, &group_multiple] {
+        connect_selection_action(button, &popover, state, &target, move |state, entries| {
+            state.new_folder_with_selection(depth, &entries);
+        });
+    }
     for (button, permanent) in [
         (&move_to_trash, in_trash),
         (&trash_multiple, in_trash),
@@ -1542,6 +1568,15 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             for button in [&cut, &cut_multiple, &move_to, &move_multiple] {
                 button.set_visible(removable);
             }
+            let groupable = removable
+                && !context_search_active(&state, depth)
+                && state.browser.location_at(depth).is_some_and(|location| {
+                    !is_trash_location(&location) && !location.is_recent_location()
+                });
+            group.set_visible(groupable);
+            group_multiple.set_visible(groupable);
+            group_separator.set_visible(groupable);
+            group_multiple_separator.set_visible(groupable);
             let rename_visible = !is_trash_location(&entry.location);
             rename.set_visible(rename_visible);
             let can_compress = entries
@@ -1839,7 +1874,7 @@ fn item_context_danger_option(icon: &str, label: &str, hint: ContextHint) -> gtk
 }
 
 fn item_context_option_with_icon(icon: gtk::Image, label: &str, hint: ContextHint) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     button.add_css_class("item-context-option");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     icon.add_css_class("item-context-icon");
@@ -1882,7 +1917,7 @@ pub(in crate::ui) fn context_menu_option(
     label: &str,
     hint: ContextHint,
 ) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     let (row, _, _) = context_menu_row(icon, label, hint, &button);
     button.add_css_class("folder-context-option");
     button.set_child(Some(&row));
@@ -1976,7 +2011,9 @@ impl OpenWithSelection {
 }
 
 fn set_open_with_explanation(button: &gtk::Button, explanation: Option<&str>) {
-    button.set_tooltip_text(explanation);
+    if let Some(option) = button.downcast_ref::<presentation::MenuOption>() {
+        option.set_menu_description(explanation.unwrap_or(""));
+    }
     button.update_property(&[gtk::accessible::Property::Description(
         explanation.unwrap_or(""),
     )]);
