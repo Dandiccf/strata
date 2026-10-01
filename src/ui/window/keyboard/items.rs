@@ -73,6 +73,10 @@ impl Dispatcher {
         }
         if self.view.item_view_has_focus() {
             if event.key == Key::Right
+                && matches!(
+                    self.view.view_mode(),
+                    BrowserMode::List | BrowserMode::Columns
+                )
                 && self.preview.is_open()
                 && self
                     .view
