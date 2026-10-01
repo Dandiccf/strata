@@ -2048,34 +2048,59 @@ fn non_file_open_requests_reject_remote_downloads() {
 }
 
 #[test]
-fn open_name_field_ignores_the_automatic_first_row() {
+fn typed_name_survives_automatic_load_selection() {
     crate::test_support::gtk_test(
-        "ui::chooser::tests::acceptance::open_name_field_ignores_the_automatic_first_row",
+        "ui::chooser::tests::acceptance::typed_name_survives_automatic_load_selection",
         || {
             crate::ui::prepare_portal_ui();
-            let root = tempfile::tempdir().expect("fixture");
-            std::fs::write(root.path().join("only.txt"), "only").expect("fixture file");
-            let state = build_chooser(
-                request(root.path().to_path_buf()),
-                Arc::new(AtomicBool::new(false)),
-                |_| {},
-            )
-            .expect("chooser");
-            wait_until(|| {
-                state
-                    .view
-                    .browser()
-                    .column_snapshot(0)
-                    .is_some_and(|column| !column.loading)
-            });
-            assert!(state.name_selection_entries().is_empty());
-            let filename = state.filename.as_ref().expect("open name field");
-            assert_eq!(filename.text(), "");
-            filename.set_text("https://example.com/typed.txt");
-            state.update_selected_filename();
-            assert_eq!(filename.text(), "https://example.com/typed.txt");
-            assert!(state.filename_edited.get());
-            state.window.close();
+            PreferenceManager::shared().set_browser_mode(BrowserMode::List);
+            for first_is_directory in [false, true] {
+                let root = tempfile::tempdir().expect("fixture");
+                let first = root.path().join("aaa");
+                if first_is_directory {
+                    std::fs::create_dir(&first).expect("first folder");
+                } else {
+                    std::fs::write(&first, "first").expect("first file");
+                }
+                let target = root.path().join("typed.txt");
+                std::fs::write(&target, "typed").expect("typed file");
+                let result = Rc::new(RefCell::new(None));
+                let received = result.clone();
+                let state = build_chooser(
+                    request(root.path().to_path_buf()),
+                    Arc::new(AtomicBool::new(false)),
+                    move |value| {
+                        received.replace(Some(value));
+                    },
+                )
+                .expect("chooser");
+                let browser = state.view.browser();
+                assert!(
+                    browser
+                        .column_snapshot(0)
+                        .is_some_and(|column| column.loading)
+                );
+                let filename = state.filename.as_ref().expect("open name field");
+                filename.set_text("typed.txt");
+                wait_until(|| {
+                    browser
+                        .column_snapshot(0)
+                        .is_some_and(|column| !column.loading)
+                });
+                assert_eq!(filename.text(), "typed.txt");
+                state.accept_button.emit_clicked();
+                wait_until(|| result.borrow().is_some());
+                let selected = result
+                    .borrow_mut()
+                    .take()
+                    .expect("result")
+                    .expect("accepted");
+                let actual = gio::File::for_uri(&selected.uris()[0].to_string())
+                    .path()
+                    .expect("local path");
+                assert_eq!(actual, target);
+                state.window.close();
+            }
         },
     );
 }
