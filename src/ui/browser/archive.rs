@@ -470,9 +470,9 @@ impl ViewState {
 
     /// Opens the "Extract to" folder picker for `entry`.
     ///
-    /// Returns immediately when the archive is not a native path. Confirm
-    /// creates the typed destination if it does not exist, then extracts into
-    /// that folder and navigates there when the operation finishes. Password
+    /// Requires a native archive path and a parent window. The shared chooser
+    /// handles navigation and folder creation; confirmation extracts into the
+    /// chosen folder and navigates there when the operation finishes. Password
     /// retry is recorded the same way as [`Self::extract_entry`].
     pub(super) fn show_extract_to_dialog(self: &Rc<Self>, entry: FileEntry) {
         if entry.location.native_path().is_none() {
