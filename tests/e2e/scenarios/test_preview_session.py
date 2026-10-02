@@ -33,6 +33,11 @@ def test_preview_mode_survives_unsupported_selections_and_matches_appearance(str
     strata.switch_view(mode)
     strata.select_entry("z.rar")
     option = preview_option(strata)
+    if mode == "Columns":
+        assert option.has_state("pressed"), "Columns reserves previews from startup"
+        strata.pointer.click(option)
+        strata.wait_for_menu_closed()
+        option = preview_option(strata)
     assert option.find(role="label", name="Space") is not None
     assert not option.has_state("pressed")
     strata.pointer.click(option)
@@ -130,6 +135,10 @@ def test_icons_keep_their_layout_until_preview_mode_is_explicitly_toggled(strata
 
 @pytest.mark.preferences(browser_mode="columns", single_click_previews=False)
 def test_peek_click_reveals_a_column_without_activating_rows_or_toolbar_actions(strata):
+    option = preview_option(strata)
+    assert option.has_state("pressed")
+    strata.pointer.click(option)
+    strata.wait_for_menu_closed()
     browser_left = strata.pane().screen_bounds().x
     for name in ["Alpha", "Beta", "Gamma", "Delta"]:
         strata.open_directory(name)
