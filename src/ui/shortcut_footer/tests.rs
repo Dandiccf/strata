@@ -56,12 +56,7 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     }
     view.browser().set_selection(0, &[], None);
     assert_eq!(footer.count.text(), "3 items");
-    assert_eq!(
-        footer.count.tooltip_text().as_deref(),
-        Some("2 files, 1 folder")
-    );
-    // Other test windows must not compete for the display's global popup grab.
-    footer.popover.set_autohide(false);
+    assert!(footer.count.tooltip_text().is_none());
     let updated = footer.clone();
     view.connect_view_mode_changed(move |mode| updated.set_mode(mode));
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -69,7 +64,7 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     root.append(&entry);
     root.append(footer.widget());
     let window = gtk::Window::builder()
-        .child(&root)
+        .child(&gtk::Overlay::builder().child(&root).build())
         .default_width(600)
         .default_height(500)
         .build();
@@ -103,12 +98,7 @@ fn footer_tracks_modes_and_shields_files_while_open() {
             settle();
         }
         assert_eq!(footer.count.text(), "1 folder, 2 files selected (6 B)");
-        assert!(
-            footer
-                .count
-                .tooltip_text()
-                .is_some_and(|text| { text.contains("folder contents are not counted") })
-        );
+        assert!(footer.count.tooltip_text().is_none());
         let folder = (0..3)
             .find(|position| {
                 view.browser()
@@ -180,8 +170,8 @@ fn footer_tracks_modes_and_shields_files_while_open() {
         footer.handle_key(gdk::Key::F1, none),
         Some(glib::Propagation::Stop)
     );
-    assert!(footer.popover.is_visible());
-    assert!(footer.popover.child_focus(gtk::DirectionType::TabForward));
+    assert!(footer.session.is_open());
+    assert!(footer.panel.child_focus(gtk::DirectionType::TabForward));
     footer.search.grab_focus();
     assert_eq!(
         footer.handle_key(gdk::Key::Delete, none),
@@ -209,7 +199,7 @@ fn footer_tracks_modes_and_shields_files_while_open() {
         footer.handle_key(gdk::Key::Escape, none),
         Some(glib::Propagation::Stop)
     );
-    assert!(!footer.popover.is_visible());
+    assert!(!footer.session.is_open());
     while glib::MainContext::default().iteration(false) {}
     assert!(
         gtk::prelude::RootExt::focus(&window).is_some_and(|focus| {
@@ -236,14 +226,14 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     assert_eq!(saved["show_keybinding_hints"].as_bool(), Some(false));
     footer.handle_key(gdk::Key::F1, none);
     settle();
-    assert!(footer.popover.is_visible());
+    assert!(footer.session.is_open());
     footer.handle_key(gdk::Key::F1, none);
     footer.handle_key(gdk::Key::F1, none);
     settle();
-    assert!(footer.popover.is_visible());
+    assert!(footer.session.is_open());
     footer.handle_key(gdk::Key::F1, none);
     settle();
-    assert!(!footer.popover.is_visible());
+    assert!(!footer.session.is_open());
     footer.assert_hints_visible(false);
     assert!(!manager.show_keybinding_hints());
     assert!(gtk::prelude::RootExt::focus(&window).is_some_and(|focus| {
@@ -284,7 +274,6 @@ fn tenxer_reference_follows_the_active_map() {
                 .default_width(640)
                 .default_height(480)
                 .build();
-            footer.popover.set_autohide(false);
             window.present();
             entry.grab_focus();
             settle();
@@ -294,10 +283,10 @@ fn tenxer_reference_follows_the_active_map() {
             assert!(
                 reference_labels(&footer)
                     .iter()
-                    .any(|label| label == "Toggle file preview")
+                    .any(|label| label == "Preview a file, or open a folder")
             );
             assert_eq!(footer.handle_key(gdk::Key::asciitilde, none), None);
-            assert!(!footer.popover.is_visible());
+            assert!(!footer.session.is_open());
 
             manager.set_tenxer_mode(true);
             settle();
@@ -316,14 +305,9 @@ fn tenxer_reference_follows_the_active_map() {
                     }),
                 "the footer shows only the pill"
             );
-            assert!(
-                footer
-                    .tag
-                    .tooltip_text()
-                    .is_some_and(|text| text.contains(phrase))
-            );
+            assert!(footer.tag.tooltip_text().is_none());
             let columns = reference_labels(&footer);
-            assert!(columns.iter().any(|label| label == "Leave 10xer mode"));
+            assert!(columns.iter().any(|label| label == "Toggle 10xer mode"));
             assert!(
                 columns
                     .iter()
@@ -335,7 +319,11 @@ fn tenxer_reference_follows_the_active_map() {
                     .any(|label| label == "Open the next column for the focused directory")
             );
             assert!(columns.iter().any(|label| label == "Move half a page"));
-            assert!(!columns.iter().any(|label| label == "Toggle file preview"));
+            assert!(
+                !columns
+                    .iter()
+                    .any(|label| label == "Preview a file, or open a folder")
+            );
             assert!(
                 !columns
                     .iter()
@@ -366,7 +354,7 @@ fn tenxer_reference_follows_the_active_map() {
 
             footer.handle_key(gdk::Key::F1, none);
             settle();
-            assert!(footer.popover.is_visible());
+            assert!(footer.session.is_open());
             assert!(
                 overlay
                     .observe_children()
@@ -402,7 +390,7 @@ fn tenxer_reference_follows_the_active_map() {
             settle();
             let matches = reference_labels(&footer);
             assert!(matches.iter().any(|label| label == "Move half a page"));
-            assert!(!matches.iter().any(|label| label == "Leave 10xer mode"));
+            assert!(!matches.iter().any(|label| label == "Toggle 10xer mode"));
             footer.search.set_text("");
             settle();
             let places = footer.category_buttons()[2].clone();
@@ -440,7 +428,7 @@ fn tenxer_reference_follows_the_active_map() {
             assert!(
                 !reference_labels(&footer)
                     .iter()
-                    .any(|label| label == "Leave 10xer mode")
+                    .any(|label| label == "Toggle 10xer mode")
             );
             assert_eq!(
                 footer.handle_key(gdk::Key::k, none),
@@ -449,7 +437,7 @@ fn tenxer_reference_follows_the_active_map() {
             assert!(
                 reference_labels(&footer)
                     .iter()
-                    .any(|label| label == "Leave 10xer mode")
+                    .any(|label| label == "Toggle 10xer mode")
             );
             assert_eq!(
                 footer.handle_key(gdk::Key::Right, none),
@@ -504,7 +492,7 @@ fn tenxer_reference_follows_the_active_map() {
             press_reference(&footer, gdk::Key::F1);
             settle();
             assert!(
-                !footer.popover.is_visible(),
+                !footer.session.is_open(),
                 "F1 from the open reference closes it"
             );
             assert!(
@@ -521,7 +509,7 @@ fn tenxer_reference_follows_the_active_map() {
             }));
             footer.handle_key(gdk::Key::asciitilde, none);
             settle();
-            assert!(footer.popover.is_visible());
+            assert!(footer.session.is_open());
             footer.search.grab_focus();
             settle();
             assert_eq!(
@@ -530,12 +518,12 @@ fn tenxer_reference_follows_the_active_map() {
             );
             footer.handle_key(gdk::Key::Escape, none);
             settle();
-            assert!(!footer.popover.is_visible());
+            assert!(!footer.session.is_open());
 
             let other = ShortcutFooter::new(BrowserMode::List);
             other.bind_preferences(&manager);
             let list = reference_labels(&other);
-            assert!(list.iter().any(|label| label == "Leave 10xer mode"));
+            assert!(list.iter().any(|label| label == "Toggle 10xer mode"));
             assert!(
                 list.iter()
                     .any(|label| label == "Open the focused directory")
@@ -557,24 +545,54 @@ fn tenxer_reference_follows_the_active_map() {
                     .iter()
                     .any(|label| label == "Open the next column for the focused directory")
             );
+            assert!(reference_pairs(
+                &list,
+                "i",
+                "Toggle folder peek for the focused directory"
+            ));
+
+            let chooser = ShortcutFooter::new(BrowserMode::List);
+            chooser.bind_preferences(&manager);
+            chooser.set_chooser(crate::ui::shortcut_reference::ChooserScope {
+                request: crate::ui::shortcut_reference::ChooserRequest::Files,
+                multiple: false,
+            });
+            let refused = reference_labels(&chooser);
+            assert!(reference_pairs(
+                &refused,
+                "Enter / o on a file",
+                "Choose the file"
+            ));
+            assert!(refused.iter().any(|label| label == "Toggle 10xer mode"));
+            for unavailable in [
+                "Yank / cut the selection, or the focused item",
+                "Close the current window",
+                "Toggle folder peek for the focused directory",
+                "Toggle the focused item and move down",
+                "Open global search",
+            ] {
+                assert!(
+                    !refused.iter().any(|label| label == unavailable),
+                    "the chooser refuses {unavailable:?}"
+                );
+            }
             manager.set_tenxer_mode(false);
             settle();
             assert!(!footer.tag.is_visible());
-            assert!(
-                footer
-                    .tag
-                    .tooltip_text()
-                    .is_none_or(|text| !text.contains(phrase))
-            );
+            assert!(footer.tag.tooltip_text().is_none());
             for shown in [&footer, &other] {
                 let labels = reference_labels(shown);
-                assert!(reference_pairs(&labels, "Space", "Toggle file preview"));
+                assert!(reference_pairs(
+                    &labels,
+                    "Space",
+                    "Preview a file, or open a folder"
+                ));
                 assert!(
                     !labels
                         .iter()
                         .any(|label| label == "Toggle the focused item and move down")
                 );
-                assert!(!labels.iter().any(|label| label == "Leave 10xer mode"));
+                assert!(!labels.iter().any(|label| label == "Toggle 10xer mode"));
             }
             window.destroy();
         },
@@ -582,7 +600,7 @@ fn tenxer_reference_follows_the_active_map() {
 }
 
 fn press_reference(footer: &ShortcutFooter, key: gdk::Key) {
-    let controllers = footer.popover.observe_controllers();
+    let controllers = footer.panel.observe_controllers();
     let controller = (0..controllers.n_items())
         .filter_map(|index| {
             controllers

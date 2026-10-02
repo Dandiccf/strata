@@ -14,7 +14,7 @@ use crate::{
     model::Location,
     ui::{
         browser_modes::BrowserMode,
-        preview::preview_target,
+        preview::{PreviewSurface, preview_target},
         tenxer_mode::Chord,
         window::{
             SinglePaneArrow, home_directory, jump_direction, page_direction,
@@ -57,16 +57,54 @@ impl Dispatcher {
         (browser.close_peek() || browser.clear_active_selection()).then_some(Propagation::Stop)
     }
 
-    pub(super) fn archive_navigation(&self, event: &KeyEvent) -> KeyResult {
+    pub(super) fn preview_navigation(&self, event: &KeyEvent) -> KeyResult {
         if !event.without(
             Modifiers::CONTROL_MASK
                 | Modifiers::ALT_MASK
                 | Modifiers::SUPER_MASK
                 | Modifiers::SHIFT_MASK,
-        ) || event.text_has_focus()
-            || (!self.view.item_view_has_focus()
-                && !self.preview.archive_list_has_focus(event.focused.as_ref()))
+        ) || (event.text_has_focus()
+            && !event.focused.as_ref().is_some_and(|focused| {
+                self.preview.owns_focus(Some(focused))
+                    && self.preview.surface(focused) == PreviewSurface::Document
+            }))
         {
+            return None;
+        }
+        if self.view.item_view_has_focus() {
+            if event.key == Key::Right
+                && matches!(
+                    self.view.view_mode(),
+                    BrowserMode::List | BrowserMode::Columns
+                )
+                && self.preview.is_open()
+                && self
+                    .view
+                    .browser()
+                    .focused_entry()
+                    .is_some_and(|entry| !entry.is_directory())
+                && self.preview.take_keyboard()
+            {
+                return Some(Propagation::Stop);
+            }
+            return None;
+        }
+        if !self.preview.owns_focus(event.focused.as_ref()) {
+            return None;
+        }
+        if event.key == Key::Left
+            && self.preview.archive_at_root()
+            && event.focused.as_ref().is_some_and(|focused| {
+                matches!(
+                    self.preview.surface(focused),
+                    PreviewSurface::Archive | PreviewSurface::Document
+                )
+            })
+        {
+            self.return_from_preview(&self.view.browser());
+            return Some(Propagation::Stop);
+        }
+        if !self.preview.archive_list_has_focus(event.focused.as_ref()) {
             return None;
         }
         match event.key {
@@ -260,7 +298,10 @@ impl Dispatcher {
                         || (self.view.listing_search_active() && self.tenxer_control_page(key))
                 }
                 Modifiers::SHIFT_MASK => {
-                    matches!(key, Key::G | Key::V) && self.tenxer_shifted(browser, key)
+                    (matches!(key, Key::G | Key::V)
+                        || is_arrow(key)
+                        || page_direction(key).is_some())
+                        && self.tenxer_shifted(browser, key)
                 }
                 _ => false,
             };
@@ -409,25 +450,6 @@ impl Dispatcher {
         true
     }
 
-    fn extend_tenxer_cursor(&self, browser: &Rc<Browser>, arrow: Key) {
-        if !self.view.begin_extend() {
-            self.shortcuts.show_feedback("Nothing to select");
-        } else if self.view.view_mode() == BrowserMode::Icons {
-            self.move_icon_range(browser, arrow);
-        } else {
-            self.view
-                .move_displayed_cursor(if arrow == Key::Up { -1 } else { 1 }, 1);
-        }
-    }
-
-    fn extend_tenxer_page(&self, direction: i32) {
-        if self.view.begin_extend() {
-            self.view.page_displayed_cursor(direction, false);
-        } else {
-            self.shortcuts.show_feedback("Nothing to select");
-        }
-    }
-
     fn toggle_visual(&self, kind: VisualKind) {
         if !self.view.toggle_visual(kind) {
             self.shortcuts.show_feedback("Nothing to select");
@@ -475,17 +497,9 @@ impl Dispatcher {
     }
 
     fn tenxer_shifted(&self, browser: &Rc<Browser>, key: Key) -> bool {
-        if self.view.selected_search_results().is_none() {
-            if let Some(arrow) = extend_arrow(key) {
-                self.extend_tenxer_cursor(browser, arrow);
-                return true;
-            }
-            if let Some(direction) = page_direction(key) {
-                self.extend_tenxer_page(direction);
-                return true;
-            }
-        }
         match key {
+            // Native Shift selection must not interfere with v/V ranges.
+            key if is_arrow(key) || page_direction(key).is_some() => {}
             Key::V if !self.selection_keys_blocked() => {
                 self.toggle_visual(VisualKind::Unset);
             }
@@ -608,12 +622,18 @@ fn swallowed_on_hits(key: Key) -> bool {
     )
 }
 
-fn extend_arrow(key: Key) -> Option<Key> {
-    match key {
-        Key::Up | Key::KP_Up => Some(Key::Up),
-        Key::Down | Key::KP_Down => Some(Key::Down),
-        _ => None,
-    }
+fn is_arrow(key: Key) -> bool {
+    matches!(
+        key,
+        Key::Up
+            | Key::KP_Up
+            | Key::Down
+            | Key::KP_Down
+            | Key::Left
+            | Key::KP_Left
+            | Key::Right
+            | Key::KP_Right
+    )
 }
 
 pub(super) fn is_modifier_key(key: Key) -> bool {
@@ -632,11 +652,4 @@ pub(super) fn is_modifier_key(key: Key) -> bool {
             | Key::ISO_Level3_Shift
             | Key::Caps_Lock
     )
-}
-
-/// Modifier presses keep a Shift+arrow run alive across Shift releases.
-pub(super) fn continues_extend(key: Key, modifiers: Modifiers) -> bool {
-    is_modifier_key(key)
-        || (super::command_modifiers(modifiers) == Modifiers::SHIFT_MASK
-            && (extend_arrow(key).is_some() || page_direction(key).is_some()))
 }

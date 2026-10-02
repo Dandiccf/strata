@@ -263,10 +263,17 @@ fn context_hints_follow_the_active_map() {
             view.browser()
                 .navigate(crate::model::Location::local(fixture.path()));
             wait_until(|| label(&view.widget(), "notes.txt").is_some());
+            manager.set_type_to_search(false);
             let menu = open_menu(&view, Some("notes.txt"));
             let hints = label_texts(&menu);
             assert!(hints.iter().any(|hint| hint == "Space"), "{hints:?}");
             assert!(hints.iter().any(|hint| hint == "Y"), "{hints:?}");
+            manager.set_type_to_search(true);
+            let hints = label_texts(&menu);
+            assert!(
+                !hints.iter().any(|hint| hint == "Y"),
+                "type-to-search claims y: {hints:?}"
+            );
             menu.popdown();
             wait_until(|| !menu.is_mapped());
             manager.set_tenxer_mode(true);
@@ -299,6 +306,44 @@ fn context_hints_follow_the_active_map() {
                 "GTK renders the i accelerator as I: {hints:?}"
             );
             menu.popdown();
+            view.browser().clear_observer();
+            window.destroy();
+        },
+    );
+}
+
+#[test]
+fn archive_extraction_actions_follow_build_support() {
+    crate::test_support::gtk_test(
+        "ui::browser::context_menu::tests::menus::archive_extraction_actions_follow_build_support",
+        || {
+            let fixture = tempfile::tempdir().expect("menu fixture");
+            let view = BrowserView::new(Rc::new(MenuSource), PeekBehavior::default());
+            view.set_operation_provider(Rc::new(crate::adapters::LocalOperationProvider));
+            let window = gtk::Window::builder()
+                .child(&view.widget())
+                .default_width(1000)
+                .default_height(850)
+                .build();
+            window.present();
+            view.browser().navigate(Location::local(fixture.path()));
+            wait_until(|| label(&view.widget(), "archive.rar").is_some());
+            for (name, supported) in [
+                ("archive.zip", true),
+                ("archive.rar", cfg!(feature = "rar")),
+            ] {
+                let menu = open_menu(&view, Some(name));
+                let labels = label_texts(&menu);
+                for action in ["Extract here", "Extract to…"] {
+                    assert_eq!(
+                        labels.iter().any(|label| label == action),
+                        supported,
+                        "{name}: {labels:?}"
+                    );
+                }
+                menu.popdown();
+                wait_until(|| !menu.is_mapped());
+            }
             view.browser().clear_observer();
             window.destroy();
         },

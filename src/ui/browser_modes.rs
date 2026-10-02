@@ -821,9 +821,10 @@ impl ModeViews {
             return false;
         };
         self.cancel_rename();
-        let Some(target) = pane.search.edit_target(entry) else {
+        let Some(mut target) = pane.search.edit_target(entry) else {
             return false;
         };
+        self.bind_rename_cancellation(&mut target, &entry.location);
         super::collection_edit::begin(
             &self.active_rename,
             entry.clone(),
@@ -865,6 +866,7 @@ impl ModeViews {
             return false;
         };
         let mut target = super::collection_edit::EditTarget::from(widgets);
+        self.bind_rename_cancellation(&mut target, &entry.location);
         if self.mode == BrowserMode::List {
             let state = self.context_state.borrow().clone().unwrap_or_default();
             let generation = state
@@ -897,6 +899,20 @@ impl ModeViews {
             target,
             self.rename_submit(),
         )
+    }
+
+    fn bind_rename_cancellation(
+        &self,
+        target: &mut super::collection_edit::EditTarget,
+        location: &Location,
+    ) {
+        let state = self.context_state.borrow().clone().unwrap_or_default();
+        let location = location.clone();
+        target.cancelled = Some(Rc::new(move || {
+            if let Some(state) = state.upgrade() {
+                state.cancel_group_naming(&location);
+            }
+        }));
     }
 
     pub fn filter_has_focus(&self) -> bool {
@@ -1929,7 +1945,6 @@ struct IconsControls {
 pub(crate) fn filter_controls(tooltip: &str) -> (gtk::Entry, gtk::Revealer, gtk::ToggleButton) {
     let entry = gtk::Entry::builder()
         .placeholder_text(super::browser::filter_placeholder(0))
-        .tooltip_text("Filter by name. Use * for any characters: *.png, IMG*, or IMG*.png.")
         .has_frame(false)
         .hexpand(true)
         .build();
@@ -3437,14 +3452,15 @@ fn pane_base(
     heading.set_hexpand(true);
     heading.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     heading.set_max_width_chars(1);
-    heading.set_tooltip_text(Some(title));
+    crate::ui::accessibility::set_description(&heading, Some(title));
     let spinner = gtk::Spinner::new();
     spinner.set_valign(gtk::Align::Center);
     spinner.start();
     let truncated_hint = crate::assets::primary_icon(crate::assets::icons::TRIANGLE_ALERT, 16);
-    truncated_hint.set_tooltip_text(Some(
-        "This directory has more entries than could be loaded; showing a partial listing.",
-    ));
+    crate::ui::accessibility::set_description(
+        &truncated_hint,
+        Some("This directory has more entries than could be loaded; showing a partial listing."),
+    );
     truncated_hint.set_visible(false);
     heading_box.append(&heading);
     heading_box.append(&truncated_hint);
@@ -4683,7 +4699,7 @@ fn apply_icons_entry(
         refresh_icons_card_chrome(item, card, &icon, &label, entry, marks);
     }
     if let Some(item) = item.filter(|_| pending_name.is_some()) {
-        label.set_tooltip_text(Some(shown_name));
+        crate::ui::accessibility::set_description(&label, Some(shown_name));
         super::accessibility::describe_entry(item, shown_name, Some(entry));
     }
 }
@@ -4696,7 +4712,7 @@ fn refresh_icons_card_chrome(
     entry: &FileEntry,
     marks: &ClipboardMarks,
 ) {
-    label.set_tooltip_text(Some(&entry.display_name));
+    crate::ui::accessibility::set_description(label, Some(&entry.display_name));
     if let Some(item) = item {
         super::accessibility::describe_entry(item, &entry.display_name, Some(entry));
     }

@@ -288,8 +288,102 @@ fn tenxer_go_chord_reaches_places_and_cancels_cleanly() {
     );
 }
 
+#[test]
+fn tenxer_pin_chords_pin_the_cursor_folder_or_the_current_folder() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::place_chords::tenxer_pin_chords_pin_the_cursor_folder_or_the_current_folder",
+        || {
+            use std::{cell::RefCell, rc::Rc};
+
+            let fixture = KeyboardFixture::new();
+            let preferences = PreferenceManager::shared();
+            preferences.set_tenxer_mode(true);
+            fixture.shortcuts.bind_preferences(&preferences);
+            let directory = fixture._directory.path().to_path_buf();
+            let folder = directory.join("folder");
+            std::fs::create_dir(&folder).expect("folder");
+            let pinned: Rc<RefCell<Vec<(Location, String)>>> = Rc::default();
+            let unavailable: Rc<RefCell<Option<Location>>> = Rc::default();
+            let (pins, unpins, status) = (pinned.clone(), pinned.clone(), pinned.clone());
+            let refused = unavailable.clone();
+            fixture.view.set_pin_handlers(
+                Rc::new(move |location, name| pins.borrow_mut().push((location, name))),
+                Rc::new(move |location| unpins.borrow_mut().retain(|(pin, _)| pin != location)),
+                Rc::new(move |location| {
+                    if refused.borrow().as_ref() == Some(location) {
+                        PinStatus::Unavailable
+                    } else if status.borrow().iter().any(|(pin, _)| pin == location) {
+                        PinStatus::Pinned
+                    } else {
+                        PinStatus::Available
+                    }
+                }),
+            );
+            fixture.view.refresh();
+            let browser = fixture.view.browser();
+            wait_until(|| rendered_name(&fixture.view.widget(), "folder"));
+            let pin_chord = |key: Key, modifiers: ModifierType| {
+                focus_files(&fixture);
+                fixture.shortcuts.dismiss_feedback();
+                fixture.press(Key::g, ModifierType::empty());
+                assert!(fixture.press(key, modifiers), "g {key:?}");
+                assert_eq!(fixture.shortcuts.armed_chord(), None);
+                fixture.shortcuts.feedback_text()
+            };
+            let folder_pin = (Location::local(&folder), "folder".to_owned());
+
+            move_to_named(&fixture, &browser, "folder");
+            assert_eq!(
+                pin_chord(Key::plus, ModifierType::SHIFT_MASK),
+                "Pinned \u{201c}folder\u{201d}"
+            );
+            assert_eq!(*pinned.borrow(), std::slice::from_ref(&folder_pin));
+            assert_eq!(
+                pin_chord(Key::KP_Add, ModifierType::empty()),
+                "\u{201c}folder\u{201d} is already pinned"
+            );
+            assert_eq!(*pinned.borrow(), std::slice::from_ref(&folder_pin));
+            assert_eq!(
+                pin_chord(Key::minus, ModifierType::empty()),
+                "Unpinned \u{201c}folder\u{201d}"
+            );
+            assert!(pinned.borrow().is_empty());
+            assert_eq!(
+                pin_chord(Key::KP_Subtract, ModifierType::empty()),
+                "\u{201c}folder\u{201d} isn\u{2019}t pinned"
+            );
+
+            let current = Location::local(&directory);
+            let current_name = current.display_name();
+            move_to_named(&fixture, &browser, "a.txt");
+            assert_eq!(
+                pin_chord(Key::plus, ModifierType::SHIFT_MASK),
+                format!("Pinned \u{201c}{current_name}\u{201d}")
+            );
+            assert_eq!(
+                *pinned.borrow(),
+                [(current.clone(), current_name.clone())],
+                "a file pins the folder it is in"
+            );
+            pinned.borrow_mut().clear();
+
+            unavailable.replace(Some(current.clone()));
+            assert_eq!(
+                pin_chord(Key::plus, ModifierType::SHIFT_MASK),
+                format!("Can\u{2019}t pin \u{201c}{current_name}\u{201d}")
+            );
+            assert!(pinned.borrow().is_empty(), "standard places stay unpinned");
+            assert_eq!(
+                browser.active_location(),
+                Some(current),
+                "pinning stays put"
+            );
+        },
+    );
+}
+
 fn shortcut_reference_visible(fixture: &KeyboardFixture) -> bool {
-    widget_with_class(fixture.window.upcast_ref(), "shortcut-popover")
+    widget_with_class(fixture.window.upcast_ref(), "shortcut-reference-panel")
         .is_some_and(|popover| popover.is_visible())
 }
 
@@ -404,8 +498,8 @@ fn armed_chord_yields_to_earlier_capture_handlers() {
             assert!(fixture.press(Key::F1, ModifierType::empty()));
             assert_eq!(fixture.shortcuts.armed_chord(), None);
             assert!(
-                !shortcut_reference_visible(&fixture),
-                "a hidden shortcuts button defers the popover"
+                shortcut_reference_visible(&fixture),
+                "a hidden shortcuts button does not delay the reference"
             );
             fixture
                 .shortcuts
@@ -415,7 +509,7 @@ fn armed_chord_yields_to_earlier_capture_handlers() {
             assert_eq!(
                 fixture.shortcuts.armed_chord(),
                 None,
-                "a key swallowed by the pending reference clears g-"
+                "a key swallowed by the open reference clears g-"
             );
             assert_ne!(fixture.shortcuts.feedback_text(), "Unknown chord");
             assert!(fixture.press(Key::Escape, ModifierType::empty()));
@@ -441,53 +535,6 @@ fn armed_chord_yields_to_earlier_capture_handlers() {
             assert_place_key_does_not_jump(&fixture, &origin);
 
             let _places = places;
-        },
-    );
-}
-
-#[test]
-fn settings_and_footer_list_the_same_place_chords() {
-    crate::test_support::gtk_test(
-        "ui::window::tests::keyboard_dispatch::place_chords::settings_and_footer_list_the_same_place_chords",
-        || {
-            PreferenceManager::shared().set_tenxer_mode(true);
-            let settings: Vec<_> = crate::ui::shortcut_reference::settings_bindings(true)
-                .iter()
-                .filter(|binding| binding.category == "Places")
-                .copied()
-                .collect();
-            let sections = crate::ui::shortcut_reference::reference_sections(BrowserMode::Columns);
-            let footer = &sections
-                .iter()
-                .find(|section| section.title == "Places")
-                .expect("footer place rows")
-                .rows;
-            assert_eq!(settings.len(), footer.len());
-            for (binding, row) in settings.iter().zip(footer) {
-                let (chord, meaning) = *row;
-                assert!(
-                    meaning == binding.action || meaning == binding.note,
-                    "{chord} names {meaning:?}; settings action {:?} note {:?}",
-                    binding.action,
-                    binding.note
-                );
-                assert!(
-                    chord == binding.keys || chord.strip_prefix(binding.keys).is_some(),
-                    "{chord} vs {}",
-                    binding.keys
-                );
-            }
-            let preview = "Top of the document or first archive member";
-            assert!(
-                settings
-                    .iter()
-                    .any(|binding| binding.action == preview && binding.note == "Preview")
-            );
-            assert!(
-                footer.iter().any(|(chord, meaning)| {
-                    *chord == "g g in the preview" && *meaning == preview
-                })
-            );
         },
     );
 }

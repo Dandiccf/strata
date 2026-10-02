@@ -131,6 +131,20 @@ impl Chooser {
             .is_some_and(|footer| footer.is_visible())
     }
 
+    fn reference_search_focused(&self) -> bool {
+        widget_with_class(self.state.window.upcast_ref(), "shortcut-reference-search").is_some_and(
+            |search| {
+                gtk::prelude::RootExt::focus(&self.state.window)
+                    .is_some_and(|focus| focus == search || focus.is_ancestor(&search))
+            },
+        )
+    }
+
+    fn reference_visible(&self) -> bool {
+        widget_with_class(self.state.window.upcast_ref(), "shortcut-reference-panel")
+            .is_some_and(|panel| panel.is_visible())
+    }
+
     fn prompt_focused(&self) -> bool {
         let prompt = self.prompt();
         gtk::prelude::RootExt::focus(&self.state.window)
@@ -320,6 +334,21 @@ fn chooser_refuses_commands_its_request_does_not_allow() {
                     "Not available in the file chooser",
                 ),
                 (
+                    Key::M,
+                    ModifierType::SHIFT_MASK,
+                    "Not available in the file chooser",
+                ),
+                (
+                    Key::C,
+                    ModifierType::SHIFT_MASK,
+                    "Not available in the file chooser",
+                ),
+                (
+                    Key::R,
+                    ModifierType::SHIFT_MASK,
+                    "Not available in the file chooser",
+                ),
+                (
                     Key::semicolon,
                     ModifierType::empty(),
                     "Not available in the file chooser",
@@ -350,11 +379,6 @@ fn chooser_refuses_commands_its_request_does_not_allow() {
                     ModifierType::CONTROL_MASK,
                     "Only one item can be chosen",
                 ),
-                (
-                    Key::Down,
-                    ModifierType::SHIFT_MASK,
-                    "Only one item can be chosen",
-                ),
             ] {
                 assert!(chooser.press_with(key, modifiers), "{key:?}");
                 assert_eq!(chooser.feedback(), feedback, "{key:?}");
@@ -369,15 +393,27 @@ fn chooser_refuses_commands_its_request_does_not_allow() {
             chooser.press(Key::g);
             chooser.press(Key::n);
             assert_eq!(browser.active_location(), origin);
+            for (key, modifiers) in [
+                (Key::plus, ModifierType::SHIFT_MASK),
+                (Key::minus, ModifierType::empty()),
+            ] {
+                chooser.press(Key::g);
+                assert!(chooser.press_with(key, modifiers), "g {key:?}");
+                assert_eq!(
+                    chooser.feedback(),
+                    "Not available in the file chooser",
+                    "g {key:?}"
+                );
+            }
             assert!(chooser.open_request());
         },
     );
 }
 
 #[test]
-fn escape_dismisses_one_interaction_before_cancelling_and_q_only_leaves_the_mode() {
+fn escape_dismisses_one_interaction_before_cancelling_and_the_toggle_keeps_the_request() {
     crate::test_support::gtk_test(
-        "ui::chooser::tests::keyboard::escape_dismisses_one_interaction_before_cancelling_and_q_only_leaves_the_mode",
+        "ui::chooser::tests::keyboard::escape_dismisses_one_interaction_before_cancelling_and_the_toggle_keeps_the_request",
         || {
             let chooser = Chooser::open(single_file(), BrowserMode::List, &["a.txt", "b.txt"]);
             chooser.focus_files();
@@ -387,6 +423,12 @@ fn escape_dismisses_one_interaction_before_cancelling_and_q_only_leaves_the_mode
             assert!(chooser.press(Key::Escape));
             assert!(chooser.open_request(), "Esc in the prompt cancelled");
             assert!(chooser.state.view.item_view_has_focus());
+
+            assert!(chooser.press(Key::F1));
+            wait_until(|| chooser.reference_search_focused());
+            assert!(chooser.press(Key::Escape));
+            assert!(chooser.open_request(), "Esc in the F1 reference cancelled");
+            assert!(!chooser.reference_visible());
 
             chooser.press(Key::l);
             wait_until(|| {
@@ -402,8 +444,16 @@ fn escape_dismisses_one_interaction_before_cancelling_and_q_only_leaves_the_mode
             let chooser = Chooser::open(single_file(), BrowserMode::List, &["a.txt"]);
             chooser.focus_files();
             assert!(chooser.press(Key::q));
+            assert!(PreferenceManager::shared().tenxer_mode(), "q left the mode");
+            assert!(chooser.press_with(
+                Key::m,
+                ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK
+            ));
             assert!(!PreferenceManager::shared().tenxer_mode());
-            assert!(chooser.open_request(), "q cancelled the request");
+            assert!(
+                chooser.open_request(),
+                "leaving the mode cancelled the request"
+            );
             wait_until(|| !chooser.footer_visible());
             chooser.press(Key::Escape);
             assert!(chooser.cancelled());

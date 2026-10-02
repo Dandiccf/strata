@@ -176,6 +176,8 @@ fn tenxer_preview_owns_document_keys_until_returned() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::preview_ownership::tenxer_preview_owns_document_keys_until_returned",
         || {
+            let launched = glib::user_data_dir().join("launched");
+            default_recorder_app("text/plain", &launched);
             let fixture = ownership_fixture();
             let browser = fixture.view.browser();
             let origin = browser.active_location();
@@ -195,7 +197,7 @@ fn tenxer_preview_owns_document_keys_until_returned() {
                         "the column yields its destination to the preview"
                     );
                 }
-                for key in [Key::l, Key::Right, Key::Return, Key::o, Key::space] {
+                for key in [Key::l, Key::Right, Key::space, Key::v, Key::q] {
                     assert!(
                         fixture.press(key, ModifierType::empty()),
                         "{mode:?} {key:?}"
@@ -205,16 +207,7 @@ fn tenxer_preview_owns_document_keys_until_returned() {
                         "{mode:?} {key:?} kept the keys"
                     );
                 }
-                fixture.press(Key::Delete, ModifierType::empty());
-                pump(50);
-                assert!(
-                    !modal_visible(&fixture.overlay),
-                    "{mode:?} Delete stays with the preview"
-                );
-                assert!(
-                    opened.borrow().is_empty(),
-                    "{mode:?} preview keys never launch"
-                );
+                assert_eq!(fixture.selected(), selection, "{mode:?}");
                 assert_eq!(browser.active_location(), origin, "{mode:?}");
 
                 let top = document_scroll(&fixture);
@@ -257,15 +250,18 @@ fn tenxer_preview_owns_document_keys_until_returned() {
                 fixture.press(Key::G, ModifierType::SHIFT_MASK);
                 fixture.press(Key::g, ModifierType::empty());
                 wait_until(|| {
-                    fixture.shortcuts.chord_options() == Some(vec![("g".into(), "Top".into())])
+                    fixture.shortcuts.chord_options().is_some_and(|options| {
+                        options.first() == Some(&("g".into(), "Top".into()))
+                            && options.contains(&("h".into(), "Home".into()))
+                    })
                 });
                 fixture.press(Key::g, ModifierType::empty());
                 assert_eq!(document_scroll(&fixture), top, "{mode:?} g g");
                 fixture.press(Key::g, ModifierType::empty());
-                fixture.press(Key::h, ModifierType::empty());
+                fixture.press(Key::z, ModifierType::empty());
                 assert_eq!(fixture.shortcuts.feedback_text(), "Unknown chord");
-                assert!(preview_has_focus(&fixture), "{mode:?} g h stays");
-                assert_eq!(browser.active_location(), origin, "{mode:?} g h");
+                assert!(preview_has_focus(&fixture), "{mode:?} g z stays");
+                assert_eq!(browser.active_location(), origin, "{mode:?} g z");
                 fixture.shortcuts.dismiss_feedback();
                 assert_eq!(focused_name(&browser), "long.txt", "{mode:?}");
                 assert_eq!(fixture.selected(), selection, "{mode:?}");
@@ -383,6 +379,65 @@ fn tenxer_preview_owns_document_keys_until_returned() {
             wait_loaded(&browser, 0);
             assert_eq!(browser.active_location(), origin);
 
+            let enter_document = || {
+                move_to_named(&fixture, &browser, "long.txt");
+                fixture.press(Key::l, ModifierType::empty());
+                wait_until(|| preview_has_focus(&fixture));
+            };
+            for (key, modifiers) in [
+                (Key::BackSpace, ModifierType::empty()),
+                (Key::Up, ModifierType::ALT_MASK),
+            ] {
+                enter_document();
+                assert!(fixture.press(key, modifiers), "{key:?}");
+                wait_loaded(&browser, 0);
+                assert_ne!(browser.active_location(), origin, "{key:?} goes up");
+                assert!(fixture.view.item_view_has_focus(), "{key:?}");
+                fixture.press(Key::H, ModifierType::SHIFT_MASK);
+                wait_loaded(&browser, 0);
+                assert_eq!(browser.active_location(), origin);
+            }
+
+            enter_document();
+            fixture.shortcuts.dismiss_feedback();
+            fixture.press(Key::g, ModifierType::empty());
+            fixture.press(Key::_3, ModifierType::empty());
+            assert_eq!(fixture.shortcuts.feedback_text(), "No pin 3");
+            assert!(fixture.view.item_view_has_focus(), "g 3 is a place chord");
+
+            enter_document();
+            assert!(fixture.press(Key::slash, ModifierType::empty()));
+            assert!(fixture.shortcuts.prompt_has_focus(), "/ opens find");
+            fixture.press(Key::Escape, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
+
+            enter_document();
+            let names = directory_names(fixture._directory.path());
+            assert!(fixture.press(Key::Delete, ModifierType::empty()));
+            wait_until(|| modal_visible(&fixture.overlay));
+            assert!(click_class(&fixture.overlay, "action-dialog-close"));
+            wait_until(|| !modal_visible(&fixture.overlay));
+            assert_eq!(directory_names(fixture._directory.path()), names);
+
+            enter_document();
+            assert!(fixture.press(Key::o, ModifierType::empty()));
+            wait_until(|| !opened.borrow().is_empty());
+            assert_eq!(
+                opened.borrow().as_slice(),
+                [Location::local(fixture._directory.path().join("long.txt"))],
+                "o opens the previewed file"
+            );
+            wait_until(|| {
+                std::fs::read_to_string(&launched).is_ok_and(|args| args.contains("long.txt"))
+            });
+            assert!(
+                !modal_visible(&fixture.overlay),
+                "the default app opened it"
+            );
+            assert!(fixture.view.item_view_has_focus());
+            assert!(fixture.preview.is_open(), "o keeps the drawer");
+            opened.borrow_mut().clear();
+
             fixture.preview.close();
             move_to_named(&fixture, &browser, "empty");
             fixture.press(Key::l, ModifierType::empty());
@@ -433,6 +488,164 @@ fn tenxer_preview_owns_document_keys_until_returned() {
 }
 
 #[test]
+fn default_archive_keys_follow_pane_focus() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::preview_ownership::default_archive_keys_follow_pane_focus",
+        || {
+            for mode in [BrowserMode::List, BrowserMode::Columns] {
+                let fixture = ownership_fixture();
+                PreferenceManager::shared().set_tenxer_mode(false);
+                let browser = fixture.view.browser();
+                fixture.view.set_view_mode(mode);
+                wait_loaded(&browser, 0);
+                select_named(&fixture, "bundle.zip");
+                focus_files(&fixture);
+                fixture
+                    .preview
+                    .show(browser.focused_entry().expect("archive"), Some(0));
+                wait_until(|| {
+                    widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
+                });
+                let location = browser.active_location();
+                let selection = fixture.selected();
+                assert!(fixture.view.item_view_has_focus());
+                assert!(!owner_bar(&fixture));
+
+                assert!(fixture.press(Key::Right, ModifierType::empty()));
+                wait_until(|| archive_has_focus(&fixture));
+                assert!(
+                    fixture.preview.archive_at_root(),
+                    "Right enters the pane before opening a member"
+                );
+                assert!(owner_bar(&fixture));
+                if mode == BrowserMode::Columns {
+                    assert!(widget_with_class(&fixture.view.widget(), "active-column").is_none());
+                }
+                fixture.press(Key::Down, ModifierType::empty());
+                fixture.press(Key::Right, ModifierType::empty());
+                assert!(
+                    fixture.preview.archive_at_root(),
+                    "member file is not opened"
+                );
+                fixture.press(Key::Up, ModifierType::empty());
+                fixture.press(Key::Right, ModifierType::empty());
+                assert!(!fixture.preview.archive_at_root());
+                fixture.press(Key::Left, ModifierType::empty());
+                assert!(fixture.preview.archive_at_root());
+                assert!(archive_has_focus(&fixture));
+                assert_eq!(fixture.selected(), selection);
+                assert!(!fixture.preview.archive_key(Key::Left));
+                fixture.press(Key::Left, ModifierType::empty());
+                wait_until(|| fixture.view.item_view_has_focus());
+                assert!(!owner_bar(&fixture));
+                if mode == BrowserMode::Columns {
+                    assert!(widget_with_class(&fixture.view.widget(), "active-column").is_some());
+                }
+                assert!(fixture.preview.is_open());
+                assert_eq!(browser.active_location(), location);
+                assert_eq!(focused_name(&browser), "bundle.zip");
+
+                if !fixture.press(Key::Down, ModifierType::empty()) {
+                    crate::ui::focus_navigation::activate_native_arrow(&fixture.window, Key::Down);
+                }
+                wait_until(|| focused_name(&browser) == "c.txt");
+                assert!(fixture.view.item_view_has_focus());
+                if !fixture.press(Key::Up, ModifierType::empty()) {
+                    crate::ui::focus_navigation::activate_native_arrow(&fixture.window, Key::Up);
+                }
+                wait_until(|| focused_name(&browser) == "bundle.zip");
+                wait_until(|| {
+                    widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
+                });
+                fixture.press(Key::Right, ModifierType::empty());
+                wait_until(|| archive_has_focus(&fixture));
+                assert!(owner_bar(&fixture));
+                fixture.press(Key::Left, ModifierType::empty());
+                wait_until(|| fixture.view.item_view_has_focus());
+                assert!(!owner_bar(&fixture));
+
+                for name in ["short.txt", "long.txt"] {
+                    select_named(&fixture, name);
+                    focus_files(&fixture);
+                    fixture
+                        .preview
+                        .show(browser.focused_entry().expect("document"), Some(0));
+                    wait_until(|| {
+                        widget_with_class(
+                            &fixture.preview.widget(),
+                            if name == "short.txt" {
+                                "preview-text"
+                            } else {
+                                "preview-virtual-list"
+                            },
+                        )
+                        .is_some()
+                    });
+                    fixture.press(Key::Right, ModifierType::empty());
+                    wait_until(|| preview_has_focus(&fixture));
+                    assert!(owner_bar(&fixture));
+                    assert!(fixture.press(Key::Left, ModifierType::empty()));
+                    wait_until(|| fixture.view.item_view_has_focus());
+                    assert!(!owner_bar(&fixture));
+                    assert_eq!(focused_name(&browser), name);
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn default_archive_listing_left_moves_to_the_parent_column() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::preview_ownership::default_archive_listing_left_moves_to_the_parent_column",
+        || {
+            let fixture = ownership_fixture();
+            PreferenceManager::shared().set_tenxer_mode(false);
+            let browser = fixture.view.browser();
+            let origin = browser.active_location();
+            std::fs::write(fixture._directory.path().join("empty/bundle.zip"), b"zip")
+                .expect("nested archive");
+            fixture.view.set_view_mode(BrowserMode::Columns);
+            wait_loaded(&browser, 0);
+            select_named(&fixture, "empty");
+            focus_files(&fixture);
+            fixture.press(Key::Right, ModifierType::empty());
+            wait_loaded(&browser, 1);
+            wait_until(|| {
+                browser
+                    .focused_item()
+                    .is_some_and(|(depth, _, _)| depth == 1)
+            });
+            fixture
+                .preview
+                .show(browser.focused_entry().expect("archive"), Some(1));
+            wait_until(|| {
+                widget_with_class(&fixture.preview.widget(), "preview-archive-list").is_some()
+            });
+            wait_until(|| fixture.preview.is_open());
+            browser.set_active_column(1);
+            browser.select(1, 0);
+            browser.focus_active();
+            assert_eq!(focused_name(&browser), "bundle.zip");
+            fixture.press(Key::Right, ModifierType::empty());
+            wait_until(|| archive_has_focus(&fixture));
+            fixture.press(Key::Left, ModifierType::empty());
+            wait_until(|| fixture.view.item_view_has_focus());
+            assert_eq!(browser.focused_item().map(|(depth, _, _)| depth), Some(1));
+            fixture.press(Key::Left, ModifierType::empty());
+            wait_until(|| {
+                browser
+                    .focused_item()
+                    .is_some_and(|(depth, _, _)| depth == 0)
+            });
+            assert_eq!(browser.active_location(), origin);
+            assert!(fixture.view.item_view_has_focus());
+            assert!(!owner_bar(&fixture));
+        },
+    );
+}
+
+#[test]
 fn tenxer_interactive_previews_keep_a_defined_key_owner() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::preview_ownership::tenxer_interactive_previews_keep_a_defined_key_owner",
@@ -460,7 +673,7 @@ fn tenxer_interactive_previews_keep_a_defined_key_owner() {
                 owner_bar(&fixture),
                 "rebuilt archive rows keep the owner bar"
             );
-            for key in [Key::l, Key::Return, Key::o, Key::space, Key::j, Key::G] {
+            for key in [Key::l, Key::Return, Key::space, Key::v, Key::j, Key::G] {
                 let modifiers = if key == Key::G {
                     ModifierType::SHIFT_MASK
                 } else {
@@ -553,7 +766,7 @@ fn tenxer_interactive_previews_keep_a_defined_key_owner() {
                 );
                 assert!(password_has_focus(&fixture), "{key:?}");
             }
-            assert!(preferences.tenxer_mode(), "q is typed, not a mode exit");
+            assert!(preferences.tenxer_mode());
             assert!(!modal_visible(&fixture.overlay));
             fixture.press(Key::Tab, ModifierType::SHIFT_MASK);
             wait_until(|| fixture.view.item_view_has_focus());
@@ -596,10 +809,10 @@ fn tenxer_interactive_previews_keep_a_defined_key_owner() {
             );
             fixture.press(Key::Left, ModifierType::empty());
             fixture.press(Key::Left, ModifierType::empty());
-            assert!(
-                archive_has_focus(&fixture),
-                "default Left at the root does nothing"
-            );
+            wait_until(|| fixture.view.item_view_has_focus());
+            assert!(fixture.preview.is_open());
+            assert_eq!(focused_name(&browser), "bundle.zip");
+            assert_eq!(browser.active_location(), origin);
             fixture.press(Key::space, ModifierType::empty());
             wait_until(|| !fixture.preview.is_enabled());
         },

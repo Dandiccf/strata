@@ -91,6 +91,7 @@ pub struct UndoMoveItem {
 pub struct UndoMoveRequest {
     pub id: OperationRequestId,
     pub items: Vec<UndoMoveItem>,
+    pub cleanup_locations: Vec<Location>,
 }
 
 #[derive(Clone, Debug)]
@@ -199,7 +200,7 @@ impl ArchiveFormat {
             Some(Self::Zip)
         } else if lower.ends_with(".7z") {
             Some(Self::SevenZ)
-        } else if lower.ends_with(".rar") {
+        } else if cfg!(feature = "rar") && lower.ends_with(".rar") {
             Some(Self::Rar)
         } else {
             None
