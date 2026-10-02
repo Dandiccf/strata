@@ -244,7 +244,12 @@ impl PreviewState {
                 .borrow()
                 .as_ref()
                 .and_then(|binding| binding.browser.upgrade())
-                .is_some_and(|browser| browser.view_mode() == BrowserMode::Icons)
+                .is_some_and(|browser| {
+                    matches!(
+                        browser.view_mode(),
+                        BrowserMode::Columns | BrowserMode::Icons
+                    )
+                })
     }
 
     fn geometry(&self, split: &gtk::Paned) -> Geometry {

@@ -337,7 +337,7 @@ def test_preview_hides_on_a_folder_and_resumes_when_selection_moves(strata, mode
     strata.keyboard.press(PREVIOUS_ENTRY_KEY[mode])
 
     strata.wait_for_selection(["folder"], root)
-    if mode == "Icons":
+    if mode in ["Columns", "Icons"]:
         strata.wait(lambda: strata.preview_shows("No preview for this selection"), "the folder's reserved preview space")
     else:
         strata.wait(lambda: strata.preview() is None, "the folder to dismiss the preview")
