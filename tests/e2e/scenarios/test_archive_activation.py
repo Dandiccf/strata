@@ -18,17 +18,8 @@ def extract_archive(strata, archive_name, activation):
         strata.open_context_menu(archive_name)
         strata.choose_menu_item(activation)
         if activation == "Extract to…":
-            dialog = strata.wait_for_dialog()
-            crumb = strata.wait(
-                lambda: dialog.find(role="button", name=strata.fixture.root.name),
-                "the current destination breadcrumb",
-            )
-            strata.pointer.click(crumb)
-            field = strata.editable_field()
-            strata.keyboard.press("ctrl+a")
-            strata.keyboard.type_text(str(strata.fixture.root))
-            strata.wait(lambda: field.text == str(strata.fixture.root), "extraction destination")
-            strata.keyboard.press("Return")
+            chooser = strata.destination_chooser("Extract to")
+            strata.confirm_destination(chooser, "Extract here")
 
 
 @pytest.mark.preferences(
