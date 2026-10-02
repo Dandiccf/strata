@@ -15,6 +15,7 @@ mod imp {
         pub fallback_scale: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
         pub decoration: RefCell<Option<gdk::Texture>>,
+        pub decoration_description: RefCell<Option<String>>,
         pub fallback: RefCell<Option<gdk::Texture>>,
         pub fallback_icon: RefCell<Option<String>>,
         pub(crate) mark: Cell<crate::ui::browser::ClipboardMark>,
@@ -167,8 +168,10 @@ impl ThumbnailSlot {
     }
 
     pub(crate) fn set_decoration(&self, texture: Option<&gdk::Texture>, description: Option<&str>) {
-        if self.tooltip_text().as_deref() != description {
-            self.set_tooltip_text(description);
+        if self.imp().decoration_description.borrow().as_deref() != description {
+            self.imp()
+                .decoration_description
+                .replace(description.map(str::to_owned));
             self.update_property(&[gtk::accessible::Property::Description(
                 description.unwrap_or(""),
             )]);

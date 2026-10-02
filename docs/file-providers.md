@@ -61,7 +61,7 @@ quotes, spaces and Unicode in filenames are JSON data, not delimiters or command
 ```
 
 Omit a path or use `badge: null` to draw no decoration. Replies can only affect
-requested paths. Descriptions become accessible descriptions and tooltips. Rows
+requested paths. Descriptions become accessible descriptions; status badges do not use tooltips. Rows
 are rebound to their actual current path; old responses cannot decorate a reused
 row. Badges share the thumbnail/icon rendering used by Columns, List and Icons.
 
