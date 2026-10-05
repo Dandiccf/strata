@@ -93,7 +93,18 @@ impl ActionMenuSection {
         root.append_section(None, &provider_model);
         popover.insert_action_group("provider", Some(&provider_group));
         let closed_epoch = provider_epoch.clone();
-        popover.connect_closed(move |_| closed_epoch.set(closed_epoch.get() + 1));
+        popover.connect_closed(move |popover| {
+            // GTK closes the popover before dispatching the chosen leaf action.
+            let epoch = closed_epoch.get();
+            let closed_epoch = closed_epoch.clone();
+            let popover = popover.downgrade();
+            gtk::glib::idle_add_local_once(move || {
+                if closed_epoch.get() == epoch && popover.upgrade().is_none_or(|p| !p.is_visible())
+                {
+                    closed_epoch.set(epoch + 1);
+                }
+            });
+        });
         for section in &commands.after {
             root.append_section(None, section);
         }
@@ -314,15 +325,21 @@ impl ActionMenuSection {
         crate::ui::file_providers::watch_menu(
             self.provider_model.clone(),
             self.provider_group.clone(),
-            self.owner
-                .upgrade()
-                .as_ref()
-                .unwrap_or(self.popover.upcast_ref()),
+            (
+                self.owner
+                    .upgrade()
+                    .as_ref()
+                    .unwrap_or(self.popover.upcast_ref()),
+                &self.popover,
+            ),
             paths,
             background,
             (self.provider_epoch.clone(), self.provider_epoch.get()),
-            move || {
+            move |preserve_navigation| {
                 if let Some(popover) = popover.upgrade() {
+                    if preserve_navigation {
+                        navigation.preserve_submenu_navigation();
+                    }
                     refresh_presentation(&popover, &navigation);
                     navigation.model_changed();
                 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 use super::thumbnail::ThumbnailSlot;
 use crate::services::file_providers::{
-    self as protocol, Client, Decoration, MenuAction, Registration, Request, Update,
+    self as protocol, Client, Decoration, MenuAction, OutcomeStatus, Registration, Request, Update,
 };
 use gtk::{gdk, gio, glib, prelude::*};
 use std::{
@@ -12,6 +12,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod freshness;
+mod menus;
+
+use freshness::Freshness;
+
+struct Answer<T> {
+    at: Instant,
+    generation: u64,
+    value: T,
+}
+
 const TTL: Duration = Duration::from_secs(5);
 // Refresh deadlines do not erase presentation; failure still has a hard bound.
 const MAX_AGE: Duration = Duration::from_secs(15);
@@ -20,11 +31,12 @@ type MenuResult = Vec<(usize, MenuAction)>;
 struct Provider {
     client: Client,
     icons: HashMap<String, gdk::Texture>,
-    cache: HashMap<String, (Instant, Decoration)>,
-    menus: HashMap<MenuKey, (Instant, Vec<MenuAction>)>,
-    epoch: u64,
-    refresh_after: Instant,
+    id: String,
+    cache: HashMap<String, Answer<Decoration>>,
+    menus: HashMap<MenuKey, Answer<Vec<MenuAction>>>,
+    freshness: Freshness,
     disconnected: bool,
+    last_busy: Option<Instant>,
 }
 enum Pending {
     Query(usize, u64, Vec<String>),
@@ -72,36 +84,74 @@ fn with_hub<T>(f: impl FnOnce(&mut Hub) -> T) -> T {
 pub(super) fn bind(slot: &ThumbnailSlot, path: Option<&Path>) {
     let path = path
         .and_then(Path::to_str)
-        .filter(|s| s.len() <= 16384)
+        .filter(|p| Path::new(p).is_absolute() && p.len() <= 16384)
         .map(str::to_owned);
+    if slot.provider_path() != path {
+        forget(slot.as_ptr() as usize);
+        slot.set_decoration(None, None);
+        slot.set_provider_path(path);
+    }
+    if slot.is_mapped() {
+        remap(slot);
+    }
+}
+
+fn admit(slot: &ThumbnailSlot, path: String) -> bool {
     with_hub(|hub| {
         let id = slot.as_ptr() as usize;
-        if hub
-            .slots
-            .get(&id)
-            .is_some_and(|s| Some(&s.path) == path.as_ref())
-        {
-            return;
+        if hub.slots.get(&id).is_some_and(|s| s.path == path) {
+            return true;
         }
-        hub.slots.remove(&id);
-        slot.set_decoration(None, None);
-        if let Some(path) = path {
-            if hub.slots.len() >= 1024 {
-                hub.slots
-                    .retain(|_, s| s.widget.upgrade().is_some_and(|w| w.is_mapped()));
-            }
-            if hub.slots.len() < 1024 {
-                hub.slots.insert(
-                    id,
-                    Slot {
-                        widget: slot.downgrade(),
-                        path,
-                    },
-                );
-            }
+        if hub.slots.len() >= 1024 {
+            hub.slots.retain(|_, tracked| {
+                if let Some(widget) = tracked.widget.upgrade() {
+                    if widget.is_mapped() {
+                        return true;
+                    }
+                    widget.set_decoration(None, None);
+                }
+                false
+            });
         }
+        if hub.slots.len() >= 1024 {
+            return false;
+        }
+        hub.slots.insert(
+            id,
+            Slot {
+                widget: slot.downgrade(),
+                path,
+            },
+        );
+        true
+    })
+}
+
+pub(super) fn remap(slot: &ThumbnailSlot) {
+    let Some(path) = slot.provider_path() else {
+        return;
+    };
+    if admit(slot, path) || !slot.begin_provider_retry() {
+        return;
+    }
+    let weak = slot.downgrade();
+    glib::timeout_add_local(Duration::from_millis(250), move || {
+        let Some(slot) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if slot.is_mapped() && slot.provider_path().is_some_and(|path| !admit(&slot, path)) {
+            return glib::ControlFlow::Continue;
+        }
+        slot.finish_provider_retry();
+        glib::ControlFlow::Break
     });
 }
+
+pub(super) fn unmap(slot: &ThumbnailSlot) {
+    forget(slot.as_ptr() as usize);
+    slot.set_decoration(None, None);
+}
+
 pub(super) fn forget(id: usize) {
     HUB.with(|h| {
         if let Ok(mut state) = h.try_borrow_mut()
@@ -117,11 +167,27 @@ impl Hub {
         r.id = self.serial;
         if self.providers[provider].client.requests.try_send(r).is_ok() {
             self.pending.insert(self.serial, pending);
-        } else if let Pending::Activate(_, owner) = pending {
-            notify(
-                &owner,
-                "The file provider is busy or unavailable. This action was not sent.",
-            );
+        } else {
+            let provider = &mut self.providers[provider];
+            if provider
+                .last_busy
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(10))
+            {
+                eprintln!(
+                    "Strata provider {}: host queue full or closed; request not sent",
+                    provider.id
+                );
+                provider.last_busy = Some(Instant::now());
+            }
+            if let Pending::Activate(_, owner) = pending {
+                notify(
+                    &owner,
+                    &format!(
+                        "{}: The file provider is busy or unavailable. This action was not sent.",
+                        provider.id
+                    ),
+                );
+            }
         }
     }
     fn tick(&mut self) {
@@ -136,14 +202,16 @@ impl Hub {
                             .map(|t| (k.clone(), t))
                     })
                     .collect();
+                let id = r.manifest.id.clone();
                 self.providers.push(Provider {
                     client: protocol::start(r),
+                    id,
                     icons,
                     cache: HashMap::new(),
                     menus: HashMap::new(),
-                    epoch: 0,
-                    refresh_after: Instant::now(),
+                    freshness: Freshness::default(),
                     disconnected: false,
+                    last_busy: None,
                 });
             }
         }
@@ -151,51 +219,35 @@ impl Hub {
             if self.providers[index].disconnected {
                 continue;
             }
-            for _ in 0..32 {
-                let update = match self.providers[index].client.updates.try_recv() {
-                    Ok(update) => update,
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        self.providers[index].disconnected = true;
-                        Update::Offline
-                    }
-                };
+            let (updates, closed) = self.providers[index].client.updates.drain();
+            for update in updates {
                 match update {
-                    Update::Offline => {
-                        self.invalidate(index);
-                        self.providers[index].cache.clear();
-                        self.providers[index].menus.clear();
-                        let ids: Vec<_> = self
-                            .pending
-                            .iter()
-                            .filter_map(|(id, p)| match p {
-                                Pending::Query(i, _, _)
-                                | Pending::Menu(i, _, _)
-                                | Pending::Activate(i, _)
-                                    if *i == index =>
-                                {
-                                    Some(*id)
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        for id in ids {
-                            if let Some(Pending::Activate(_, owner)) = self.pending.remove(&id) {
-                                notify(
-                                    &owner,
-                                    "The file provider is unavailable. Check availability before retrying; an action may already have been accepted.",
-                                );
-                            }
-                        }
+                    Update::Offline { unsent } => self.offline(index, &unsent),
+                    Update::Reply(reply) if reply.event.is_some() => {
+                        self.providers[index]
+                            .freshness
+                            .invalidate(reply.paths.as_deref(), reply.revision);
                     }
-                    Update::Reply(reply) if reply.event.is_some() => self.invalidate(index),
                     Update::Reply(reply) => {
                         let Some(pending) = reply.id.and_then(|id| self.pending.remove(&id)) else {
                             continue;
                         };
                         let provider = &mut self.providers[index];
+                        let generation = if reply.revision.is_some() {
+                            provider.freshness.generation()
+                        } else {
+                            match &pending {
+                                Pending::Query(_, generation, _)
+                                | Pending::Menu(_, generation, _) => *generation,
+                                _ => 0,
+                            }
+                        };
                         match pending {
-                            Pending::Query(i, e, paths) if i == index && e == provider.epoch => {
+                            Pending::Query(i, _, paths)
+                                if i == index
+                                    && (reply.error.is_some()
+                                        || provider.freshness.accept(&paths, reply.revision)) =>
+                            {
                                 let new_count = paths
                                     .iter()
                                     .filter(|path| !provider.cache.contains_key(*path))
@@ -206,54 +258,103 @@ impl Hub {
                                     let mut oldest: Vec<_> = provider
                                         .cache
                                         .iter()
-                                        .map(|(path, (at, _))| (*at, path.clone()))
+                                        .map(|(path, answer)| (answer.at, path.clone()))
                                         .collect();
                                     oldest.sort_unstable();
                                     for (_, path) in oldest.into_iter().take(excess) {
                                         provider.cache.remove(&path);
                                     }
                                 }
-                                // Missing entries are a negative answer, never an old badge.
                                 for path in &paths {
                                     provider.cache.insert(
                                         path.clone(),
-                                        (
-                                            Instant::now(),
-                                            Decoration {
+                                        Answer {
+                                            at: Instant::now(),
+                                            generation,
+                                            value: Decoration {
                                                 path: path.clone(),
                                                 badge: None,
                                                 description: String::new(),
+                                                priority: 0,
                                             },
-                                        ),
+                                        },
                                     );
                                 }
-                                for d in reply.decorations {
-                                    if paths.contains(&d.path) {
-                                        provider.cache.insert(d.path.clone(), (Instant::now(), d));
+                                for decoration in reply.decorations.unwrap_or_default() {
+                                    if paths.contains(&decoration.path) {
+                                        provider.cache.insert(
+                                            decoration.path.clone(),
+                                            Answer {
+                                                at: Instant::now(),
+                                                generation,
+                                                value: decoration,
+                                            },
+                                        );
                                     }
                                 }
                             }
-                            Pending::Menu(i, e, key) if i == index && e == provider.epoch => {
+                            Pending::Menu(i, _, key)
+                                if i == index
+                                    && (reply.error.is_some()
+                                        || provider.freshness.accept(&key.0, reply.revision)) =>
+                            {
                                 if provider.menus.len() >= 32
                                     && !provider.menus.contains_key(&key)
                                     && let Some(oldest) = provider
                                         .menus
                                         .iter()
-                                        .min_by_key(|(_, (at, _))| *at)
+                                        .min_by_key(|(_, answer)| answer.at)
                                         .map(|(key, _)| key.clone())
                                 {
                                     provider.menus.remove(&oldest);
                                 }
-                                provider.menus.insert(key, (Instant::now(), reply.actions));
+                                provider.menus.insert(
+                                    key,
+                                    Answer {
+                                        at: Instant::now(),
+                                        generation,
+                                        value: reply.actions.unwrap_or_default(),
+                                    },
+                                );
                             }
                             Pending::Activate(i, owner) if i == index => {
+                                let message = if let Some(outcome) = &reply.outcome {
+                                    let mut status = match outcome.status {
+                                        OutcomeStatus::Accepted => "Accepted",
+                                        OutcomeStatus::Rejected => "Rejected",
+                                        OutcomeStatus::Partial => "Partially accepted",
+                                        OutcomeStatus::Unknown => "Outcome unknown",
+                                    }
+                                    .to_owned();
+                                    if let Some((accepted, total)) =
+                                        outcome.accepted.zip(outcome.total)
+                                    {
+                                        if outcome.status == OutcomeStatus::Unknown {
+                                            status.push_str(&format!(
+                                                " (at least {accepted}/{total} accepted)"
+                                            ));
+                                        } else {
+                                            status.push_str(&format!(" ({accepted}/{total})"));
+                                        }
+                                    }
+                                    if let Some(job) = &outcome.job {
+                                        status.push_str(&format!("\nJob: {job}"));
+                                    }
+                                    format!("{status}\n\n{}", reply.message)
+                                } else {
+                                    reply.message
+                                };
                                 notify(
                                     &owner,
-                                    if reply.message.is_empty() {
-                                        "The file provider did not report an outcome."
-                                    } else {
-                                        &reply.message
-                                    },
+                                    &format!(
+                                        "{}: {}",
+                                        provider.id,
+                                        if message.is_empty() {
+                                            "The provider did not report an outcome."
+                                        } else {
+                                            &message
+                                        }
+                                    ),
                                 );
                                 self.invalidate(index);
                             }
@@ -261,9 +362,10 @@ impl Hub {
                         }
                     }
                 }
-                if self.providers[index].disconnected {
-                    break;
-                }
+            }
+            if closed {
+                self.offline(index, &[]);
+                self.providers[index].disconnected = true;
             }
         }
         self.slots.retain(|_, s| s.widget.upgrade().is_some());
@@ -278,13 +380,20 @@ impl Hub {
             if provider.disconnected {
                 continue;
             }
-            let mut missing: Vec<_> = visible.iter().filter(|path| !provider.cache.get(*path).is_some_and(|(at,_)| *at >= provider.refresh_after && at.elapsed() < TTL)
+            let mut missing: Vec<_> = visible.iter().filter(|path| !provider.cache.get(*path).is_some_and(|answer| provider.freshness.current(std::slice::from_ref(*path), answer.generation) && answer.at.elapsed() < TTL)
                 && !self.pending.values().any(|p| matches!(p,Pending::Query(i,_,paths) if *i == index && paths.contains(path)))).cloned().collect();
-            missing.sort();
+            missing.sort_by(|a, b| {
+                provider
+                    .cache
+                    .get(a)
+                    .map(|answer| answer.at)
+                    .cmp(&provider.cache.get(b).map(|answer| answer.at))
+                    .then(a.cmp(b))
+            });
             missing.dedup();
-            missing.truncate(protocol::PATH_LIMIT);
+            let missing = protocol::query_batch(missing);
             if !missing.is_empty() {
-                let epoch = provider.epoch;
+                let epoch = provider.freshness.generation();
                 self.send(
                     index,
                     request("query", missing.clone(), false),
@@ -294,25 +403,72 @@ impl Hub {
         }
         for s in self.slots.values() {
             if let Some(widget) = s.widget.upgrade() {
-                let decoration = self.providers.iter().find_map(|p| {
-                    p.cache
-                        .get(&s.path)
-                        .filter(|(at, _)| at.elapsed() < MAX_AGE)
-                        .and_then(|(_, d)| {
-                            d.badge
-                                .as_ref()
-                                .and_then(|b| p.icons.get(b))
-                                .map(|t| (t, d.description.as_str()))
-                        })
-                });
-                widget.set_decoration(decoration.map(|(t, _)| t), decoration.map(|(_, d)| d));
+                let mut decorations: Vec<_> = self
+                    .providers
+                    .iter()
+                    .filter_map(|p| {
+                        p.cache
+                            .get(&s.path)
+                            .filter(|answer| answer.at.elapsed() < MAX_AGE)
+                            .and_then(|answer| {
+                                answer
+                                    .value
+                                    .badge
+                                    .as_ref()
+                                    .and_then(|badge| p.icons.get(badge))
+                                    .map(|texture| {
+                                        (
+                                            answer.value.priority,
+                                            &p.id,
+                                            texture,
+                                            answer.value.description.as_str(),
+                                        )
+                                    })
+                            })
+                    })
+                    .collect();
+                decorations.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+                let description = decorations
+                    .iter()
+                    .map(|(_, id, _, text)| format!("{id}: {text}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                widget.set_decoration(
+                    decorations.first().map(|(_, _, texture, _)| *texture),
+                    (!decorations.is_empty()).then_some(description.as_str()),
+                );
+            }
+        }
+    }
+    fn offline(&mut self, index: usize, unsent: &[u64]) {
+        self.providers[index].freshness = Freshness::default();
+        self.providers[index].cache.clear();
+        self.providers[index].menus.clear();
+        let ids: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, pending)| match pending {
+                Pending::Query(i, _, _) | Pending::Menu(i, _, _) | Pending::Activate(i, _)
+                    if *i == index =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect();
+        for id in ids {
+            if let Some(Pending::Activate(_, owner)) = self.pending.remove(&id) {
+                let message = if unsent.contains(&id) {
+                    "The provider disconnected before this action was sent."
+                } else {
+                    "The provider disconnected. The action may already have been accepted; check its state before retrying."
+                };
+                notify(&owner, &format!("{}: {message}", self.providers[index].id));
             }
         }
     }
     fn invalidate(&mut self, index: usize) {
-        let p = &mut self.providers[index];
-        p.epoch += 1;
-        p.refresh_after = Instant::now();
+        self.providers[index].freshness.invalidate(None, None);
     }
     fn menu(&mut self, key: &MenuKey) -> MenuResult {
         let mut out = Vec::new();
@@ -321,19 +477,21 @@ impl Hub {
             if p.disconnected {
                 continue;
             }
-            if let Some((_, actions)) = p.menus.get(key).filter(|(at, _)| at.elapsed() < MAX_AGE) {
-                out.extend(actions.iter().cloned().map(|a| (i, a)));
-            }
-            if !p
+            if let Some(answer) = p
                 .menus
                 .get(key)
-                .is_some_and(|(at, _)| *at >= p.refresh_after && at.elapsed() < TTL)
-                && !self
-                    .pending
-                    .values()
-                    .any(|r| matches!(r, Pending::Menu(j,_,k) if *j == i && k == key))
+                .filter(|answer| answer.at.elapsed() < MAX_AGE)
             {
-                let epoch = p.epoch;
+                out.extend(answer.value.iter().cloned().map(|a| (i, a)));
+            }
+            if !p.menus.get(key).is_some_and(|answer| {
+                p.freshness.current(&key.0, answer.generation) && answer.at.elapsed() < TTL
+            }) && !self
+                .pending
+                .values()
+                .any(|r| matches!(r, Pending::Menu(j,_,k) if *j == i && k == key))
+            {
+                let epoch = p.freshness.generation();
                 self.send(
                     i,
                     request("menu", key.0.clone(), key.1),
@@ -352,6 +510,7 @@ fn request(method: &str, paths: Vec<String>, background: bool) -> Request {
         paths,
         background,
         action: None,
+        context: None,
     }
 }
 fn notify(owner: &glib::WeakRef<gtk::Widget>, message: &str) {
@@ -364,12 +523,13 @@ fn notify(owner: &glib::WeakRef<gtk::Widget>, message: &str) {
 pub(super) fn watch_menu(
     model: gio::Menu,
     group: gio::SimpleActionGroup,
-    owner: &gtk::Widget,
+    owner: (&gtk::Widget, &gtk::PopoverMenu),
     paths: Vec<PathBuf>,
     background: bool,
     lifetime: (std::rc::Rc<std::cell::Cell<u64>>, u64),
-    changed: impl Fn() + 'static,
+    changed: impl Fn(bool) + 'static,
 ) {
+    let (owner, popover) = owner;
     if paths.is_empty() || paths.len() > protocol::PATH_LIMIT {
         return;
     }
@@ -381,67 +541,36 @@ pub(super) fn watch_menu(
         return;
     };
     let key = (paths, background);
+    if !protocol::selection_fits(&key.0) {
+        return;
+    }
     let (alive, epoch) = lifetime;
     let owner = owner.downgrade();
-    let mut previous = Vec::new();
+    let popover = popover.downgrade();
+    let mut renderer = menus::Renderer::new(
+        model,
+        group,
+        owner.clone(),
+        key.clone(),
+        alive.clone(),
+        epoch,
+    );
     glib::timeout_add_local(Duration::from_millis(100), move || {
-        if alive.get() != epoch || owner.upgrade().is_none() {
+        let Some(popover) = popover.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if alive.get() != epoch || owner.upgrade().is_none() || !popover.is_visible() {
             return glib::ControlFlow::Break;
         }
         let result = with_hub(|h| h.menu(&key));
-        if result != previous {
-            let prefix = previous
-                .iter()
-                .zip(&result)
-                .take_while(|(a, b)| a == b)
-                .count();
-            let suffix = previous[prefix..]
-                .iter()
-                .rev()
-                .zip(result[prefix..].iter().rev())
-                .take_while(|(a, b)| a == b)
-                .count();
-            for n in (prefix..previous.len() - suffix).rev() {
-                let (provider, action) = &previous[n];
-                model.remove(n as i32);
-                group.remove_action(&format!("action-{provider}-{}", action.id));
-            }
-            for (n, (provider, a)) in result
-                .iter()
-                .enumerate()
-                .take(result.len() - suffix)
-                .skip(prefix)
-            {
-                let name = format!("action-{provider}-{}", a.id);
-                let item = gio::MenuItem::new(
-                    Some(&a.label.replace('_', "__")),
-                    Some(&format!("provider.{name}")),
-                );
-                let icon = with_hub(|h| {
-                    a.icon
-                        .as_ref()
-                        .and_then(|i| h.providers[*provider].icons.get(i))
-                        .cloned()
-                });
-                if let Some(icon) = icon {
-                    item.set_icon(&icon);
-                }
-                let action = gio::SimpleAction::new(&name, None);
-                let (key, owner, id, provider) =
-                    (key.clone(), owner.clone(), a.id.clone(), *provider);
-                action.connect_activate(move |_, _| {
-                    with_hub(|h| {
-                        let mut r = request("activate", key.0.clone(), key.1);
-                        r.action = Some(id.clone());
-                        h.send(provider, r, Pending::Activate(provider, owner.clone()));
-                    });
-                });
-                group.add_action(&action);
-                model.insert_item(n as i32, &item);
-            }
-            previous = result;
-            changed();
+        let navigation = menus::open_submenus(&popover);
+        if renderer.update(result) {
+            changed(!navigation.is_empty());
+            menus::restore_submenus(&popover, &navigation);
         }
         glib::ControlFlow::Continue
     });
 }
+
+#[cfg(test)]
+mod tests;

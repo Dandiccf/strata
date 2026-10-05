@@ -15,6 +15,8 @@ mod imp {
         pub fallback_scale: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
         pub decoration: RefCell<Option<gdk::Texture>>,
+        pub provider_path: RefCell<Option<String>>,
+        pub provider_retry: Cell<bool>,
         pub decoration_description: RefCell<Option<String>>,
         pub fallback: RefCell<Option<gdk::Texture>>,
         pub fallback_icon: RefCell<Option<String>>,
@@ -154,17 +156,37 @@ impl ThumbnailSlot {
     pub(crate) fn new(slot: i32) -> Self {
         let widget: Self = glib::Object::new();
         widget.connect_map(|slot| {
+            crate::ui::file_providers::remap(slot);
             // Mapping can precede allocation and leave visible requests deferred.
             slot.add_tick_callback(|_, _| {
                 super::viewport::schedule_refresh();
                 glib::ControlFlow::Break
             });
         });
+        widget.connect_unmap(crate::ui::file_providers::unmap);
         widget.set_overflow(gtk::Overflow::Hidden);
         widget.imp().fallback_scale.set(1.0);
         widget.imp().base_opacity.set(1.0);
         widget.set_slot(slot);
         widget
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decoration_description(&self) -> Option<String> {
+        self.imp().decoration_description.borrow().clone()
+    }
+
+    pub(crate) fn provider_path(&self) -> Option<String> {
+        self.imp().provider_path.borrow().clone()
+    }
+    pub(crate) fn set_provider_path(&self, path: Option<String>) {
+        self.imp().provider_path.replace(path);
+    }
+    pub(crate) fn begin_provider_retry(&self) -> bool {
+        !self.imp().provider_retry.replace(true)
+    }
+    pub(crate) fn finish_provider_retry(&self) {
+        self.imp().provider_retry.set(false);
     }
 
     pub(crate) fn set_decoration(&self, texture: Option<&gdk::Texture>, description: Option<&str>) {
