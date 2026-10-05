@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    time::Duration,
+};
 
 use gtk::{gio, glib, prelude::*};
 
@@ -8,6 +13,7 @@ use super::{
     blur::BlurBin,
     browser::{dismiss_modal_layer, modal_layer, show_error_dialog},
     controls::modal_layout,
+    recent_apps,
 };
 
 pub(super) fn categorized_apps(
@@ -35,6 +41,10 @@ fn path_requires_uri_handlers(path: Option<&std::path::Path>) -> bool {
     path.is_none()
 }
 
+fn app_is_candidate(app: &gio::AppInfo, requires_uris: bool) -> bool {
+    app.should_show() && (!requires_uris || app.supports_uris())
+}
+
 fn filter_apps(
     apps: Vec<gio::AppInfo>,
     default: Option<gio::AppInfo>,
@@ -42,7 +52,7 @@ fn filter_apps(
 ) -> Vec<gio::AppInfo> {
     let mut apps = apps
         .into_iter()
-        .filter(|app| app.should_show() && (!requires_uris || app.supports_uris()))
+        .filter(|app| app_is_candidate(app, requires_uris))
         .collect::<Vec<_>>();
     apps.sort_by_cached_key(|app| app.display_name().to_lowercase());
     let mut unique = Vec::with_capacity(apps.len());
@@ -65,9 +75,7 @@ pub(super) fn filter_other_apps(
     let mut apps = apps
         .into_iter()
         .filter(|app| {
-            app.should_show()
-                && (!requires_uris || app.supports_uris())
-                && !recommended.iter().any(|rec| rec.equal(app))
+            app_is_candidate(app, requires_uris) && !recommended.iter().any(|rec| rec.equal(app))
         })
         .collect::<Vec<_>>();
     apps.sort_by_cached_key(|app| app.display_name().to_lowercase());
@@ -78,6 +86,49 @@ pub(super) fn filter_other_apps(
         }
     }
     unique
+}
+
+fn app_ids(apps: &[gio::AppInfo]) -> HashSet<String> {
+    apps.iter()
+        .filter_map(|app| app.id().map(|id| id.to_string()))
+        .collect()
+}
+
+// For mixed types, only promote handlers shared by every type. Single-type
+// history may also promote applications explicitly chosen from Other.
+fn split_recent(
+    content_types: &[String],
+    recommended: &mut Vec<gio::AppInfo>,
+    other: &mut Vec<gio::AppInfo>,
+) -> Vec<gio::AppInfo> {
+    let ordered = recent_apps::load().recent_ids(content_types);
+    if ordered.is_empty() {
+        return Vec::new();
+    }
+    let mut eligible = app_ids(recommended);
+    if content_types.len() <= 1 {
+        eligible.extend(app_ids(other));
+    }
+    let mut wanted = recent_apps::select_recent(&ordered, &eligible);
+    wanted.truncate(recent_apps::MAX_PER_TYPE);
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let mut by_id: HashMap<String, gio::AppInfo> = HashMap::new();
+    for app in recommended.iter().chain(other.iter()) {
+        if let Some(id) = app.id() {
+            by_id.entry(id.to_string()).or_insert_with(|| app.clone());
+        }
+    }
+    let recent: Vec<gio::AppInfo> = wanted.iter().filter_map(|id| by_id.remove(id)).collect();
+    if recent.is_empty() {
+        return Vec::new();
+    }
+    let recent_ids: HashSet<String> = wanted.into_iter().collect();
+    for apps in [recommended, other] {
+        apps.retain(|app| app.id().is_none_or(|id| !recent_ids.contains(id.as_str())));
+    }
+    recent
 }
 
 pub(super) struct Applications {
@@ -174,25 +225,175 @@ fn common_applications(
 pub(super) fn launch(
     app: &gio::AppInfo,
     files: &[gio::File],
+    content_types: &[String],
     context: Option<&impl IsA<gio::AppLaunchContext>>,
 ) -> Result<(), glib::Error> {
-    launch_with_recent_registration(app, files, context, register_recent_file)
+    launch_with_recent_registration(
+        app,
+        app,
+        files,
+        content_types,
+        context,
+        register_recent_file,
+    )
+}
+
+pub(in crate::ui) fn launch_at(
+    app: &gio::AppInfo,
+    file: &gio::File,
+    content_type: &str,
+    position: Option<std::time::Duration>,
+    context: Option<&impl IsA<gio::AppLaunchContext>>,
+) -> Result<(), glib::Error> {
+    let files = std::slice::from_ref(file);
+    let content_types = [content_type.to_owned()];
+    let timed = position
+        .and_then(|position| {
+            let exec = app.commandline()?;
+            command_line_at(&exec.to_string_lossy(), position.as_secs_f64())
+        })
+        .and_then(|command_line| {
+            let mut flags = if app.supports_uris() {
+                gio::AppInfoCreateFlags::SUPPORTS_URIS
+            } else {
+                gio::AppInfoCreateFlags::NONE
+            };
+            if app
+                .downcast_ref::<gio_unix::DesktopAppInfo>()
+                .is_some_and(|desktop| desktop.boolean("StartupNotify"))
+            {
+                flags |= gio::AppInfoCreateFlags::SUPPORTS_STARTUP_NOTIFICATION;
+            }
+            gio::AppInfo::create_from_commandline(command_line, Some(app.name().as_str()), flags)
+                .ok()
+        });
+    if let Some(timed) = timed
+        && launch_with_recent_registration(
+            app,
+            &timed,
+            files,
+            &content_types,
+            context,
+            register_recent_file,
+        )
+        .is_ok()
+    {
+        return Ok(());
+    }
+    launch(app, files, &content_types, context)
+}
+
+/// Field codes and Flatpak forwarding markers must stay unquoted and mark
+/// where the file arguments go.
+fn is_placeholder(token: &str) -> bool {
+    matches!(
+        token,
+        "%f" | "%F" | "%u" | "%U" | "%i" | "%c" | "%k" | "%d" | "%D" | "%n" | "%N" | "%v" | "%m"
+    ) || token.starts_with("@@")
+}
+
+fn basename(token: &str) -> &str {
+    token.rsplit('/').next().unwrap_or(token)
+}
+
+fn player_name(tokens: &[String]) -> Option<String> {
+    let mut command = tokens.iter().peekable();
+    let mut program = command.next()?;
+    while basename(program) == "env" {
+        program = command.find(|token| !token.contains('=') && !token.starts_with('-'))?;
+    }
+    if basename(program) == "flatpak" {
+        if let Some(name) = tokens
+            .iter()
+            .find_map(|token| token.strip_prefix("--command="))
+        {
+            return Some(basename(name).to_owned());
+        }
+        return tokens
+            .iter()
+            .skip(1)
+            .find(|token| {
+                token.contains('.')
+                    && !token.starts_with('-')
+                    && !token.contains('/')
+                    && !is_placeholder(token)
+            })
+            .cloned();
+    }
+    Some(basename(program).to_owned())
+}
+
+fn start_arguments(player: &str, seconds: f64) -> Option<Vec<String>> {
+    let seconds = format!("{seconds:.3}");
+    Some(match player {
+        "mpv" | "io.mpv.Mpv" => vec![format!("--start={seconds}")],
+        "vlc" | "cvlc" | "qvlc" | "nvlc" | "org.videolan.VLC" => {
+            vec![format!("--start-time={seconds}")]
+        }
+        "celluloid" | "io.github.celluloid_player.Celluloid" => {
+            vec![format!("--mpv-start={seconds}")]
+        }
+        "mplayer" => vec!["-ss".to_owned(), seconds],
+        _ => return None,
+    })
+}
+
+pub(super) fn command_line_at(exec: &str, seconds: f64) -> Option<String> {
+    let tokens: Vec<String> = glib::shell_parse_argv(exec)
+        .ok()?
+        .into_iter()
+        .map(|token| token.to_string_lossy().into_owned())
+        .collect();
+    let arguments = start_arguments(&player_name(&tokens)?, seconds)?;
+    let insert_at = tokens
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, token)| is_placeholder(token) || *token == "--")
+        .map_or(tokens.len(), |(index, _)| index);
+    let mut tokens = tokens;
+    tokens.splice(insert_at..insert_at, arguments);
+    Some(
+        tokens
+            .iter()
+            .map(|token| {
+                let plain = token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-./=:@%+,".contains(&byte));
+                if plain && !token.is_empty() || is_placeholder(token) {
+                    token.clone()
+                } else {
+                    glib::shell_quote(token).to_string_lossy().into_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn launch_with_recent_registration(
     app: &gio::AppInfo,
+    launcher: &gio::AppInfo,
     files: &[gio::File],
+    content_types: &[String],
     context: Option<&impl IsA<gio::AppLaunchContext>>,
     register_recent: impl Fn(&gio::File) -> bool + 'static,
 ) -> Result<(), glib::Error> {
     // GIO drops files without a local path when expanding %f/%F.
-    if !app.supports_uris() && requires_uri_handlers(files) {
+    if !launcher.supports_uris() && requires_uri_handlers(files) {
         return Err(glib::Error::new(
             gio::IOErrorEnum::NotSupported,
             "This application cannot open files at this location",
         ));
     }
-    app.launch(files, context)?;
+    launcher.launch(files, context)?;
+    if let Some(app_id) = app.id() {
+        let known_ids = gio::AppInfo::all()
+            .into_iter()
+            .filter_map(|candidate| candidate.id().map(|id| id.to_string()))
+            .collect::<HashSet<_>>();
+        recent_apps::record(content_types, app_id.as_str(), &known_ids);
+    }
     let candidates: Vec<gio::File> = files
         .iter()
         .filter(|file| !file.has_uri_scheme("recent"))
@@ -345,8 +546,15 @@ fn install_list_tab_navigation(
 struct AppEntry {
     app: gio::AppInfo,
     row: gtk::ListBoxRow,
-    is_recommended: bool,
+    section: AppSection,
     haystack: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppSection {
+    Recent,
+    Recommended,
+    Other,
 }
 
 #[derive(Clone, Copy)]
@@ -418,8 +626,8 @@ pub(super) fn show(
     parent: &impl IsA<gtk::Widget>,
     files: Vec<gio::File>,
     content_types: Vec<String>,
-    recommended_apps: Vec<gio::AppInfo>,
-    other_apps: Vec<gio::AppInfo>,
+    mut recommended_apps: Vec<gio::AppInfo>,
+    mut other_apps: Vec<gio::AppInfo>,
     context: OpenWithContext,
     on_close: Rc<dyn Fn()>,
 ) {
@@ -481,6 +689,34 @@ pub(super) fn show(
 
     let mut entries = Vec::new();
 
+    let mut recent_heading_row = None;
+    let recent = split_recent(&content_types, &mut recommended_apps, &mut other_apps);
+    if !recent.is_empty() {
+        let heading = create_section_header("Recently Used");
+        list.append(&heading);
+        recent_heading_row = Some(heading);
+
+        for app in &recent {
+            let row = create_app_row(app, &list.display());
+            let haystack = format!(
+                "{} {} {} {} {}",
+                app.display_name(),
+                app.name(),
+                app.description().unwrap_or_default(),
+                app.executable().to_string_lossy(),
+                app.id().unwrap_or_default(),
+            )
+            .to_lowercase();
+            list.append(&row);
+            entries.push(AppEntry {
+                app: app.clone(),
+                row,
+                section: AppSection::Recent,
+                haystack,
+            });
+        }
+    }
+
     let mut recommended_heading_row = None;
     if !recommended_apps.is_empty() {
         let heading = create_section_header("Recommended Applications");
@@ -502,7 +738,7 @@ pub(super) fn show(
             entries.push(AppEntry {
                 app: app.clone(),
                 row,
-                is_recommended: true,
+                section: AppSection::Recommended,
                 haystack,
             });
         }
@@ -529,7 +765,7 @@ pub(super) fn show(
             entries.push(AppEntry {
                 app: app.clone(),
                 row,
-                is_recommended: false,
+                section: AppSection::Other,
                 haystack,
             });
         }
@@ -698,6 +934,7 @@ pub(super) fn show(
     let empty_search_for_filter = empty_search.downgrade();
     let confirm_for_filter = layout.confirm.downgrade();
     let rec_heading = recommended_heading_row;
+    let recent_heading = recent_heading_row;
     let oth_heading = other_heading_row;
 
     search_entry.connect_changed(move |search| {
@@ -710,6 +947,7 @@ pub(super) fn show(
             return;
         };
         let query = search.text().trim().to_lowercase();
+        let mut recent_count = 0;
         let mut rec_count = 0;
         let mut oth_count = 0;
         let mut first_visible_row: Option<gtk::ListBoxRow> = None;
@@ -720,10 +958,10 @@ pub(super) fn show(
             let matches = query.is_empty() || entry.haystack.contains(&query);
             entry.row.set_visible(matches);
             if matches {
-                if entry.is_recommended {
-                    rec_count += 1;
-                } else {
-                    oth_count += 1;
+                match entry.section {
+                    AppSection::Recent => recent_count += 1,
+                    AppSection::Recommended => rec_count += 1,
+                    AppSection::Other => oth_count += 1,
                 }
                 if first_visible_row.is_none() {
                     first_visible_row = Some(entry.row.clone());
@@ -736,6 +974,9 @@ pub(super) fn show(
             }
         }
 
+        if let Some(heading) = &recent_heading {
+            heading.set_visible(recent_count > 0);
+        }
         if let Some(heading) = &rec_heading {
             heading.set_visible(rec_count > 0);
         }
@@ -743,7 +984,7 @@ pub(super) fn show(
             heading.set_visible(oth_count > 0);
         }
 
-        let total_matches = rec_count + oth_count;
+        let total_matches = recent_count + rec_count + oth_count;
         if total_matches == 0 {
             empty_label.set_visible(true);
             list_scroll.set_visible(false);
@@ -810,7 +1051,7 @@ pub(super) fn show(
             }
         }
         let context = list.display().app_launch_context();
-        if let Err(error) = launch(&entry.app, &open_files, Some(&context)) {
+        if let Err(error) = launch(&entry.app, &open_files, &open_content_types, Some(&context)) {
             let detail = error.to_string();
             open_dismiss();
             let open_parent = open_parent.clone();
@@ -856,3 +1097,6 @@ pub(super) fn show(
         search_entry.grab_focus();
     }
 }
+
+#[cfg(test)]
+mod tests;

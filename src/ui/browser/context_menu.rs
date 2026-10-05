@@ -1184,7 +1184,12 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             return;
         };
         let context = state.overlay.display().app_launch_context();
-        if let Err(error) = crate::ui::open_with::launch(&app, &selection.files, Some(&context)) {
+        if let Err(error) = crate::ui::open_with::launch(
+            &app,
+            &selection.files,
+            &selection.content_types,
+            Some(&context),
+        ) {
             crate::ui::modal::show_error_dialog(
                 &state.overlay,
                 "Unable to open file",
@@ -1612,8 +1617,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
                     .as_ref()
                     .is_some_and(|handler| handler(&entry.location) == PinStatus::Available),
             );
-            let can_extract = entry.location.native_path().is_some()
-                && ArchiveFormat::from_extension(&entry.display_name).is_some();
+            let can_extract = ArchiveFormat::for_entry(&entry).is_some();
             extract.set_visible(can_extract);
             extract_to.set_visible(can_extract);
             customize.set_visible(

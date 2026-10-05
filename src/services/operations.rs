@@ -206,6 +206,13 @@ impl ArchiveFormat {
             None
         }
     }
+
+    pub fn for_entry(entry: &FileEntry) -> Option<Self> {
+        if !entry.is_file() || entry.location.native_path().is_none() {
+            return None;
+        }
+        Self::from_extension(&entry.display_name)
+    }
 }
 
 #[derive(Clone, Debug)]

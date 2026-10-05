@@ -3,23 +3,28 @@
 //! ZIP, TAR/gzip and 7z decoding adapters feeding the same extraction session.
 //! Format-specific member enumeration, passwords and error translation stay here.
 //!
-//! This boundary preserves legacy output semantics: TAR names use lossy UTF-8
-//! conversion, and non-directory entries (including links) become regular files.
-//! Native names and richer entry types remain part of the decoder evaluation.
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
+    ffi::OsStr,
     io::{Read, Seek},
+    os::unix::ffi::OsStrExt,
     path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize},
     },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use gtk::glib;
+
 use super::{
-    ARCHIVE_CANCELLED, ArchiveError, archive_failed,
-    extraction::{ArchiveOutcome, ExtractedRoots, ExtractionSession, MemberContent},
+    ARCHIVE_CANCELLED, ArchiveError, archive_failed, copy_with_big_buf,
+    extraction::{
+        ArchiveOutcome, ExtractionSession, MAX_SYMLINK_TARGET_BYTES, MemberContent, MemberMetadata,
+    },
 };
 
 #[cfg(feature = "rar")]
@@ -109,6 +114,76 @@ fn archive_read_error(error: std::io::Error, password_supplied: bool) -> std::io
     }
 }
 
+/// 7z attribute bit with which p7zip marks `st_mode` stored in the upper 16 bits.
+pub(super) const FILE_ATTRIBUTE_UNIX_EXTENSION: u32 = 0x8000;
+const S_IFMT: u32 = 0o170_000;
+const S_IFDIR: u32 = 0o040_000;
+const S_IFREG: u32 = 0o100_000;
+const S_IFLNK: u32 = 0o120_000;
+
+/// ZIP/7z may report zero or junk modes; don't revoke access based on them.
+fn member_mode(mode: Option<u32>, directory: bool) -> Option<u32> {
+    let kind = if directory { S_IFDIR } else { S_IFREG };
+    mode.filter(|mode| mode & S_IFMT == kind)
+}
+
+fn unix_seconds(seconds: impl TryInto<u64>) -> Option<SystemTime> {
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds.try_into().ok()?))
+}
+
+/// FILETIME zero denotes an absent timestamp.
+fn filetime(value: u64) -> Option<SystemTime> {
+    (value != 0)
+        .then(|| SystemTime::from(sevenz_rust2::NtTime::from(value)))
+        .filter(|time| *time >= UNIX_EPOCH)
+}
+
+/// DOS times carry no zone and are read as local time, like `unzip`.
+fn dos_local_time(time: zip::DateTime) -> Option<SystemTime> {
+    let local = glib::DateTime::from_local(
+        time.year().into(),
+        time.month().into(),
+        time.day().into(),
+        time.hour().into(),
+        time.minute().into(),
+        time.second().into(),
+    )
+    .ok()?;
+    unix_seconds(local.to_unix())
+}
+
+fn zip_member_modified(entry: &zip::read::ZipFile<'_, std::fs::File>) -> Option<SystemTime> {
+    let extended = entry.extra_data_fields().find_map(|field| match field {
+        // The field is signed; times before 1970 are skipped.
+        zip::ExtraField::ExtendedTimestamp(stamp) => stamp
+            .mod_time()
+            .and_then(|seconds| unix_seconds(seconds as i32)),
+        zip::ExtraField::Ntfs(_) => None,
+    });
+    let ntfs = || {
+        entry.extra_data_fields().find_map(|field| match field {
+            zip::ExtraField::Ntfs(ntfs) => filetime(ntfs.mtime()),
+            zip::ExtraField::ExtendedTimestamp(_) => None,
+        })
+    };
+    extended.or_else(ntfs).or_else(|| {
+        entry
+            .last_modified()
+            .filter(zip::DateTime::is_valid)
+            .and_then(dos_local_time)
+    })
+}
+
+/// Read one extra byte so overlong targets cannot be silently truncated.
+fn read_link_target(reader: &mut impl Read) -> Result<Vec<u8>, ArchiveError> {
+    let mut target = Vec::new();
+    reader
+        .take(MAX_SYMLINK_TARGET_BYTES + 1)
+        .read_to_end(&mut target)
+        .map_err(archive_failed)?;
+    Ok(target)
+}
+
 // Translate only decoder reads; destination writes retain their own errors.
 struct ArchiveReader<R> {
     inner: R,
@@ -132,6 +207,11 @@ impl<R: Read> Read for ArchiveReader<R> {
     }
 }
 
+/// tar-rs stops before gzip's CRC32/ISIZE trailer; EOF is needed to verify it.
+fn verify_gzip_trailer(reader: impl Read, cancelled: &AtomicBool) -> Result<(), ArchiveError> {
+    copy_with_big_buf(ArchiveReader::new(reader), &mut std::io::sink(), cancelled).map(|_| ())
+}
+
 fn sevenz_error(error: ArchiveError) -> sevenz_rust2::Error {
     sevenz_rust2::Error::Other(error.to_string().into())
 }
@@ -143,11 +223,12 @@ fn sevenz_is_cancelled(error: &sevenz_rust2::Error) -> bool {
 pub(super) fn extract_zip_from_archive(
     archive: &mut zip::ZipArchive<std::fs::File>,
     dest_dir: &Path,
+    archive_name: &str,
     password: Option<&str>,
     progress: &Arc<AtomicUsize>,
     cancelled: &AtomicBool,
-) -> Result<ArchiveOutcome<ExtractedRoots>, ArchiveError> {
-    let mut session = ExtractionSession::open(dest_dir, progress, cancelled)?;
+) -> Result<ArchiveOutcome<Option<String>>, ArchiveError> {
+    let mut session = ExtractionSession::open(dest_dir, archive_name, progress, cancelled)?;
     if let Some(claimed) = archive.decompressed_size() {
         session.preflight_claimed_size(claimed)?;
     }
@@ -164,17 +245,26 @@ pub(super) fn extract_zip_from_archive(
             let name = entry.name().to_owned();
             let declared_size = entry.size();
             let directory = entry.is_dir();
+            let symlink = !directory && entry.is_symlink();
+            let metadata = MemberMetadata {
+                mode: member_mode(entry.unix_mode(), directory),
+                modified: zip_member_modified(&entry),
+            };
             let mut reader = ArchiveReader {
                 inner: &mut entry,
                 password_supplied,
             };
+            let target;
             let content = if directory {
                 MemberContent::Directory
+            } else if symlink {
+                target = read_link_target(&mut reader)?;
+                MemberContent::Symlink(&target)
             } else {
                 MemberContent::File(&mut reader, Some(declared_size))
             };
             next_index = index + 1;
-            session.extract_member(&name, content)?;
+            session.extract_member(&name, content, metadata)?;
         }
         Ok(())
     })();
@@ -190,14 +280,17 @@ pub(super) fn extract_zip_from_archive(
 pub(super) fn extract_tar(
     archive_path: &Path,
     dest_dir: &Path,
+    archive_name: &str,
     gzip: bool,
     progress: &Arc<AtomicUsize>,
     cancelled: &AtomicBool,
-) -> Result<ArchiveOutcome<ExtractedRoots>, ArchiveError> {
-    let mut session = ExtractionSession::open(dest_dir, progress, cancelled)?;
+) -> Result<ArchiveOutcome<Option<String>>, ArchiveError> {
+    let mut session = ExtractionSession::open(dest_dir, archive_name, progress, cancelled)?;
+    session.record_hard_link_targets();
     let file = std::fs::File::open(archive_path).map_err(archive_failed)?;
+    // Parallel compressors such as pigz and bgzip write several gzip members.
     let reader: Box<dyn std::io::Read> = if gzip {
-        Box::new(flate2::read::GzDecoder::new(file))
+        Box::new(flate2::read::MultiGzDecoder::new(file))
     } else {
         Box::new(file)
     };
@@ -232,33 +325,66 @@ pub(super) fn extract_tar(
                 continue;
             }
             let name = entry.path().map_err(archive_failed)?;
-            let directory = entry.header().entry_type().is_dir();
-            if directory && name == Path::new(".") {
+            let entry_type = entry.header().entry_type();
+            if entry_type.is_dir() && name == Path::new(".") {
                 continue;
             }
             let declared_size = entry.size();
-            let name = name.to_string_lossy().into_owned();
-            let mut reader = ArchiveReader::new(&mut entry);
-            let content = if directory {
-                MemberContent::Directory
-            } else {
-                MemberContent::File(&mut reader, Some(declared_size))
+            let path = name.into_owned();
+            let name = path.display();
+            let header = entry.header();
+            let metadata = MemberMetadata {
+                mode: header.mode().ok(),
+                modified: header.mtime().ok().and_then(unix_seconds),
             };
-            session.extract_member(&name, content)?;
+            let stored_link = entry.link_name_bytes().map(Cow::into_owned);
+            let link_name = || {
+                stored_link.as_deref().ok_or_else(|| {
+                    archive_failed(format!("Archive member `{name}` has no link target"))
+                })
+            };
+            let mut reader = ArchiveReader::new(&mut entry);
+            let content = match entry_type {
+                entry_type if entry_type.is_dir() => MemberContent::Directory,
+                tar::EntryType::Symlink => MemberContent::Symlink(link_name()?),
+                tar::EntryType::Link if declared_size == 0 => {
+                    MemberContent::HardLink(Path::new(OsStr::from_bytes(link_name()?)))
+                }
+                tar::EntryType::Fifo => {
+                    return Err(archive_failed(format!(
+                        "Archive member `{name}` is a FIFO and cannot be extracted"
+                    )));
+                }
+                tar::EntryType::Char | tar::EntryType::Block => {
+                    return Err(archive_failed(format!(
+                        "Archive member `{name}` is a device and cannot be extracted"
+                    )));
+                }
+                _ => MemberContent::File(&mut reader, Some(declared_size)),
+            };
+            session.extract_member(&path, content, metadata)?;
         }
         Ok(())
     })();
+    let result = result.and_then(|()| {
+        if gzip {
+            verify_gzip_trailer(archive.into_inner(), cancelled)
+        } else {
+            Ok(())
+        }
+    });
     session.finish(result, || remaining.into_iter().collect())
 }
 
 pub(super) fn extract_7z_from_reader(
     reader: impl Read + Seek,
     dest_dir: &Path,
+    archive_name: &str,
     password: sevenz_rust2::Password,
     progress: &Arc<AtomicUsize>,
     cancelled: &AtomicBool,
-) -> Result<ArchiveOutcome<ExtractedRoots>, ArchiveError> {
-    let mut session = ExtractionSession::open(dest_dir, progress, cancelled)?;
+) -> Result<ArchiveOutcome<Option<String>>, ArchiveError> {
+    let mut session = ExtractionSession::open(dest_dir, archive_name, progress, cancelled)?;
     let password_supplied = !password.is_empty();
     let mut archive =
         sevenz_rust2::ArchiveReader::new(reader, password).map_err(sevenz_decode_error)?;
@@ -294,14 +420,29 @@ pub(super) fn extract_7z_from_reader(
             inner: reader,
             password_supplied,
         };
+        let unix_mode = (entry.has_windows_attributes
+            && entry.windows_attributes & FILE_ATTRIBUTE_UNIX_EXTENSION != 0)
+            .then_some(entry.windows_attributes >> 16);
+        let symlink = !entry.is_directory && unix_mode.is_some_and(|mode| mode & S_IFMT == S_IFLNK);
+        let metadata = MemberMetadata {
+            mode: member_mode(unix_mode, entry.is_directory),
+            modified: entry
+                .has_last_modified_date
+                .then(|| filetime(entry.last_modified_date.into()))
+                .flatten(),
+        };
+        let target;
         let content = if entry.is_directory {
             MemberContent::Directory
+        } else if symlink {
+            target = read_link_target(&mut reader).map_err(sevenz_error)?;
+            MemberContent::Symlink(&target)
         } else {
             MemberContent::File(&mut reader, Some(entry.size))
         };
         submitted[index] = true;
         session
-            .extract_member(&entry.name, content)
+            .extract_member(&entry.name, content, metadata)
             .map_err(sevenz_error)?;
         Ok(true)
     });

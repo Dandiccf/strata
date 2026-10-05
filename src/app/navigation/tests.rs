@@ -2398,3 +2398,129 @@ fn visual_ranges_end_without_an_anchor_listing_or_pointer_commit() {
     assert_eq!(state.visual_kind(), None);
     assert_eq!(state.refresh_visual(None), None);
 }
+
+#[test]
+fn precomputed_sort_preserves_natural_utf8_order() {
+    let names = vec![
+        "über_10.txt",
+        "über_2.txt",
+        "Straße_1.txt",
+        "STRASSE_2.txt",
+        "café_latte.txt",
+        "café.txt",
+        "apple.txt",
+        "Banana.txt",
+    ];
+    let entries: Vec<FileEntry> = names
+        .into_iter()
+        .map(|name| file_entry(&format!("/test/{name}"), name))
+        .collect();
+
+    let sorted = super::sort_entries(entries, ViewPreferences::default());
+    let sorted_names: Vec<&str> = sorted.iter().map(|e| e.display_name.as_str()).collect();
+
+    assert_eq!(
+        sorted_names,
+        vec![
+            "apple.txt",
+            "Banana.txt",
+            "café.txt",
+            "café_latte.txt",
+            "Straße_1.txt",
+            "STRASSE_2.txt",
+            "über_2.txt",
+            "über_10.txt",
+        ]
+    );
+}
+
+#[test]
+fn keyed_sort_and_batch_merge_match_monitor_order() {
+    let entries: Vec<_> = [
+        "ß.txt",
+        "ss.txt",
+        "İ.txt",
+        "i.txt",
+        "中文10.txt",
+        "中文2.txt",
+        "FILE.txt",
+        "file.txt",
+        "file02.txt",
+        "file2.txt",
+        "café.png",
+        "über.rs",
+        "unknown.strata-unknown-extension",
+        "same.txt",
+        "same.txt",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, name)| {
+        let mut entry = file_entry(&format!("/fixture/{index}/{name}"), name);
+        if index % 4 == 0 {
+            entry.kind = EntryKind::Directory;
+        }
+        entry.size = match index % 4 {
+            0 => MetadataValue::Unknown,
+            1 => MetadataValue::Unavailable,
+            _ => MetadataValue::Known(10),
+        };
+        entry.modified_unix_seconds = match index % 3 {
+            0 => MetadataValue::Known(20),
+            1 => MetadataValue::Known(10),
+            _ => MetadataValue::Unavailable,
+        };
+        entry.recent_unix_seconds = entry.modified_unix_seconds.clone();
+        entry
+    })
+    .collect();
+
+    for sort_key in [
+        SortKey::Name,
+        SortKey::Type,
+        SortKey::Size,
+        SortKey::Modified,
+        SortKey::Recency,
+        SortKey::DeviceOrder,
+    ] {
+        for sort_direction in [SortDirection::Ascending, SortDirection::Descending] {
+            for folders_first in [false, true] {
+                let preferences = ViewPreferences {
+                    sort_key,
+                    sort_direction,
+                    folders_first,
+                    ..ViewPreferences::default()
+                };
+                let mut expected = entries.clone();
+                expected.sort_by(|left, right| compare_entries(left, right, preferences));
+                assert_eq!(super::sort_entries(entries.clone(), preferences), expected);
+
+                let mut merged = Vec::new();
+                for batch in entries.chunks(4) {
+                    let before = merged.clone();
+                    let (next, insertions) =
+                        super::merge_entries(merged, batch.to_vec(), preferences);
+                    let mut replayed = before;
+                    for insertion in insertions {
+                        replayed.splice(insertion.position..insertion.position, insertion.entries);
+                    }
+                    assert_eq!(replayed, next);
+                    merged = next;
+                }
+                assert_eq!(merged, expected);
+
+                let mut monitored = Vec::new();
+                let mut splices = Vec::new();
+                for entry in &entries {
+                    super::insert_monitored_entry(
+                        &mut monitored,
+                        entry.clone(),
+                        preferences,
+                        &mut splices,
+                    );
+                }
+                assert_eq!(monitored, expected);
+            }
+        }
+    }
+}

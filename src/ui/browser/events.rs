@@ -7,12 +7,14 @@ use crate::app::BrowserEvent;
 use crate::model::FileEntry;
 use crate::services::LocationValidationError;
 use crate::ui::browser::ViewState;
+use crate::ui::browser::archive::{
+    extract_error_needs_password, extract_error_reports_wrong_password,
+};
 use crate::ui::browser::columns::{
     column_size_text, prune_missing_search_results, restore_column_cursor, scroll_column_to,
     set_column_busy, set_column_selections, set_filter_placeholder, stop_column_spinner,
     touch_source_model, update_empty_trash_sensitivity,
 };
-use crate::ui::browser::desktop::open_location;
 use crate::ui::browser::entry::item_count_label;
 use crate::ui::browser::location::MountStrategy;
 use crate::ui::browser::peek::append_peek_entries;
@@ -50,6 +52,10 @@ impl ViewState {
             self.cancel_click_rename();
         }
         match event {
+            BrowserEvent::BackgroundOperation { request_id, event } => {
+                self.handle_background_file_operation(*request_id, event);
+                return;
+            }
             BrowserEvent::SelectionSynced { .. } => return,
             BrowserEvent::NavigationStarting => {
                 self.forget_listing_search();
@@ -607,7 +613,17 @@ impl ViewState {
             }
             BrowserEvent::OpenRequested { location } => {
                 if self.interactive {
-                    open_location(location, &self.overlay, &self.browser);
+                    let position = self
+                        .playback_handoff
+                        .borrow()
+                        .as_ref()
+                        .and_then(|handoff| handoff(location));
+                    super::desktop::open_location_at(
+                        location,
+                        position,
+                        &self.overlay,
+                        &self.browser,
+                    );
                 }
             }
             BrowserEvent::EntryCreated { location } => {
@@ -652,9 +668,12 @@ impl ViewState {
                         "Copying items"
                     },
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
                 self.update_transfer_progress(0, 0, None, 0, None);
+                if let Some(id) = self.browser.backgroundable_operation() {
+                    self.dock_file_operation(id);
+                }
             }
             BrowserEvent::TransferProgress {
                 completed_items,
@@ -664,7 +683,9 @@ impl ViewState {
                 transferred_bytes,
                 total_bytes,
             } => {
-                self.transfer_current_file.replace(current_file.clone());
+                self.file_progress()
+                    .transfer_current_file
+                    .replace(current_file.clone());
                 self.update_transfer_progress(
                     *completed_items,
                     *completed_files,
@@ -685,7 +706,7 @@ impl ViewState {
                 }
                 // TransferFinished also fires on failure; defer feedback until TransferCompleted.
                 if let Some(completion) = self.pending_send_to_completion.take() {
-                    let progress_shown = self.file_progress_view.borrow().is_some();
+                    let progress_shown = self.file_progress().file_progress_view.borrow().is_some();
                     self.finished_send_to_completion
                         .replace(Some(FinishedSendToCompletion {
                             completion,
@@ -702,8 +723,12 @@ impl ViewState {
                     crate::assets::icons::TRASH,
                     "Deleting items",
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
+                self.file_progress().deleting.set(true);
+                if let Some(id) = self.browser.backgroundable_operation() {
+                    self.dock_file_operation(id);
+                }
             }
             BrowserEvent::DeletionProgress { completed, total } => {
                 self.update_item_progress(*completed, *total);
@@ -742,7 +767,7 @@ impl ViewState {
                     crate::assets::icons::FOLDER,
                     "Restoring items",
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
             }
             BrowserEvent::RestorationProgress { completed, total } => {
@@ -762,7 +787,7 @@ impl ViewState {
                 if let Some((entry, dest)) = retry
                     && extract_error_needs_password(message)
                 {
-                    let invalid_password = message.to_lowercase().contains("incorrect");
+                    let invalid_password = extract_error_reports_wrong_password(message);
                     let navigate_after_extract = self.pending_navigate.take();
                     self.show_extract_password_dialog(
                         entry,
@@ -871,11 +896,21 @@ impl ViewState {
                 self.show_file_operation_progress(
                     *total,
                     crate::assets::icons::FILE_ARCHIVE,
-                    "Processing archive…",
+                    if self.browser.backgroundable_operation().is_some() {
+                        "Compressing items"
+                    } else {
+                        "Processing archive…"
+                    },
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
+                self.file_progress()
+                    .archive_compressing
+                    .set(self.browser.backgroundable_operation().is_some());
                 self.update_archive_progress(0, *total);
+                if let Some(id) = self.browser.backgroundable_operation() {
+                    self.dock_file_operation(id);
+                }
             }
             BrowserEvent::ArchiveProgress { completed, total } => {
                 self.update_archive_progress(*completed, *total);
@@ -1140,7 +1175,7 @@ impl ViewState {
         self.mode_views.borrow().show_empty_if_empty(depth);
     }
 
-    fn prune_stale_search_results(&self) {
+    pub(super) fn prune_stale_search_results(&self) {
         let columns = self.columns.borrow().clone();
         let mut changed = false;
         for column in &columns {
@@ -1213,7 +1248,7 @@ impl ViewState {
             if self.single_click_previews.get()
                 && let Some(entry) = preview_target(Some(entry))
             {
-                self.browser.request_preview(entry);
+                self.browser.request_automatic_preview(entry);
             }
         }
     }
@@ -1233,16 +1268,4 @@ impl ViewState {
                 | BrowserEvent::EntriesReplaced { .. }
         )
     }
-}
-
-fn extract_error_needs_password(message: &str) -> bool {
-    // Member diagnostics quote one unescaped filename, which can itself contain backticks.
-    let (prefix, suffix) = match (message.find('`'), message.rfind('`')) {
-        (Some(start), Some(end)) if start < end => (&message[..start], &message[end + 1..]),
-        _ => (message, ""),
-    };
-    [prefix, suffix].iter().any(|text| {
-        let lower = text.to_lowercase();
-        lower.contains("password") || lower.contains("encrypt")
-    })
 }

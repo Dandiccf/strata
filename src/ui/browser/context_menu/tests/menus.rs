@@ -26,6 +26,7 @@ impl FileSource for MenuSource {
                 "archive.zip",
                 "archive.rar",
                 "folder",
+                "photos.zip",
             ]
             .into_iter()
             .map(|name| FileEntry {
@@ -37,14 +38,14 @@ impl FileSource for MenuSource {
                 native_name: name.into(),
                 thumbnail_path: None,
                 display_name: name.into(),
-                kind: if name == "folder" {
+                kind: if matches!(name, "folder" | "photos.zip") {
                     EntryKind::Directory
                 } else {
                     EntryKind::File
                 },
                 size: MetadataValue::Known(5),
                 modified_unix_seconds: MetadataValue::Known(0),
-                mode: MetadataValue::Known(if matches!(name, "run-me" | "folder") {
+                mode: MetadataValue::Known(if matches!(name, "run-me" | "folder" | "photos.zip") {
                     0o755
                 } else {
                     0o644
@@ -161,7 +162,7 @@ pub(super) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
 }
 
 #[track_caller]
-pub(super) fn wait_until(condition: impl Fn() -> bool) {
+pub(in crate::ui::browser::context_menu) fn wait_until(condition: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !condition() {
         assert!(Instant::now() < deadline, "menu fixture did not settle");
@@ -327,13 +328,25 @@ fn archive_extraction_actions_follow_build_support() {
                 .build();
             window.present();
             view.browser().navigate(Location::local(fixture.path()));
-            wait_until(|| label(&view.widget(), "archive.rar").is_some());
+            wait_until(|| {
+                label(&view.widget(), "archive.rar").is_some()
+                    && label(&view.widget(), "photos.zip").is_some()
+            });
             for (name, supported) in [
                 ("archive.zip", true),
                 ("archive.rar", cfg!(feature = "rar")),
+                ("photos.zip", false),
             ] {
                 let menu = open_menu(&view, Some(name));
                 let labels = label_texts(&menu);
+                if name == "photos.zip" {
+                    assert!(
+                        labels
+                            .iter()
+                            .any(|label| label == "Open in Terminal" || label == "Pin to sidebar"),
+                        "{labels:?}"
+                    );
+                }
                 for action in ["Extract here", "Extract to…"] {
                     assert_eq!(
                         labels.iter().any(|label| label == action),

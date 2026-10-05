@@ -35,6 +35,25 @@ use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 
+/// Unescaped names may contain backticks or "password"; exclude their entire span.
+fn unquoted_extract_error(message: &str) -> String {
+    match (message.find('`'), message.rfind('`')) {
+        (Some(start), Some(end)) if start < end => {
+            format!("{} {}", &message[..start], &message[end + 1..]).to_lowercase()
+        }
+        _ => message.to_lowercase(),
+    }
+}
+
+pub(super) fn extract_error_needs_password(message: &str) -> bool {
+    let text = unquoted_extract_error(message);
+    text.contains("password") || text.contains("encrypt")
+}
+
+pub(super) fn extract_error_reports_wrong_password(message: &str) -> bool {
+    unquoted_extract_error(message).contains("incorrect")
+}
+
 /// Basename used when creating the archive, with `format`'s extension removed.
 ///
 /// Typing `backup.zip` while [`ArchiveFormat::Zip`] is selected yields `backup`,

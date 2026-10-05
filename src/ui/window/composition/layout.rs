@@ -212,7 +212,7 @@ fn bind_sidebar_layout(
         let Some(sidebar) = weak_sidebar.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        // An empty Icons placeholder owns the rail even when it cannot fit.
+        // A reserved empty preview owns the rail even when it cannot fit.
         if weak_preview.is_open()
             || weak_preview.is_suspended()
             || weak_preview.reserves_empty_preview()
@@ -267,7 +267,12 @@ fn bind_sidebar_toggle(
             }
         } else if content.position() < MIN_SIDEBAR_WIDTH {
             content.set_position(MIN_SIDEBAR_WIDTH);
-        } else {
+        } else if content.position()
+            + crate::ui::preview::separator_width(content)
+            + crate::ui::browser::COLUMN_WIDTH
+            < content.width()
+        {
+            // A divider pinned by a narrow window is not the user's choice.
             state.saved_width.set(Some(content.position()));
         }
     });
