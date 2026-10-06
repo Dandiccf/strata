@@ -146,11 +146,27 @@ impl Dispatcher {
             }
             Chord::Copy => self.complete_copy(key),
             Chord::Action => self.complete_action(key),
+            Chord::Tabs => self.complete_tab(key),
         };
         if !completed {
             self.shortcuts.show_feedback("Unknown chord");
         }
         Some(Propagation::Stop)
+    }
+
+    fn complete_tab(&self, key: Key) -> bool {
+        let (action, parameter) = match key {
+            Key::n => ("win.new-tab", None),
+            Key::x => ("win.close-tab", None),
+            Key::t => ("win.previous-tab", None),
+            _ => {
+                let Some(index) = super::super::composition::tab_index(key) else {
+                    return false;
+                };
+                ("win.select-tab", Some(glib::Variant::from(index as u32)))
+            }
+        };
+        gtk::prelude::WidgetExt::activate_action(&self.window, action, parameter.as_ref()).is_ok()
     }
 
     fn complete_go(&self, browser: &Rc<Browser>, key: Key) -> bool {

@@ -54,6 +54,44 @@ impl Fixture {
             operations,
         }
     }
+    fn prepare_deletion(&self) -> (crate::model::FileEntry, gtk::Widget) {
+        crate::ui::motion::set_reduce_motion(false);
+        gtk::Settings::default()
+            .expect("GTK settings")
+            .set_gtk_enable_animations(true);
+        let path = self.temp.path().join("delete-me.txt");
+        std::fs::write(&path, "delete fixture").expect("deletion fixture file");
+        let deleted = entry(Location::local(path));
+        self.view
+            .browser()
+            .navigate(Location::local(self.temp.path()));
+        let state = &self.view.state;
+        pump_until(|| {
+            let Some(source) = state.delete_animation_source() else {
+                return false;
+            };
+            let Some(dissolve) = crate::ui::browser::dissolve_delete::prepare_dissolve(
+                &source,
+                std::slice::from_ref(&deleted),
+            ) else {
+                return false;
+            };
+            state.pending_delete_dissolve.replace(Some((
+                state
+                    .browser
+                    .active_depth()
+                    .expect("active deletion column"),
+                dissolve,
+            )));
+            true
+        });
+        (
+            deleted,
+            state
+                .delete_animation_source()
+                .expect("deletion animation source"),
+        )
+    }
     fn transfer(&self, name: &str, moving: bool) -> OperationRequestId {
         self.view.browser().transfer(
             Location::local(self.temp.path()),
@@ -284,6 +322,8 @@ fn docked_copy_archive_and_deletion_update_and_cancel_independently() {
             assert_eq!(progress_card(&first_progress).status.text(), "25%");
             let second_card = progress_card(&second_progress);
             assert_eq!(second_card.status.text(), "65%");
+            fixture.update(second, "second.txt", 70);
+            pump_until(|| second_card.status.text() == "70%");
             assert_eq!(progress_card(&archive_progress).status.text(), "50%");
             assert_eq!(
                 progress_card(&deletion_progress).destination.text(),
@@ -334,6 +374,88 @@ fn docked_copy_archive_and_deletion_update_and_cancel_independently() {
 }
 
 #[test]
+fn docked_deletion_keeps_its_animation_until_its_own_terminal_event() {
+    crate::test_support::gtk_test(
+        "ui::browser::progress::tests::minimization::docked_deletion_keeps_its_animation_until_its_own_terminal_event",
+        || {
+            for outcome in ["success", "unsuccessful", "failed", "cancelled", "partial"] {
+                let fixture = Fixture::new();
+                let copy = fixture.transfer("copy.txt", false);
+                fixture.progress(copy);
+                let (deleted, source) = fixture.prepare_deletion();
+                fixture.view.browser().delete(vec![deleted], true);
+                let deletion = fixture
+                    .view
+                    .browser()
+                    .last_started_operation()
+                    .expect("deletion started");
+                let progress = fixture.progress(deletion);
+                let card = progress_card(&progress);
+                let state = &fixture.view.state;
+                assert!(state.pending_delete_dissolve.borrow().is_some());
+                assert_eq!(source.opacity(), 0.0);
+                state.handle_background_file_operation(
+                    copy,
+                    &crate::app::BrowserEvent::OperationFailed {
+                        message: "Unrelated copy failure".into(),
+                        password_failure: None,
+                    },
+                );
+                assert!(state.pending_delete_dissolve.borrow().is_some());
+                assert_eq!(source.opacity(), 0.0);
+                fixture.view.browser().delete(
+                    vec![entry(Location::local(
+                        fixture.temp.path().join("other.txt"),
+                    ))],
+                    false,
+                );
+                let other_deletion = fixture
+                    .view
+                    .browser()
+                    .last_started_operation()
+                    .expect("other deletion started");
+                fixture.progress(other_deletion);
+                state.handle_background_file_operation(
+                    other_deletion,
+                    &crate::app::BrowserEvent::DeletionFinished { succeeded: true },
+                );
+                assert!(state.pending_delete_dissolve.borrow().is_some());
+                assert_eq!(source.opacity(), 0.0);
+                let event = match outcome {
+                    "success" => crate::app::BrowserEvent::DeletionFinished { succeeded: true },
+                    "unsuccessful" => {
+                        crate::app::BrowserEvent::DeletionFinished { succeeded: false }
+                    }
+                    "failed" => crate::app::BrowserEvent::OperationFailed {
+                        message: "Delete failed".into(),
+                        password_failure: None,
+                    },
+                    "cancelled" => crate::app::BrowserEvent::OperationCancelled {
+                        completed: 0,
+                        failed: 0,
+                        not_attempted: 1,
+                        affected_locations: Default::default(),
+                    },
+                    _ => crate::app::BrowserEvent::OperationCompletedWithErrors {
+                        message: "Partial deletion".into(),
+                        retryable_locations: Vec::new(),
+                        has_non_retryable_failures: true,
+                    },
+                };
+                state.handle_background_file_operation(deletion, &event);
+                assert!(state.pending_delete_dissolve.borrow().is_none());
+                if outcome == "success" {
+                    assert_eq!(card.title.text(), "Deletion complete");
+                    assert_eq!(source.opacity(), 0.0);
+                }
+                pump_until(|| source.opacity() == 1.0);
+                assert!(state.deferred_delete_empty_depth.get().is_none());
+            }
+        },
+    );
+}
+
+#[test]
 fn background_failure_preserves_an_exclusive_foreground_move() {
     crate::test_support::gtk_test(
         "ui::browser::progress::tests::minimization::background_failure_preserves_an_exclusive_foreground_move",
@@ -352,10 +474,8 @@ fn background_failure_preserves_an_exclusive_foreground_move() {
                     .is_some()
             });
             fixture.update(next, "moving.txt", 50);
-            assert!(
-                fixture.blur.imp().blurred.get(),
-                "foreground progress should retain modal blur"
-            );
+            let foreground_layer = crate::ui::window::visible_modal_layer(&fixture.window)
+                .expect("exclusive foreground progress remains modal");
             fixture.operations.emit(
                 first,
                 OperationEvent::TransferFailed {
@@ -364,6 +484,7 @@ fn background_failure_preserves_an_exclusive_foreground_move() {
                     completed_locations: Vec::new(),
                 },
             );
+            assert!(foreground_layer.parent().is_some());
             assert!(fixture.view.browser().is_current_operation(next));
             assert!(!fixture.operations.cancelled(next));
             assert_eq!(

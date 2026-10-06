@@ -21,6 +21,7 @@ fn a_completed_trash_operation_can_be_undone_once() {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     };
 
     browser.delete(vec![entry], false);
@@ -52,6 +53,7 @@ fn pending_trash_undo_reports_original_locations_until_claimed() {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     };
 
     browser.delete(vec![entry], false);
@@ -82,6 +84,7 @@ fn another_browser_can_undo_the_latest_trash_operation() {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     };
 
     deleting_browser.delete(vec![entry], false);
@@ -546,6 +549,7 @@ fn permanent_delete_preserves_the_previous_trash_undo() {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     };
     let permanently_deleted = FileEntry {
         location: Location::local("/fixture/draft.txt"),
@@ -844,6 +848,7 @@ fn failed_rename_undo_releases_its_claim_and_remains_retryable() {
     emit(OperationEvent::Failed {
         request_id,
         message: "occupied".to_owned(),
+        password_failure: None,
     });
 
     assert_eq!(pending_undo_entry(), Some(expected));
@@ -1570,6 +1575,7 @@ fn a_failed_undo_offers_no_redo() {
     emit(OperationEvent::Failed {
         request_id,
         message: "restore failed".into(),
+        password_failure: None,
     });
 
     assert_eq!(pending_redo_entry(), None);
@@ -1618,6 +1624,7 @@ fn a_failed_rename_undo_offers_no_redo() {
     emit(OperationEvent::Failed {
         request_id,
         message: "rename failed".into(),
+        password_failure: None,
     });
 
     assert_eq!(pending_redo_entry(), None);

@@ -33,6 +33,45 @@ fn bindings_initialize_deduplicate_and_release_destroyed_anchors() {
 }
 
 #[test]
+fn destroying_an_anchor_can_release_another_bound_anchor() {
+    gtk_test(
+        "ui::preferences::bindings::tests::destroying_an_anchor_can_release_another_bound_anchor",
+        || {
+            let manager = PreferenceManager::shared();
+            let owner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let dependent = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let dependent_weak = dependent.downgrade();
+            let calls = Rc::new(Cell::new(0));
+            let observed = calls.clone();
+            manager.bind_preference(
+                &dependent,
+                PreferenceManager::folder_peeking,
+                move |_, _| {
+                    observed.set(observed.get() + 1);
+                },
+            );
+            manager.bind_preference(
+                &owner,
+                PreferenceManager::folder_peeking,
+                move |_, value| {
+                    dependent.set_visible(value);
+                },
+            );
+            assert_eq!(calls.get(), 1);
+            drop(owner);
+            assert!(dependent_weak.upgrade().is_none());
+            assert_eq!(manager.listener_count(), 0);
+            manager.set_folder_peeking(true);
+            assert_eq!(
+                calls.get(),
+                1,
+                "destroyed bindings must not be called again"
+            );
+        },
+    );
+}
+
+#[test]
 fn failed_saves_still_apply_and_retry_without_repeating_notifications() {
     gtk_test(
         "ui::preferences::bindings::tests::failed_saves_still_apply_and_retry_without_repeating_notifications",

@@ -72,7 +72,7 @@ fn check_trash_and_restore_do_not_resurrect_removed_pins() {
     let restored = Rc::new(std::cell::Cell::new(false));
     let observed = restored.clone();
     browser.observe(move |event| {
-        if matches!(event, crate::app::BrowserEvent::RestorationFinished) {
+        if matches!(event, crate::app::BrowserEvent::RestorationFinished { .. }) {
             observed.set(true);
         }
     });

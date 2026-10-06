@@ -6,8 +6,9 @@
 //! names only on cancellation. The session validates and maps destination reports
 //! without scanning ahead, probing the filesystem or reserving pending names.
 //!
-//! Staging isolates conflict naming from the user's files. Unfinished sessions
-//! retain partial output even during decoder panic unwinding.
+//! Staging isolates conflict naming from the user's files. A password failure
+//! discards it, because the retry extracts the whole archive again. Unfinished
+//! sessions retain partial output even during decoder panic unwinding.
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
@@ -21,7 +22,7 @@ use std::{
 use crate::model::Location;
 
 use super::{
-    ArchiveError, COPY_BUF, archive_failed, check_archive_cancelled,
+    ArchiveError, COPY_BUF, archive_failed, archive_read_failed, check_archive_cancelled,
     destination::{
         ExtractNameResolver, ExtractionDestination, process_umask, sanitized_archive_path,
     },
@@ -275,9 +276,7 @@ impl<'a> ExtractionSession<'a> {
         let created = match content {
             MemberContent::Directory => {
                 staging.create_directories(&outpath)?;
-                if metadata != MemberMetadata::NONE {
-                    self.directories.push((outpath.clone(), metadata));
-                }
+                self.directories.push((outpath.clone(), metadata));
                 outpath
             }
             MemberContent::Symlink(target) => {
@@ -366,9 +365,10 @@ impl<'a> ExtractionSession<'a> {
                 let Some(staging) = staging else {
                     return Ok(ArchiveOutcome::Completed(None));
                 };
-                let (top_level, nested): (Vec<_>, Vec<_>) = std::mem::take(&mut self.directories)
-                    .into_iter()
-                    .partition(|(path, _)| path.components().count() == 1);
+                let (top_level, nested): (Vec<_>, Vec<_>) =
+                    merge_repeated_directories(std::mem::take(&mut self.directories))
+                        .into_iter()
+                        .partition(|(path, _)| path.components().count() == 1);
                 // Nested directories never move on their own during publication.
                 if let Err(error) = restore_directory_metadata(&staging.directory, nested) {
                     let kept =
@@ -446,6 +446,22 @@ impl<'a> ExtractionSession<'a> {
                     not_attempted,
                 })
             }
+            Err(
+                error @ (ArchiveError::PasswordRequired(_) | ArchiveError::IncorrectPassword(_)),
+            ) => {
+                let discarded = staging
+                    .as_ref()
+                    .map_or(Ok(()), |staging| directory.remove_staging(&staging.name));
+                // Output that cannot be discarded would make the retry take a
+                // numbered name, so report an ordinary failure instead.
+                match discarded {
+                    Ok(()) => Err(error),
+                    Err(removal) => Err(ArchiveError::Failed(failure_message(
+                        append_sentence(&error.to_string(), &removal),
+                        keep_or_remove(directory, staging.as_ref(), archive_name, self.has_content),
+                    ))),
+                }
+            }
             Err(ArchiveError::Failed(message)) => Err(ArchiveError::Failed(failure_message(
                 message,
                 keep_or_remove(directory, staging.as_ref(), archive_name, self.has_content),
@@ -476,6 +492,31 @@ fn failure_message(message: String, kept: Result<Option<String>, String>) -> Str
         Ok(None) => message,
         Err(error) => append_sentence(&message, &error),
     }
+}
+
+/// Restore each directory once: an earlier restrictive mode could block a later restore.
+fn merge_repeated_directories(
+    directories: Vec<(PathBuf, MemberMetadata)>,
+) -> Vec<(PathBuf, MemberMetadata)> {
+    let mut positions: HashMap<PathBuf, usize> = HashMap::new();
+    let mut merged: Vec<(PathBuf, MemberMetadata)> = Vec::new();
+    for (path, metadata) in directories {
+        match positions.get(&path) {
+            Some(&position) => {
+                let earlier = &mut merged[position].1;
+                *earlier = MemberMetadata {
+                    mode: metadata.mode.or(earlier.mode),
+                    modified: metadata.modified.or(earlier.modified),
+                };
+            }
+            None => {
+                positions.insert(path.clone(), merged.len());
+                merged.push((path, metadata));
+            }
+        }
+    }
+    merged.retain(|(_, metadata)| *metadata != MemberMetadata::NONE);
+    merged
 }
 
 /// Deepest-first restoration keeps ancestors traversable; rollback reverses that order.
@@ -552,7 +593,6 @@ fn staging_kept_message(error: &str, staging: &Staging) -> String {
     )
 }
 
-/// Backticks around filenames keep them out of the UI's password-retry heuristic.
 fn append_sentence(message: &str, sentence: &str) -> String {
     let separator = if message.ends_with(['.', '!', '?']) {
         " "
@@ -606,7 +646,7 @@ fn copy_member(
         };
         if allowed == 0 {
             let mut probe = [0u8; 1];
-            if reader.read(&mut probe).map_err(archive_failed)? == 0 {
+            if reader.read(&mut probe).map_err(archive_read_failed)? == 0 {
                 break;
             }
             return Err(match declared_size {
@@ -623,7 +663,7 @@ fn copy_member(
         let cap = buf
             .len()
             .min(usize::try_from(allowed).unwrap_or(usize::MAX));
-        let n = reader.read(&mut buf[..cap]).map_err(archive_failed)?;
+        let n = reader.read(&mut buf[..cap]).map_err(archive_read_failed)?;
         if n == 0 {
             break;
         }

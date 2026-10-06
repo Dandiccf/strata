@@ -235,6 +235,31 @@ fn coalescing_preserves_a_move_when_metadata_follows_it() {
 }
 
 #[test]
+fn hidden_monitor_changes_are_skipped_but_atomic_publication_stays_visible() {
+    let hidden = Location::local("/fixture/.strata-replacement-123");
+    let visible = Location::local("/fixture/report.pdf");
+
+    assert!(visible_monitor_change(PendingMonitorChange::Upsert(hidden.clone()), false,).is_none());
+    assert!(matches!(
+        visible_monitor_change(
+            PendingMonitorChange::Move {
+                from: hidden,
+                to: visible.clone(),
+            },
+            false,
+        ),
+        Some(PendingMonitorChange::Upsert(location)) if location == visible
+    ));
+    assert!(
+        visible_monitor_change(
+            PendingMonitorChange::Upsert(Location::local("/fixture/.env")),
+            true,
+        )
+        .is_some()
+    );
+}
+
+#[test]
 fn recent_monitor_events_rescan_without_querying_virtual_children() {
     let watched = Location::uri("recent:///");
     let child = Location::uri("recent:///virtual-child");
@@ -424,6 +449,61 @@ fn a_directory_reporting_changes_against_itself_is_not_its_own_child() {
         ),
         Some(child)
     );
+}
+
+#[test]
+fn sustained_native_monitor_bursts_flush_without_rescanning() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let directory = unique_fixture_root("monitor-burst");
+    fs::create_dir_all(&directory).expect("the fixture directory should be created");
+    let changes: Rc<RefCell<Vec<DirectoryChange>>> = Rc::new(RefCell::new(Vec::new()));
+    let collected = changes.clone();
+    let handle = LocalFileSource
+        .watch(
+            Location::local(&directory),
+            false,
+            Rc::new(move |change| collected.borrow_mut().push(change)),
+        )
+        .expect("the native location should be monitored");
+
+    for index in 0..1_000 {
+        fs::write(
+            directory.join(format!("file-{index:04}.txt")),
+            b"real contents",
+        )
+        .expect("the fixture file should be written");
+    }
+
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        while context.iteration(false) {}
+        let observed = changes.borrow();
+        assert!(
+            observed
+                .iter()
+                .all(|change| !matches!(change, DirectoryChange::Rescan)),
+            "a bounded native burst should stay incremental"
+        );
+        if observed
+            .iter()
+            .filter(|change| matches!(change, DirectoryChange::Upsert(_)))
+            .count()
+            == 1_000
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "all monitored entries should arrive"
+        );
+        drop(observed);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(handle);
+    fs::remove_dir_all(&directory).expect("the fixture directory should be removed");
 }
 
 #[test]
@@ -1895,4 +1975,174 @@ fn cancelled_media_details_are_not_cached_as_unavailable() {
     assert_eq!(update.image_dimensions, MetadataValue::Unknown);
     assert_eq!(update.duration_seconds, MetadataValue::Unknown);
     assert!(cached_icon_details_for_revisit(&path).is_none());
+}
+
+#[derive(Clone, Default)]
+struct FakeRemovalBackend {
+    calls: Rc<RefCell<Vec<String>>>,
+    outcomes: Rc<RefCell<HashMap<String, Result<(), String>>>>,
+    hold: Rc<Cell<bool>>,
+}
+
+impl FakeRemovalBackend {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn fail(&self, uri: &str, error: &str) {
+        self.outcomes
+            .borrow_mut()
+            .insert(uri.to_owned(), Err(error.to_owned()));
+    }
+}
+
+impl RecentRemovalBackend for FakeRemovalBackend {
+    fn delete(&self, uri: &str) -> RecentEnumerationFuture<Result<(), String>> {
+        self.calls.borrow_mut().push(uri.to_owned());
+        let hold = self.hold.clone();
+        let outcome = self.outcomes.borrow().get(uri).cloned().unwrap_or(Ok(()));
+        Box::pin(async move {
+            while hold.get() {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            outcome
+        })
+    }
+}
+
+fn drain_until(done: impl Fn() -> bool) {
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() && Instant::now() < deadline {
+        context.iteration(false);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        done(),
+        "the removal task did not complete within the deadline"
+    );
+}
+
+#[test]
+fn recent_removal_calls_delete_and_logs_success() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    let uri = "recent:///success".to_owned();
+
+    let output = capture_logs(|| {
+        recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+        drain_until(|| state.in_flight.borrow().is_empty());
+    });
+
+    assert_eq!(*backend.calls.borrow(), vec![uri.clone()]);
+    assert!(state.in_flight.borrow().is_empty());
+    assert!(output.contains("removed recent entry"));
+    assert!(output.contains(&uri));
+}
+
+#[test]
+fn recent_removal_failure_logs_a_warning_and_allows_retry() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let uri = "recent:///locked".to_owned();
+    backend.fail(&uri, "xbel is locked");
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+
+    let output = capture_logs(|| {
+        recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+        drain_until(|| state.in_flight.borrow().is_empty());
+    });
+
+    assert_eq!(*backend.calls.borrow(), vec![uri.clone()]);
+    assert!(output.contains("failed to remove recent entry"));
+    assert!(output.contains(&uri));
+    assert!(output.contains("xbel is locked"));
+    backend.outcomes.borrow_mut().remove(&uri);
+    recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+    drain_until(|| state.in_flight.borrow().is_empty());
+    assert_eq!(*backend.calls.borrow(), vec![uri.clone(), uri]);
+}
+
+#[test]
+fn rapid_double_invocation_on_the_same_uri_does_not_issue_two_concurrent_deletes() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    backend.hold.set(true);
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    let uri = "recent:///double-click".to_owned();
+
+    recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+    drain_until(|| !backend.calls.borrow().is_empty());
+    assert_eq!(
+        backend.calls.borrow().len(),
+        1,
+        "the first removal should have called delete() once"
+    );
+
+    recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+    glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(10)));
+
+    assert_eq!(
+        backend.calls.borrow().len(),
+        1,
+        "a second removal for an in-flight URI must not call delete() again"
+    );
+    assert!(state.in_flight.borrow().contains(&uri));
+    backend.hold.set(false);
+    drain_until(|| state.in_flight.borrow().is_empty());
+}
+
+#[test]
+fn multi_selection_removal_issues_one_delete_per_uri() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    let uris = vec![
+        "recent:///one".to_owned(),
+        "recent:///two".to_owned(),
+        "recent:///three".to_owned(),
+    ];
+
+    recent_remove_entries_with_backend(&state, &backend_dyn, uris.clone());
+    drain_until(|| state.in_flight.borrow().is_empty());
+
+    let mut called = backend.calls.borrow().clone();
+    called.sort();
+    let mut expected = uris;
+    expected.sort();
+    assert_eq!(called, expected);
+}
+
+#[test]
+fn recent_removal_rejects_real_file_uris() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT.lock().expect("async test lock");
+    let fixture = tempfile::NamedTempFile::new().expect("target file");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    recent_remove_entries_with_backend(
+        &state,
+        &backend_dyn,
+        [
+            gio::File::for_path(fixture.path()).uri().to_string(),
+            "smb://server/share/file".to_owned(),
+        ],
+    );
+    glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(10)));
+    assert!(backend.calls.borrow().is_empty());
+    assert!(fixture.path().exists());
+    assert!(state.in_flight.borrow().is_empty());
 }

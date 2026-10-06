@@ -31,6 +31,7 @@ fn named_entry(path: &str, name: &str) -> FileEntry {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -702,6 +703,28 @@ fn a_rename_rebases_the_pending_selection_during_a_refresh() {
 }
 
 #[test]
+fn a_rename_rebases_every_pending_reveal_target() {
+    let mut state = NavigationState::default();
+    state.navigate(location("/home/old"), RequestId(1));
+    state.select_locations_on_load(0, vec![location("/home/old/b"), location("/home/old/a")]);
+
+    state.relocate_column(0, location("/home/new"), RequestId(2));
+    state.install_snapshot(
+        RequestId(2),
+        vec![
+            named_entry("/home/new/a", "a"),
+            named_entry("/home/new/b", "b"),
+        ],
+    );
+
+    assert_eq!(state.selected_positions(0), [0, 1]);
+    assert_eq!(
+        state.focused_entry().expect("focused entry").2.location,
+        location("/home/new/b")
+    );
+}
+
+#[test]
 fn external_moves_rebase_open_descendant_locations() {
     let mut state = NavigationState::default();
     state.navigate(location("/home"), RequestId(1));
@@ -973,6 +996,7 @@ fn hidden_entry(path: &str, name: &str) -> FileEntry {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -1556,6 +1580,7 @@ fn file_entry(path: &str, name: &str) -> FileEntry {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -1839,6 +1864,7 @@ fn typed_entry(name: &str, kind: EntryKind) -> FileEntry {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -2087,6 +2113,24 @@ fn space_adds_a_load_cursor_then_moves_without_rewriting_the_fill() {
             .iter()
             .all(|entry| entry.display_name != "charlie")
     );
+}
+
+#[test]
+fn compact_select_all_excludes_entries_that_arrive_later() {
+    let mut state = NavigationState::default();
+    listing_without_a_load_cursor(&mut state);
+
+    assert_eq!(state.select_all(0), Some(2));
+    assert_eq!(state.selected_count(), 3);
+    state.apply_batch(
+        RequestId(1),
+        vec![named_entry("/fixture/aardvark", "aardvark")],
+    );
+
+    assert_eq!(state.selected_count(), 3);
+    assert_eq!(state.selected_positions(0), [1, 2, 3]);
+    assert_eq!(state.toggle_cursor_fill(), CursorToggle::Removed);
+    assert_eq!(state.selected_positions(0), [1, 2]);
 }
 
 #[test]

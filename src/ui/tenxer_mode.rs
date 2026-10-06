@@ -92,6 +92,7 @@ pub(crate) enum Chord {
     Copy,
     Sort,
     Action,
+    Tabs,
 }
 
 impl Chord {
@@ -101,6 +102,7 @@ impl Chord {
             Self::Copy => "c-",
             Self::Sort => ",-",
             Self::Action => ";-",
+            Self::Tabs => "t-",
         }
     }
 
@@ -148,6 +150,12 @@ impl Chord {
                 ("Shift", "Reverse"),
             ],
             Self::Action => &[],
+            Self::Tabs => &[
+                ("n", "New tab"),
+                ("x", "Close tab"),
+                ("t", "Previous tab"),
+                ("1–9 / 0", "Select tab"),
+            ],
         }
     }
 }

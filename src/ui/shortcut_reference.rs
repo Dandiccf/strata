@@ -55,6 +55,7 @@ pub(crate) enum ContextHint {
     MoveTo,
     CopyTo,
     Restore,
+    RemoveFromRecent,
     Terminal,
     Trash,
     PermanentDelete,
@@ -501,7 +502,14 @@ const DEFAULT_TOOLS: &[(&str, &str)] = &[
     ("Ctrl+Shift+K", "Jump to a recent folder"),
     ("Alt+Enter", "Open containing folder (global search)"),
     ("Ctrl+L", "Edit the location"),
-    ("Ctrl+T", "Open a terminal"),
+    ("Ctrl+T", "New tab"),
+    ("Ctrl+W", "Close the active tab"),
+    ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+    (
+        "Ctrl+Shift+1–9 / 0",
+        "Select a tab (hold Ctrl+Shift for numbers)",
+    ),
+    ("Ctrl+Alt+T", "Open a terminal"),
     ("F5", "Refresh"),
     ("Ctrl+H / Ctrl+.", "Show or hide hidden files"),
     ("Ctrl+1 / 2 / 3", "Switch to Columns, Icons, or List"),
@@ -560,6 +568,16 @@ fn tenxer_tools(mode: BrowserMode, chooser: bool) -> Vec<(&'static str, &'static
     ];
     if !chooser {
         shortcuts.extend_from_slice(&[
+            ("t n / t x", "New / close tab"),
+            ("t t", "Previous tab"),
+            ("t 1–9 / t 0", "Select tab 1–9 / 10"),
+            ("Ctrl+T", "New tab"),
+            ("Ctrl+W", "Close the active tab"),
+            ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+            (
+                "Ctrl+Shift+1–9 / 0",
+                "Select a tab (hold Ctrl+Shift for numbers)",
+            ),
             ("Ctrl+K", "Open global search"),
             ("Alt+Enter", "Open containing folder (global search)"),
         ]);
@@ -615,8 +633,11 @@ fn default_hint(hint: ContextHint, type_to_search: bool) -> &'static str {
         ContextHint::Copy => "Ctrl+C",
         ContextHint::Duplicate => "Ctrl+D",
         ContextHint::Paste => "Ctrl+V",
-        ContextHint::MoveTo | ContextHint::CopyTo | ContextHint::Restore => "",
-        ContextHint::Terminal => "Ctrl+T",
+        ContextHint::MoveTo
+        | ContextHint::CopyTo
+        | ContextHint::Restore
+        | ContextHint::RemoveFromRecent => "",
+        ContextHint::Terminal => "Ctrl+Alt+T",
         ContextHint::Trash => "Del",
         ContextHint::PermanentDelete => "Shift+Del",
         ContextHint::Open => "↵",

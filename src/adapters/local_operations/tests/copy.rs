@@ -3,6 +3,52 @@
 use super::*;
 
 #[test]
+fn nested_copy_shares_one_worker_budget_across_subdirectories() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let root = tempfile::tempdir()?;
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    for folder in 0..9 {
+        let directory = source.join(folder.to_string());
+        fs::create_dir_all(&directory)?;
+        for file in 0..9 {
+            fs::write(directory.join(file.to_string()), format!("{folder}/{file}"))?;
+        }
+    }
+    COPY_ACTIVITY.with(|activity| activity.set((0, 0)));
+    glib::MainContext::default().block_on(super::super::copy_recursively_local(
+        Arc::new(open_local_parent_directory(root.path())?),
+        OsString::from("source"),
+        gio::File::for_path(&target),
+        super::super::CopyOptions {
+            overwrite_existing: false,
+            fat_family: false,
+            workers: 2,
+        },
+        gio::Cancellable::new(),
+        None,
+        None,
+    ))?;
+    let (active, peak) = COPY_ACTIVITY.with(Cell::get);
+    assert_eq!(active, 0, "all file copies must settle before completion");
+    assert!(
+        peak <= 2,
+        "nested directories exceeded the copy budget: {peak}"
+    );
+    for folder in 0..9 {
+        for file in 0..9 {
+            assert_eq!(
+                fs::read_to_string(target.join(format!("{folder}/{file}")))?,
+                format!("{folder}/{file}")
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn recursive_copy_preserves_nested_directory_contents() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
@@ -382,12 +428,17 @@ fn copying_a_tree_with_a_named_pipe_fails_instead_of_blocking() -> Result<(), Bo
     let source = root.path().join("source");
     let target = root.path().join("target");
     fs::create_dir_all(&source)?;
-    fs::write(source.join("before.txt"), b"before")?;
     rustix::fs::mkfifoat(
         rustix::fs::CWD,
-        source.join("pipe"),
+        source.join("00-pipe"),
         rustix::fs::Mode::from_bits_truncate(0o600),
     )?;
+    for index in 1..16 {
+        fs::write(
+            source.join(format!("{index:02}-file.txt")),
+            index.to_string(),
+        )?;
+    }
 
     let result = glib::MainContext::default().block_on(copy_recursively(
         gio::File::for_path(&source),
@@ -402,7 +453,15 @@ fn copying_a_tree_with_a_named_pipe_fails_instead_of_blocking() -> Result<(), Bo
         error.to_string().contains("pipe"),
         "the error should name the entry: {error}"
     );
-    assert!(!target.join("pipe").exists());
+    assert!(!target.join("00-pipe").exists());
+    let entries_after_error = fs::read_dir(&target)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<HashSet<_>, _>>()?;
+    glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(20)));
+    let entries_after_settling = fs::read_dir(&target)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<HashSet<_>, _>>()?;
+    assert_eq!(entries_after_settling, entries_after_error);
     fs::remove_dir_all(&target)?;
     let staged = glib::MainContext::default().block_on(copy_new_recursively(
         gio::File::for_path(&source),

@@ -47,14 +47,38 @@ pub(super) struct Bindings {
     pub history: Rc<NavigationHistory>,
 }
 
+#[cfg(test)]
 pub(super) fn install(window: &impl IsA<gtk::Window>, sidebar: &SidebarView, bindings: Bindings) {
+    let _ = install_on(
+        window,
+        window.upcast_ref::<gtk::Window>(),
+        sidebar,
+        bindings,
+    );
+}
+
+pub(super) fn install_on(
+    window: &impl IsA<gtk::Window>,
+    root: &impl IsA<gtk::Widget>,
+    sidebar: &SidebarView,
+    bindings: Bindings,
+) -> Vec<gtk::EventController> {
     let window = window.upcast_ref::<gtk::Window>();
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_browser = Rc::downgrade(&bindings.view.browser());
     let preferences = bindings.type_to_search.preferences.clone();
     let dispatcher = Dispatcher::bind(window, sidebar, bindings, None);
+    let key_root = root.as_ref().downgrade();
+    let tab_scoped = !root.as_ref().is::<gtk::Window>();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if !key_root
+            .upgrade()
+            .is_some_and(|root| root.is_mapped() && root.can_target())
+            || (tab_scoped && super::composition::is_tab_shortcut(key, modifiers))
+        {
+            return Propagation::Proceed;
+        }
         let Some(browser) = weak_browser.upgrade() else {
             return Propagation::Proceed;
         };
@@ -71,7 +95,14 @@ pub(super) fn install(window: &impl IsA<gtk::Window>, sidebar: &SidebarView, bin
     wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
     let window_for_wheel = window.downgrade();
     let zoom = Rc::new(TextZoomScroll::default());
+    let wheel_root = root.as_ref().downgrade();
     wheel.connect_scroll(move |controller, _, dy| {
+        if !wheel_root
+            .upgrade()
+            .is_some_and(|root| root.is_mapped() && root.can_target())
+        {
+            return Propagation::Proceed;
+        }
         let Some(window) = window_for_wheel.upgrade() else {
             return Propagation::Proceed;
         };
@@ -88,15 +119,26 @@ pub(super) fn install(window: &impl IsA<gtk::Window>, sidebar: &SidebarView, bin
         )
     });
     window.add_controller(wheel.clone());
-    release_controllers_on_close(window, &[keys.upcast(), wheel.upcast()]);
+    let controllers = vec![keys.upcast(), wheel.upcast()];
+    release_controllers_on_close(window, root, &controllers);
+    controllers
 }
 
 // Key controllers retain the dispatcher and its window; unrealize breaks the cycle.
-fn release_controllers_on_close(window: &gtk::Window, controllers: &[gtk::EventController]) {
+pub(super) fn release_controllers_on_close(
+    window: &gtk::Window,
+    root: &impl IsA<gtk::Widget>,
+    controllers: &[gtk::EventController],
+) {
     let controllers: Vec<_> = controllers.iter().map(ObjectExt::downgrade).collect();
-    window.connect_unrealize(move |window| {
-        for controller in controllers.iter().filter_map(glib::WeakRef::upgrade) {
-            window.remove_controller(&controller);
+    let window = window.downgrade();
+    root.connect_unrealize(move |_| {
+        if let Some(window) = window.upgrade() {
+            for controller in controllers.iter().filter_map(glib::WeakRef::upgrade) {
+                if controller.widget().is_some() {
+                    window.remove_controller(&controller);
+                }
+            }
         }
     });
 }
@@ -136,7 +178,7 @@ impl ChooserKeys {
 
 /// Leaving 10xer mode ends preview key ownership but keeps the drawer open.
 fn release_preview_keys_on_mode_exit(
-    window: &gtk::Window,
+    window: &gtk::Widget,
     preview: &PreviewDrawer,
     browser: &std::rc::Weak<Browser>,
 ) {
@@ -236,12 +278,15 @@ fn bind_candidate_prompts(dispatcher: &Dispatcher) {
         }
     });
     let shortcuts = dispatcher.shortcuts.clone();
-    let view = dispatcher.view.clone();
+    let view = dispatcher.view.downgrade();
     let targets = dispatcher.destination_targets.clone();
     let revision = dispatcher.destination_revision.clone();
     dispatcher
         .shortcuts
         .connect_candidate_activated(move |path| {
+            let Some(view) = view.upgrade() else {
+                return;
+            };
             let Some(kind) = shortcuts.open_prompt_kind() else {
                 return;
             };
@@ -260,7 +305,7 @@ fn bind_candidate_prompts(dispatcher: &Dispatcher) {
 }
 
 fn clear_find_on_mode_exit(
-    window: &gtk::Window,
+    window: &gtk::Widget,
     dispatcher: &Dispatcher,
     browser: &std::rc::Weak<Browser>,
 ) {
@@ -284,7 +329,8 @@ fn clear_find_on_mode_exit(
             let focus = window.root().and_then(|root| root.focus());
             let prompt_focused = shortcuts.prompt_has_focus();
             shortcuts.dismiss_prompt();
-            if (prompt_focused || focus.is_none())
+            if window.is_mapped()
+                && (prompt_focused || focus.is_none())
                 && let Some(browser) = browser.upgrade()
             {
                 browser.focus_active();
@@ -541,7 +587,7 @@ impl Dispatcher {
         let cancel_on_destroy = dispatcher.shortcuts.clone();
         let destinations_on_destroy = dispatcher.destinations.clone();
         let open_with_on_destroy = dispatcher.open_with.clone();
-        window.connect_unrealize(move |_| {
+        dispatcher.view.widget().connect_unrealize(move |_| {
             cancel_on_destroy.cancel_chord();
             destinations_on_destroy.cancel();
             open_with_on_destroy.invalidate();
@@ -556,8 +602,12 @@ impl Dispatcher {
         });
         bind_prompt_hints(&dispatcher);
         bind_candidate_prompts(&dispatcher);
-        release_preview_keys_on_mode_exit(window, &dispatcher.preview, &weak_browser);
-        clear_find_on_mode_exit(window, &dispatcher, &weak_browser);
+        release_preview_keys_on_mode_exit(
+            &dispatcher.view.widget(),
+            &dispatcher.preview,
+            &weak_browser,
+        );
+        clear_find_on_mode_exit(&dispatcher.view.widget(), &dispatcher, &weak_browser);
         bind_footer_filter(&dispatcher);
         dispatcher
     }

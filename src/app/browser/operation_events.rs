@@ -14,9 +14,9 @@ mod background;
 pub(super) use background::BackgroundOperation;
 
 use super::{
-    Browser, BrowserEvent, MAX_INCREMENTAL_OPERATION_UPDATES, MergeUndoState, UndoEntry,
-    completed_replay_items, finish_replay, mark_replay_item_completed, move_records,
-    push_pending_redo, push_pending_undo, push_regenerated_undo,
+    Browser, BrowserEvent, MergeUndoState, UndoEntry, completed_replay_items, finish_replay,
+    mark_replay_item_completed, move_records, push_pending_redo, push_pending_undo,
+    push_regenerated_undo,
 };
 
 struct OperationContext {
@@ -156,15 +156,15 @@ impl Browser {
         })
     }
 
-    fn publish_operation_progress(&self, event: &OperationEvent) -> bool {
+    fn publish_operation_progress(self: &Rc<Self>, event: &OperationEvent) -> bool {
         let progress = match event {
             OperationEvent::DeleteProgress {
                 completed,
                 total,
-                deleted_location,
+                deleted_locations,
                 ..
             } => {
-                if let Some(location) = deleted_location {
+                for location in deleted_locations {
                     self.mark_merged_undo_item_completed(location);
                 }
                 BrowserEvent::DeletionProgress {
@@ -230,6 +230,14 @@ impl Browser {
             },
             _ => return false,
         };
+        if matches!(
+            event,
+            OperationEvent::DeleteProgress { .. }
+                | OperationEvent::TransferProgress { .. }
+                | OperationEvent::RestoreProgress { .. }
+        ) {
+            self.flush_visible_operation_changes();
+        }
         self.emit(progress);
         true
     }
@@ -278,7 +286,14 @@ impl Browser {
             self.rename_operation.set(None);
         }
         let mut completion = OperationCompletion::take(self);
-        completion.file_operation_refreshed = self.flush_operation_changes(&completion, &event);
+        completion.file_operation_refreshed = self.flush_operation_changes(&completion);
+        let mut refresh_depths = self
+            .operation_rescan_depths
+            .take()
+            .into_iter()
+            .collect::<Vec<_>>();
+        refresh_depths.sort_unstable();
+        completion.file_operation_refreshed |= !refresh_depths.is_empty();
         // Flush observers run before the undo claim is consumed, as on the provider path.
         let undoing = self.undo_claim.take();
         if let Some((generation, entry)) = &undoing {
@@ -297,26 +312,26 @@ impl Browser {
             });
         }
         if completion.restoring {
-            self.emit(BrowserEvent::RestorationFinished);
+            self.emit(BrowserEvent::RestorationFinished {
+                succeeded: matches!(&event, OperationEvent::Restored { .. }),
+            });
         }
         let load = self.operation_load.take();
         drop(load);
         self.publish_operation_outcome(context, completion, event);
+        if !refresh_depths.is_empty() {
+            self.emit(BrowserEvent::OperationRefreshRequired {
+                depths: refresh_depths,
+            });
+        }
     }
 
-    fn flush_operation_changes(
-        self: &Rc<Self>,
-        completion: &OperationCompletion,
-        event: &OperationEvent,
-    ) -> bool {
-        if !completion.deleting && !completion.restoring {
+    fn flush_operation_changes(self: &Rc<Self>, completion: &OperationCompletion) -> bool {
+        if !completion.deleting && !completion.restoring && completion.moving.is_none() {
             return false;
         }
         let changes = self.deferred_file_operation_changes.take();
-        self.flush_deferred_file_operation_changes(
-            changes,
-            completed_change_count(event) > MAX_INCREMENTAL_OPERATION_UPDATES,
-        )
+        self.flush_deferred_file_operation_changes(changes, false)
     }
 
     fn finish_transfer(
@@ -377,12 +392,20 @@ impl Browser {
                     message,
                 });
             }
-            OperationEvent::Failed { message, .. } => {
-                self.emit(BrowserEvent::OperationFailed { message })
-            }
+            OperationEvent::Failed {
+                message,
+                password_failure,
+                ..
+            } => self.emit(BrowserEvent::OperationFailed {
+                message,
+                password_failure,
+            }),
             OperationEvent::TransferFailed { message, .. } => {
                 self.refresh_columns_at_many(&context.refresh_locations);
-                self.emit(BrowserEvent::OperationFailed { message });
+                self.emit(BrowserEvent::OperationFailed {
+                    message,
+                    password_failure: None,
+                });
             }
             OperationEvent::CompletedWithErrors {
                 deleted_locations,
@@ -589,22 +612,6 @@ fn operation_event_id(event: &OperationEvent) -> OperationRequestId {
         | OperationEvent::ArchiveStarted { request_id, .. }
         | OperationEvent::Cancelled { request_id, .. }
         | OperationEvent::ArchiveProgress { request_id, .. } => *request_id,
-    }
-}
-
-fn completed_change_count(event: &OperationEvent) -> usize {
-    match event {
-        OperationEvent::Deleted { locations, .. } | OperationEvent::Restored { locations, .. } => {
-            locations.len()
-        }
-        OperationEvent::CompletedWithErrors {
-            deleted_locations, ..
-        } => deleted_locations.len(),
-        OperationEvent::RestoreCompletedWithErrors {
-            restored_locations, ..
-        } => restored_locations.len(),
-        OperationEvent::Cancelled { result, .. } => result.completed.len(),
-        _ => 0,
     }
 }
 

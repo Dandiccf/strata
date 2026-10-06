@@ -634,11 +634,18 @@ impl PreviewState {
             }
             let manual = self.sizing.manual_width.get();
             self.slot.set_visible(true);
-            self.slot
-                .set_width_request(geometry.empty_slot_minimum(manual.is_some()));
-            split.set_resize_start_child(true);
-            split.set_resize_end_child(false);
-            split.set_position(geometry.empty_slot_position(manual));
+            let position = geometry.empty_slot_position(manual);
+            let slot_fills_free_space =
+                manual.is_none() && position == geometry.occupied.saturating_add(geometry.trailing);
+            // A stale minimum would over-allocate the slot for one shrinking frame.
+            self.slot.set_width_request(if slot_fills_free_space {
+                0
+            } else {
+                geometry.empty_slot_minimum(manual.is_some())
+            });
+            split.set_resize_start_child(!slot_fills_free_space);
+            split.set_resize_end_child(slot_fills_free_space);
+            split.set_position(position);
             return;
         }
         self.slot.set_width_request(0);
@@ -663,15 +670,23 @@ impl PreviewState {
         if self.animating.get() || self.sizing.resizing.get() {
             return;
         }
-        split.set_resize_start_child(true);
-        split.set_resize_end_child(false);
+        // GTK allocates after this tick; free-space previews must absorb window
+        // growth instead of correcting the browser's divider on the next frame.
+        let manual = self.sizing.manual_width.get();
+        let position = geometry.position(manual);
+        let preview_fills_free_space =
+            geometry.columns && manual.is_none() && position == geometry.occupied;
+        split.set_resize_start_child(!preview_fills_free_space);
+        split.set_resize_end_child(preview_fills_free_space);
         let restored = self.sizing.suspended.replace(false);
         if restored || !self.revealer.reveals_child() {
             self.show_panel();
         }
-        let manual = self.sizing.manual_width.get();
-        let minimum = geometry.minimum_width(manual.is_some());
-        let position = geometry.position(manual);
+        let minimum = if preview_fills_free_space {
+            0
+        } else {
+            geometry.minimum_width(manual.is_some())
+        };
         if self.pane.width_request() != minimum || split.position() != position {
             self.pane.set_width_request(minimum);
             split.set_position(position);

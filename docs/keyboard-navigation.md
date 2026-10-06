@@ -8,6 +8,31 @@ Columns have three independent signals:
 
 The destination column has an accent rule across its header, including when the directory is empty. Columns no longer reserve a separate bottom margin for the horizontal scrollbar.
 
+## Browser tabs
+
+In regular and 10xer modes, **Ctrl+T** opens a tab at the active location,
+**Ctrl+W** closes the active tab, and **Ctrl+Tab / Ctrl+Shift+Tab** cycles tabs.
+Hold **Ctrl+Shift** to display numbers beside the first ten labels; press
+**Ctrl+Shift+1–9** to select tabs 1–9 or **Ctrl+Shift+0** for tab 10.
+In 10xer mode, **t**, then **n** creates a tab, **t**, then **x** closes it,
+and **t**, then **1–9 / 0** selects tabs 1–10. **t**, then **t** selects the
+previous tab in strip order, wrapping from first to last. Escape cancels a pending chord.
+The last tab's close shortcut closes the window.
+The regular-mode terminal shortcut is **Ctrl+Alt+T**; 10xer keeps **;**, then **t**.
+
+Each tab retains its location, selection, navigation history, preview and search
+state. Tabs are in-memory only. Appearance preferences and the clipboard remain
+shared. File operations prevent closing their tab or window until they finish
+or are cancelled.
+
+The Material-style strip appears when there is more than one tab. The plus and
+window-close controls move into it and return to the normal header when only
+one tab remains. Scroll the strip horizontally (or use the wheel) when it
+outgrows the window; selecting a tab brings it into view without a scrollbar.
+Drag a tab label to reorder tabs. Drop files on a tab to transfer into its
+current directory, or hover there during a file drag to switch tabs and choose
+a folder in its listing. Existing copy/move modifiers and conflict handling apply.
+
 ## Input precedence
 
 The last navigation input determines the destination of Ctrl+V:
@@ -40,6 +65,10 @@ navigation continues from the restored row. Entries are matched by location,
 not their previous row numbers; deleted entries are not selected accidentally.
 This is temporary browsing state, not a saved preference. New input in the file view
 cancels an in-progress restoration.
+
+A navigation that names a target — a typed file path, a Ctrl+K result opened with
+Enter or Alt+Enter, Open file location, or an `org.freedesktop.FileManager1`
+request — selects that target instead of restoring the remembered position.
 
 ## Creating files and folders
 

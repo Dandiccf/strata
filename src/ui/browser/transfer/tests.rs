@@ -119,6 +119,7 @@ fn transfer_entry(path: &Path) -> FileEntry {
         child_count: crate::model::MetadataValue::Unknown,
         duration_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: false,
+        recent_uri: None,
     }
 }
 
@@ -257,6 +258,7 @@ fn duplicate_transfer_uses_the_selected_entries_parent() {
         image_dimensions: crate::model::MetadataValue::Unknown,
         child_count: crate::model::MetadataValue::Unknown,
         duration_seconds: crate::model::MetadataValue::Unknown,
+        recent_uri: None,
     };
     let first = entry("/fixture/selected/first.txt");
     let second = entry("/fixture/selected/second.txt");
@@ -307,6 +309,17 @@ fn transfer_collisions_detect_existing_destination_items() -> Result<(), Box<dyn
     assert!(!collision.mergeable, "a file collision cannot merge");
 
     std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn collision_candidates_include_case_only_name_matches() -> Result<(), Box<dyn std::error::Error>> {
+    let destination = tempfile::tempdir()?;
+    std::fs::write(destination.path().join("photo.jpg"), b"old")?;
+
+    let candidates = destination_name_candidates(destination.path()).expect("directory listing");
+
+    assert!(candidates.contains(&destination_name_key(std::ffi::OsStr::new("PHOTO.JPG"))));
     Ok(())
 }
 
@@ -378,7 +391,7 @@ fn start_transfer_skips_noops_before_emitting_progress() {
                     crate::app::BrowserEvent::TransferFinished { .. } => {
                         observed_finished.set(true);
                     }
-                    crate::app::BrowserEvent::OperationFailed { message } => {
+                    crate::app::BrowserEvent::OperationFailed { message, .. } => {
                         panic!("transfer failed: {message}");
                     }
                     _ => {}
@@ -1763,6 +1776,141 @@ fn normal_copy_and_move_to_keep_home_navigation_creation_and_reveal() {
                 view.browser().clear_observer();
                 window.destroy();
             }
+        },
+    );
+}
+
+#[test]
+fn cancelling_an_operation_keeps_the_live_local_listing_visible() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::cancelling_an_operation_keeps_the_live_local_listing_visible",
+        || {
+            let fixture = tempfile::tempdir().expect("cancelled transfer fixture");
+            std::fs::write(fixture.path().join("copied.txt"), b"copied").expect("copied fixture");
+            let root = Location::local(fixture.path());
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.navigate_location(root.clone());
+            wait_until(
+                || {
+                    view.browser()
+                        .column_snapshot(0)
+                        .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 1)
+                },
+                "the local listing",
+            );
+            let request = view.browser().column_request_id(0).expect("loaded request");
+
+            view.state
+                .handle(&crate::app::BrowserEvent::OperationCancelled {
+                    completed: 1,
+                    failed: 0,
+                    not_attempted: 1,
+                    affected_locations: std::collections::HashSet::from([root]),
+                });
+
+            assert_eq!(view.browser().column_request_id(0), Some(request));
+            let snapshot = view.browser().column_snapshot(0).expect("visible listing");
+            assert!(!snapshot.loading);
+            assert_eq!(snapshot.count, 1);
+        },
+    );
+}
+
+#[test]
+fn transfer_reveal_waits_for_the_live_monitor_instead_of_reloading() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::transfer_reveal_waits_for_the_live_monitor_instead_of_reloading",
+        || {
+            let fixture = tempfile::tempdir().expect("transfer reveal fixture");
+            let destination = Location::local(fixture.path());
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.navigate_location(destination.clone());
+            wait_until(
+                || {
+                    view.browser()
+                        .column_snapshot(0)
+                        .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 0)
+                },
+                "the empty local destination",
+            );
+            let request = view.browser().column_request_id(0).expect("loaded request");
+            let first = fixture.path().join("first.txt");
+            let second = fixture.path().join("second.txt");
+            let selected_locations = || {
+                view.browser()
+                    .selected_entries()
+                    .into_iter()
+                    .map(|entry| entry.location)
+                    .collect::<Vec<_>>()
+            };
+            view.state
+                .handle(&crate::app::BrowserEvent::TransferReveal {
+                    destination,
+                    locations: vec![Location::local(&first), Location::local(&second)],
+                });
+
+            std::fs::write(&first, b"first").expect("first copied fixture");
+            wait_until(
+                || selected_locations() == [Location::local(&first)],
+                "the first monitor update to select its target",
+            );
+            assert!(view.state.pending_location_selection.borrow().is_some());
+            std::fs::write(&second, b"second").expect("second copied fixture");
+            wait_until(
+                || selected_locations() == [Location::local(&first), Location::local(&second)],
+                "both transferred targets to be selected",
+            );
+            assert!(view.state.pending_location_selection.borrow().is_none());
+            assert_eq!(view.browser().column_request_id(0), Some(request));
+        },
+    );
+}
+
+#[test]
+fn revealing_an_already_open_local_destination_keeps_its_live_listing() {
+    crate::test_support::gtk_test(
+        "ui::browser::transfer::tests::revealing_an_already_open_local_destination_keeps_its_live_listing",
+        || {
+            let fixture = tempfile::tempdir().expect("transfer reveal fixture");
+            let copied = fixture.path().join("copied.txt");
+            std::fs::write(&copied, b"copied").expect("copied fixture");
+            let destination = Location::local(fixture.path());
+            let view = crate::ui::browser::BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                crate::ui::browser::PeekBehavior::default(),
+            );
+            view.navigate_location(destination.clone());
+            wait_until(
+                || {
+                    view.browser()
+                        .column_snapshot(0)
+                        .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 1)
+                },
+                "the local destination listing",
+            );
+            let request = view.browser().column_request_id(0).expect("loaded request");
+
+            view.state
+                .handle(&crate::app::BrowserEvent::TransferReveal {
+                    destination,
+                    locations: vec![Location::local(&copied)],
+                });
+
+            assert_eq!(view.browser().column_request_id(0), Some(request));
+            assert_eq!(
+                view.browser()
+                    .selected_entries()
+                    .into_iter()
+                    .map(|entry| entry.location)
+                    .collect::<Vec<_>>(),
+                [Location::local(copied)]
+            );
         },
     );
 }

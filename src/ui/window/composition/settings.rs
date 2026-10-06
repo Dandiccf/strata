@@ -35,7 +35,7 @@ pub(super) fn install(
     let guard = settings::install_guard();
     let notice = bind_update_notice(window, &content.sidebar, &guard);
     settings::register_update_notice(&notice);
-    bind_update_notice_preferences(window, preferences, &notice);
+    bind_update_notice_preferences(&content.overlay, preferences, &notice);
     let launcher = Rc::new(SettingsLauncher {
         layer: RefCell::new(None),
         button: content.header.settings.clone(),
@@ -46,21 +46,32 @@ pub(super) fn install(
         guard,
         shortcuts: content.footer.shortcuts.clone(),
     });
-    let clicked_settings = launcher.clone();
-    content
-        .header
-        .settings
-        .connect_clicked(move |_| clicked_settings.show());
+    let clicked_settings = Rc::downgrade(&launcher);
+    content.header.settings.connect_clicked(move |_| {
+        if let Some(launcher) = clicked_settings.upgrade() {
+            launcher.show();
+        }
+    });
     let shortcut = gtk::EventControllerKey::new();
+    let active_root = content.overlay.downgrade();
     shortcut.connect_key_pressed(move |_, key, _, modifiers| {
-        if key != gtk::gdk::Key::comma || !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+        if !active_root.upgrade().is_some_and(|root| root.is_mapped())
+            || key != gtk::gdk::Key::comma
+            || !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
         {
             return glib::Propagation::Proceed;
         }
         launcher.show();
         glib::Propagation::Stop
     });
-    window.add_controller(shortcut);
+    window.add_controller(shortcut.clone());
+    let controller: gtk::EventController = shortcut.upcast();
+    super::super::keyboard::release_controllers_on_close(
+        window.upcast_ref(),
+        &content.overlay,
+        std::slice::from_ref(&controller),
+    );
+    content.key_controllers.borrow_mut().push(controller);
     notice
 }
 

@@ -104,7 +104,8 @@ headerbar > windowhandle > box {
 }
 
 headerbar button,
-headerbar menubutton {
+headerbar menubutton,
+button.header-action {
   margin-top: 0;
   margin-bottom: 0;
 }
@@ -126,8 +127,9 @@ headerbar .sidebar-toggle {
 }
 
 headerbar .sidebar-toggle,
-headerbar button.header-action,
-headerbar menubutton.header-action > button {
+button.header-action,
+headerbar menubutton.header-action > button,
+.tab-close {
   background: transparent;
   background-image: none;
   border: none;
@@ -140,16 +142,17 @@ headerbar menubutton.header-action > button {
 }
 
 headerbar .sidebar-toggle:hover,
-headerbar button.header-action:hover,
+button.header-action:hover,
 headerbar menubutton.header-action > button:hover,
-headerbar button.header-action.active {
+button.header-action.active {
   background: alpha(@strata_accent, 0.15);
 }
 
 headerbar .sidebar-toggle:active,
-headerbar button.header-action:active,
+button.header-action:active,
 headerbar menubutton.header-action > button:active,
-headerbar menubutton.header-action > button:checked {
+headerbar menubutton.header-action > button:checked,
+.tab-close:active {
   background: alpha(@strata_accent, 0.22);
   transform: scale(0.97);
 }
@@ -159,7 +162,8 @@ headerbar menubutton.header-action > button:checked {
   padding: 0 6px 0 0;
 }
 
-headerbar image {
+headerbar image,
+button.header-action image {
   -gtk-icon-size: 16px;
 }
 
@@ -171,20 +175,141 @@ menubutton.icons-thumbnail-menu > button image,
   -gtk-icon-size: 16px;
 }
 
-headerbar button.header-action,
+button.header-action,
 headerbar menubutton.header-action > button {
   color: @strata_text;
 }
 
-headerbar button.header-action:hover,
-headerbar button.header-action:active,
-headerbar button.header-action.active,
-headerbar button.header-action:focus-visible,
+button.header-action:hover,
+button.header-action:active,
+button.header-action.active,
+button.header-action:focus-visible,
 headerbar menubutton.header-action > button:hover,
 headerbar menubutton.header-action > button:active,
 headerbar menubutton.header-action > button:checked,
 headerbar menubutton.header-action > button:focus-visible {
   color: @strata_text;
+}
+
+.tab-strip {
+  background: @strata_surface;
+  box-shadow: inset 0 -1px alpha(@strata_border, 0.6);
+  min-height: 36px;
+}
+
+headerbar.browser-header,
+.mode-pane-header {
+  border-bottom: none;
+  box-shadow: inset 0 -1px alpha(@strata_border, 0.6);
+}
+
+.tab-strip button.header-action,
+headerbar.browser-header .sidebar-toggle,
+headerbar.browser-header button.header-action,
+headerbar.browser-header menubutton.header-action > button {
+  padding: 0;
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.directory-column .column-header {
+  padding: 0 5px 2px 12px;
+}
+
+.directory-column .column-header button.column-header-action,
+.directory-column .column-header menubutton.column-header-action > button,
+.mode-pane-header button.column-header-action,
+.mode-pane-header menubutton.column-header-action > button,
+.mode-pane-header .list-navigation-button {
+  padding: 0;
+}
+
+.tab-strip button.header-action:focus-visible,
+.tab-close:focus-visible {
+  outline: 2px solid @strata_accent;
+  outline-offset: -2px;
+}
+
+.browser-tab {
+  color: @strata_text;
+  padding: 0 4px 2px 0;
+}
+
+.browser-tab.active,
+.browser-tab.hovered,
+.browser-tab.drag-hovered {
+  color: @strata_accent;
+}
+
+.tab-strip .tab-select {
+  background: transparent;
+  background-image: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: inherit;
+  opacity: 0.5;
+  min-height: 28px;
+  padding: 3px 8px 3px 14px;
+  font-weight: 600;
+}
+
+.browser-tab.active .tab-select,
+.browser-tab.hovered .tab-select,
+.browser-tab.drag-hovered .tab-select {
+  opacity: 1;
+}
+
+.tab-strip .tab-select:hover,
+.tab-strip .tab-select:active,
+.tab-strip .tab-close:hover {
+  background: transparent;
+  color: inherit;
+}
+
+.browser-tab:drop(active),
+.tab-strip .tab-select:drop(active) {
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+.tab-strip .tab-select:focus-visible {
+  outline: 2px solid @strata_accent;
+  outline-offset: -3px;
+}
+
+.tab-strip .tab-select:disabled,
+.tab-strip .tab-close:disabled {
+  color: @strata_muted;
+  opacity: 0.5;
+}
+
+.tab-strip .tab-close {
+  min-width: 18px;
+  min-height: 18px;
+  margin: 4px 0;
+  padding: 2px;
+  color: inherit;
+  opacity: 0.5;
+}
+
+.tab-strip .tab-close:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.tab-indicator {
+  color: @strata_accent;
+}
+
+.tab-key-hint {
+  color: @strata_accent;
+  background: alpha(@strata_accent, 0.15);
+  border-radius: 3px;
+  min-width: 1.6em;
+  min-height: 1.6em;
+  padding: 0;
+  font-size: 0.8em;
 }
 
 .appearance-popover contents {
@@ -1855,8 +1980,8 @@ switch:checked slider {
   border-right: 1px solid alpha(@strata_border, 0.6);
 }
 
-/* Every scrollbar is the path-bar indicator: a thin accent thumb on a faint
-   trough, overlaid on content and faded by GTK until hover or scrolling. */
+/* Scrollbars use a thin accent thumb on a faint trough; Icons and List retain
+   their wider vertical grab target. GTK fades overlays until hover or scrolling. */
 scrollbar,
 scrollbar:hover,
 scrollbar.hovering,
@@ -1905,6 +2030,40 @@ scrollbar.vertical > range > trough > slider {
 
 scrollbar.horizontal > range > trough > slider {
   min-width: 32px;
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical,
+.mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough {
+  min-width: 9px;
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough {
+  background: alpha(@strata_border, 0.08);
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical:hover > range > trough,
+.mode-icons .browser-listing-scroll > scrollbar.vertical.hovering > range > trough,
+.mode-icons .browser-listing-scroll > scrollbar.vertical.dragging > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical:hover > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical.hovering > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical.dragging > range > trough {
+  background: alpha(@strata_border, 0.12);
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough > slider,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough > slider {
+  min-width: 7px;
+  margin: 4px 1px;
+  border-radius: 999px;
+}
+
+.mode-list .browser-listing-scroll > scrollbar.vertical,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough > slider {
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 /* The mode scrollers need an opaque base to conceal the sidebar paned handle.
@@ -1985,20 +2144,16 @@ scrollbar.horizontal > range > trough > slider {
   border-radius: 6px;
   box-shadow: none;
   color: @strata_text;
-  min-height: 30px;
+  min-height: 24px;
   min-width: 0;
   outline: 1px solid transparent;
   outline-offset: -1px;
-  padding: 3px 8px;
-  transition: background 220ms ease-out, outline-color 220ms ease-out, transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  padding: 0;
+  transition: background 220ms ease-out, outline-color 220ms ease-out;
 }
 
 .sidebar-row:hover {
   background: alpha(@strata_accent, 0.15);
-}
-
-.sidebar-row:active {
-  transform: scale(0.97);
 }
 
 .sidebar-row.active,
@@ -2029,7 +2184,8 @@ scrollbar.horizontal > range > trough > slider {
 }
 
 .sidebar-row.reorderable:drop(active),
-.sidebar-row:drop(active) {
+.sidebar-row:drop(active),
+.sidebar-row.drop-destination {
   background: alpha(@strata_highlight, 0.46);
   outline-color: alpha(@strata_accent, 0.72);
   transform: scale(1.02);
@@ -2072,11 +2228,11 @@ scrollbar.horizontal > range > trough > slider {
   border: none;
   border-radius: 6px;
   box-shadow: none;
-  margin: 3px 0;
+  margin: 0;
   min-height: 24px;
   min-width: 24px;
   opacity: 0.75;
-  padding: 2px;
+  padding: 0;
 }
 
 .sidebar-device-spinner {
@@ -2121,7 +2277,7 @@ scrollbar.horizontal > range > trough > slider {
 .sidebar-rail .sidebar-row {
   min-height: 24px;
   min-width: 24px;
-  padding: 4px;
+  padding: 0;
 }
 
 .sidebar-rail .sidebar-device {
@@ -2150,7 +2306,7 @@ scrollbar.horizontal > range > trough > slider {
   margin: 0;
   min-height: 24px;
   min-width: 24px;
-  padding: 4px;
+  padding: 0;
 }
 
 .sidebar-heading {
@@ -2200,15 +2356,16 @@ paned > separator {
 }
 
 .preview-header {
-  border-bottom: 1px solid alpha(@strata_border, 0.6);
+  border-bottom: none;
+  box-shadow: inset 0 -1px alpha(@strata_border, 0.6);
   min-height: 40px;
-  padding: 0 6px 0 12px;
+  padding: 0 6px 0 8px;
 }
 
 /* The drawer, not the listing, receives keys. Matches the Miller
    column's three-pixel destination bar without shifting the header. */
 .preview-pane.preview-keyboard-owner .preview-header {
-  box-shadow: inset 0 3px 0 @strata_accent;
+  box-shadow: inset 0 3px 0 @strata_accent, inset 0 -1px alpha(@strata_border, 0.6);
 }
 
 .preview-content:focus-visible {
@@ -2222,6 +2379,7 @@ paned > separator {
 
 .preview-title {
   color: @strata_text;
+  font-size: 0.9em;
   font-weight: 700;
 }
 
@@ -2234,7 +2392,7 @@ paned > separator {
   color: @strata_accent;
   min-height: 24px;
   min-width: 24px;
-  padding: 4px;
+  padding: 0;
   transition: transform 160ms ease-out, background 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out;
 }
 
@@ -2266,6 +2424,10 @@ paned > separator {
   border-color: transparent;
   color: @strata_dim_text;
   opacity: 0.46;
+}
+
+.preview-metadata {
+  margin-top: -0.1em;
 }
 
 .preview-metadata label {
@@ -4418,8 +4580,8 @@ textview > popover.menu button.model:focus-visible,
   padding-top: 4px;
 }
 
-/* Keep the inset outside the scrolling content so editor reveal uses its full viewport. */
-.list-listing-scroll {
+/* Keep the row inset in the scrollable content, not in the scrollbar track. */
+.list-listing-scroll > listview {
   padding-top: 7px;
   padding-bottom: 7px;
 }
@@ -5388,8 +5550,8 @@ menubutton.icons-thumbnail-menu > button:focus-visible {
 .file-icons > child .icons-card.drop-destination .icons-card-icon-frame,
 .file-icons > child .icons-card:drop(active) .icons-card-icon-frame {
   background: alpha(@strata_highlight, 0.82);
-  outline: 2px solid @strata_accent;
-  outline-offset: -2px;
+  outline: 1px solid @strata_accent;
+  outline-offset: -1px;
 }
 
 .icons-card.dragging {
@@ -5527,6 +5689,7 @@ menubutton.icons-thumbnail-menu > button:focus-visible {
 .list-row.drop-destination,
 .list-row:drop(active) {
   background: alpha(@strata_highlight, 0.82);
+  border-radius: 6px;
   color: @strata_accent;
   outline-color: @strata_accent;
 }

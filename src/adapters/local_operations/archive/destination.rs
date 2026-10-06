@@ -233,7 +233,14 @@ impl ExtractionDestination {
     }
 
     pub(super) fn remove_directory_only_staging(&self, staging: &OsStr) -> Result<bool, String> {
-        remove_directory_only_tree(self.root.as_fd(), staging)
+        remove_tree(self.root.as_fd(), staging, false)
+            .map_err(|error| format!("Could not remove the extraction staging folder: {error}"))
+    }
+
+    /// Never follows symlinks. Removal errors can leave a partially deleted tree.
+    pub(super) fn remove_staging(&self, staging: &OsStr) -> Result<(), String> {
+        remove_tree(self.root.as_fd(), staging, true)
+            .map(|_| ())
             .map_err(|error| format!("Could not remove the extraction staging folder: {error}"))
     }
 
@@ -655,7 +662,8 @@ fn move_by_link(
     Err(rustix::io::Errno::OPNOTSUPP)
 }
 
-fn remove_directory_only_tree(parent: BorrowedFd<'_>, name: &OsStr) -> rustix::io::Result<bool> {
+/// Never follows symlinks. With `files` disabled, any non-directory preserves its ancestors.
+fn remove_tree(parent: BorrowedFd<'_>, name: &OsStr, files: bool) -> rustix::io::Result<bool> {
     let directory = rustix::fs::openat(
         parent,
         name,
@@ -679,13 +687,16 @@ fn remove_directory_only_tree(parent: BorrowedFd<'_>, name: &OsStr) -> rustix::i
             ),
             file_type => file_type,
         };
-        if file_type != rustix::fs::FileType::Directory {
+        let is_directory = file_type == rustix::fs::FileType::Directory;
+        if !is_directory && !files {
             return Ok(false);
         }
-        children.push(child.to_os_string());
+        children.push((child.to_os_string(), is_directory));
     }
-    for child in children {
-        if !remove_directory_only_tree(directory.as_fd(), &child)? {
+    for (child, is_directory) in children {
+        if !is_directory {
+            rustix::fs::unlinkat(&directory, &child, rustix::fs::AtFlags::empty())?;
+        } else if !remove_tree(directory.as_fd(), &child, files)? {
             return Ok(false);
         }
     }

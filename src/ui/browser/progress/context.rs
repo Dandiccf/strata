@@ -18,15 +18,20 @@ use crate::{
 
 use super::{FileProgressView, TransferProgressSnapshot};
 
+type DismissWaiters = Rc<RefCell<Vec<Box<dyn FnOnce()>>>>;
+
 pub(in crate::ui::browser) struct FileProgressState {
     pub(in crate::ui::browser) overlay: gtk::Overlay,
     pub(in crate::ui::browser) file_progress_view: RefCell<Option<FileProgressView>>,
+    pub(super) file_progress_dismissing: Rc<Cell<usize>>,
+    pub(super) file_progress_dismiss_waiters: DismissWaiters,
     pub(in crate::ui::browser) pending_file_progress: RefCell<Option<glib::SourceId>>,
     pub(in crate::ui::browser) file_operation_progress: Cell<(usize, usize)>,
     pub(in crate::ui::browser) archive_progress: Cell<Option<(usize, usize)>>,
     pub(in crate::ui::browser) archive_compressing: Cell<bool>,
     pub(in crate::ui::browser) deleting: Cell<bool>,
     pub(in crate::ui::browser) transfer_progress: Cell<Option<TransferProgressSnapshot>>,
+    pub(super) transfer_render_source: RefCell<Option<glib::SourceId>>,
     pub(in crate::ui::browser) transfer_current_file: RefCell<Option<String>>,
     pub(in crate::ui::browser) transfer_rate_sample: Cell<Option<(std::time::Instant, u64)>>,
     pub(in crate::ui::browser) transfer_rate_bytes_per_second: Cell<Option<f64>>,
@@ -44,12 +49,15 @@ impl FileProgressState {
         Self {
             overlay: overlay.clone(),
             file_progress_view: RefCell::new(None),
+            file_progress_dismissing: Rc::new(Cell::new(0)),
+            file_progress_dismiss_waiters: Rc::new(RefCell::new(Vec::new())),
             pending_file_progress: RefCell::new(None),
             file_operation_progress: Cell::new((0, 0)),
             archive_progress: Cell::new(None),
             archive_compressing: Cell::new(false),
             deleting: Cell::new(false),
             transfer_progress: Cell::new(None),
+            transfer_render_source: RefCell::new(None),
             transfer_current_file: RefCell::new(None),
             transfer_rate_sample: Cell::new(None),
             transfer_rate_bytes_per_second: Cell::new(None),
@@ -149,16 +157,21 @@ impl ViewState {
             return;
         }
         let deleting = self.file_progress().deleting.get();
-        if deleting {
-            self.pending_delete_dissolve.take();
-            self.deferred_delete_empty_depth.set(None);
-        }
         if !self.browser.background_file_operation(request_id) {
             return;
         }
         let progress = self
             .progress_state
             .replace(Rc::new(FileProgressState::new(&self.overlay)));
+        if deleting {
+            self.pending_file_operation_animation.take();
+        }
+        if deleting
+            && self.delete_dissolve_request.get().is_none()
+            && self.pending_delete_dissolve.borrow().is_some()
+        {
+            self.delete_dissolve_request.set(Some(request_id));
+        }
         let archive_destination = self.pending_archive_destination.take();
         self.pending_navigate.take();
         self.suppress_scroll_after_drop.set(false);
@@ -227,8 +240,11 @@ impl ViewState {
                 progress.update_item_progress(*completed, *total);
                 false
             }
-            BrowserEvent::DeletionFinished { .. } => {
+            BrowserEvent::DeletionFinished { succeeded } => {
                 self.prune_stale_search_results();
+                if self.delete_dissolve_request.get() == Some(request_id) {
+                    self.play_pending_delete_dissolve(*succeeded);
+                }
                 true
             }
             BrowserEvent::OperationCompletedWithErrors {
@@ -240,6 +256,9 @@ impl ViewState {
                     background.delete_entries.clone(),
                     retryable_locations,
                 );
+                if self.delete_dissolve_request.get() == Some(request_id) {
+                    self.settle_pending_delete_dissolve();
+                }
                 if entries.is_empty() {
                     show_error_dialog(&self.overlay, "Completed with errors", message);
                 } else if *has_non_retryable_failures || self.browser.has_foreground_operation() {
@@ -279,7 +298,10 @@ impl ViewState {
                 }
                 true
             }
-            BrowserEvent::OperationFailed { message } => {
+            BrowserEvent::OperationFailed { message, .. } => {
+                if self.delete_dissolve_request.get() == Some(request_id) {
+                    self.settle_pending_delete_dissolve();
+                }
                 show_error_dialog(&self.overlay, "Unable to complete operation", message);
                 true
             }
@@ -289,6 +311,9 @@ impl ViewState {
                 not_attempted,
                 affected_locations,
             } => {
+                if self.delete_dissolve_request.get() == Some(request_id) {
+                    self.settle_pending_delete_dissolve();
+                }
                 self.browser.refresh_after_cancellation(affected_locations);
                 let message = format!(
                     "{completed} completed, {failed} failed, and {not_attempted} not attempted.\n\nCompleted changes were not reverted."

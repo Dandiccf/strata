@@ -2384,7 +2384,7 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
         };
         let thumbnail_size = icons_card_icon_slot(thumbnail_size_for_setup.get());
         let card = super::icons_cell::new_card(thumbnail_size);
-        let Some((icon, rename_label)) = super::icons_cell::parts(&card) else {
+        let Some((_, rename_label)) = super::icons_cell::parts(&card) else {
             return;
         };
         install_icons_content_hover(&card);
@@ -2413,7 +2413,7 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
             positions_for_setup.clone(),
             slow_click.clone(),
         );
-        install_icons_peek(
+        install_folder_peek(
             &card,
             item,
             peek_for_setup.clone(),
@@ -2430,13 +2430,7 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
             depth,
             Some((source_index_for_setup.clone(), filtered_for_setup.clone())),
             peek_for_setup.clone(),
-            (
-                None,
-                Some(icon.upcast_ref()),
-                &content_click,
-                false,
-                slow_click,
-            ),
+            (&content_click, false, slow_click),
         );
         item.set_child(Some(&card));
         if let Some(parent) = card.parent() {
@@ -3635,7 +3629,7 @@ fn install_icons_content_hover(card: &gtk::Box) {
     card.add_controller(motion);
 }
 
-fn install_icons_peek(
+fn install_folder_peek(
     card: &impl IsA<gtk::Widget>,
     item: &gtk::ListItem,
     state: Option<Weak<super::browser::ViewState>>,
@@ -3731,16 +3725,9 @@ fn install_list_drag_drop(
     depth: usize,
     position_map: Option<(SourceIndexMap, gio::ListModel)>,
     state: Option<Weak<super::browser::ViewState>>,
-    drag_icon_and_content_click: (
-        Option<&gtk::Widget>,
-        Option<&gtk::Widget>,
-        &gtk::GestureClick,
-        bool,
-        Rc<SlowClickRename>,
-    ),
+    drag_icon_and_content_click: (&gtk::GestureClick, bool, Rc<SlowClickRename>),
 ) {
-    let (drag_icon, multi_drag_icon, content_click, list_rows, intent) =
-        drag_icon_and_content_click;
+    let (content_click, list_rows, intent) = drag_icon_and_content_click;
     if transfer_handler.borrow().is_none() {
         return;
     }
@@ -3752,8 +3739,6 @@ fn install_list_drag_drop(
     let dragged_item = item.downgrade();
     let browser_for_drag = browser.clone();
     let map_for_drag = position_map.clone();
-    let drag_icon = drag_icon.map(gtk::Widget::downgrade);
-    let multi_drag_icon = multi_drag_icon.map(gtk::Widget::downgrade);
     let prepare_row = row.downgrade();
     drag.connect_prepare(move |source, x, y| {
         let prepare_row = prepare_row.upgrade()?;
@@ -3793,23 +3778,10 @@ fn install_list_drag_drop(
         } else {
             vec![entry]
         };
-        let compact_icon = drag_icon.as_ref().and_then(glib::WeakRef::upgrade);
-        let multi_drag_icon = multi_drag_icon.as_ref().and_then(glib::WeakRef::upgrade);
-        if let Some((texture, hot_x, hot_y)) = multi_drag_icon
-            .as_ref()
-            .or(compact_icon.as_ref())
-            .or(Some(&prepare_row))
-            .and_then(|icon| super::browser::drag_icon_with_count(icon, entries.len()))
+        if let Some((texture, hot_x, hot_y)) =
+            super::browser::drag_preview_icon(&prepare_row, &entries)
         {
             source.set_icon(Some(&texture), hot_x, hot_y);
-        } else {
-            let paintable = gtk::WidgetPaintable::new(compact_icon.as_ref().or(Some(&prepare_row)));
-            let (hot_x, hot_y) = if compact_icon.is_some() {
-                (0, 0)
-            } else {
-                (x.round() as i32, y.round() as i32)
-            };
-            source.set_icon(Some(&paintable), hot_x, hot_y);
         }
         super::browser::file_drag_content(&entries)
     });
@@ -3861,49 +3833,68 @@ fn install_list_drag_drop(
         target: drop,
         state: drop_state,
     } = super::browser::prepare_file_drop_target(dest_for_row);
+    let spring_navigate: Rc<dyn Fn(Location)> = {
+        let browser = browser.clone();
+        Rc::new(move |location| {
+            if let Some(browser) = browser.upgrade() {
+                browser.navigate_location(location, false);
+            }
+        })
+    };
     let highlighted_row = row.downgrade();
     let state_for_enter = drop_state.clone();
+    let navigate_for_enter = spring_navigate.clone();
     drop.connect_enter(move |target, _, _| {
         let action = super::browser::file_drop_action(target, &state_for_enter);
+        let hovered = super::browser::file_drag_hover_target(&state_for_enter, target).is_some();
         if let Some(row) = highlighted_row.upgrade() {
-            if action.is_empty() {
-                row.remove_css_class("drop-destination");
-            } else {
+            if hovered {
                 row.add_css_class("drop-destination");
+            } else {
+                row.remove_css_class("drop-destination");
             }
         }
+        super::browser::arm_spring_load_navigation(&state_for_enter, target, &navigate_for_enter);
         action
     });
     let highlighted_row = row.downgrade();
     let state_for_motion = drop_state.clone();
+    let navigate_for_motion = spring_navigate.clone();
     drop.connect_motion(move |target, _, _| {
         let action = super::browser::file_drop_action(target, &state_for_motion);
+        let hovered = super::browser::file_drag_hover_target(&state_for_motion, target).is_some();
         if let Some(row) = highlighted_row.upgrade() {
-            if action.is_empty() {
-                row.remove_css_class("drop-destination");
-            } else {
+            if hovered {
                 row.add_css_class("drop-destination");
+            } else {
+                row.remove_css_class("drop-destination");
             }
         }
+        super::browser::arm_spring_load_navigation(&state_for_motion, target, &navigate_for_motion);
         action
     });
     let highlighted_row = row.downgrade();
     let state_for_value = drop_state.clone();
+    let navigate_for_value = spring_navigate.clone();
     drop.connect_value_notify(move |target| {
         if target.current_drop().is_none() {
             return;
         }
-        let action = super::browser::file_drop_action(target, &state_for_value);
+        super::browser::file_drop_action(target, &state_for_value);
+        let hovered = super::browser::file_drag_hover_target(&state_for_value, target).is_some();
         if let Some(row) = highlighted_row.upgrade() {
-            if action.is_empty() {
-                row.remove_css_class("drop-destination");
-            } else {
+            if hovered {
                 row.add_css_class("drop-destination");
+            } else {
+                row.remove_css_class("drop-destination");
             }
         }
+        super::browser::arm_spring_load_navigation(&state_for_value, target, &navigate_for_value);
     });
     let highlighted_row = row.downgrade();
+    let state_for_leave = drop_state.clone();
     drop.connect_leave(move |_| {
+        state_for_leave.cancel_spring_load_navigation();
         if let Some(row) = highlighted_row.upgrade() {
             row.remove_css_class("drop-destination");
         }
@@ -3936,6 +3927,7 @@ fn install_list_drag_drop(
         if let Some(row) = dropped_row.upgrade() {
             row.remove_css_class("drop-destination");
         }
+        drop_state.cancel_spring_load_navigation();
         let Some(destination) = drop_state.destination() else {
             return false;
         };
@@ -4351,19 +4343,33 @@ fn connect_selection(
         });
 }
 
-fn set_selections(pane: &Pane, positions: &[usize]) {
+fn select_all(pane: &Pane) {
     for section in pane.item_sections() {
-        let selected = gtk::Bitset::new_empty();
-        for position in positions {
-            if let Some(position) = section.source_to_view(&pane.model, *position) {
-                selected.add(position);
-            }
-        }
         section.syncing.set(true);
-        section.selection.set_selection(
-            &selected,
-            &gtk::Bitset::new_range(0, section.selection.n_items()),
-        );
+        section.selection.select_all();
+        section.syncing.set(false);
+    }
+}
+
+fn set_selections(pane: &Pane, positions: &[usize]) {
+    let all_selected = positions.len() == pane.model.n_items() as usize;
+    for section in pane.item_sections() {
+        let total_items = section.selection.n_items();
+        let selected = if all_selected && section.view_model.n_items() == pane.model.n_items() {
+            gtk::Bitset::new_range(0, total_items)
+        } else {
+            let selected = gtk::Bitset::new_empty();
+            for position in positions {
+                if let Some(position) = section.source_to_view(&pane.model, *position) {
+                    selected.add(position);
+                }
+            }
+            selected
+        };
+        section.syncing.set(true);
+        section
+            .selection
+            .set_selection(&selected, &gtk::Bitset::new_range(0, total_items));
         section.syncing.set(false);
     }
 }

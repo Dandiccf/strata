@@ -473,7 +473,11 @@ fn install_result_interactions(
         source.set_actions(crate::ui::browser::drag_actions_for_modifiers(
             source.current_event_state(),
         ));
-        source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&widget))), 0, 0);
+        if let Some((texture, hot_x, hot_y)) =
+            crate::ui::browser::drag_preview_icon(&widget, &entries)
+        {
+            source.set_icon(Some(&texture), hot_x, hot_y);
+        }
         crate::ui::browser::file_drag_content(&entries)
     });
     widget.add_controller(drag.clone());

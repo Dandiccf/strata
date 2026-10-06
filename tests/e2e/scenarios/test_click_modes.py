@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from gi.repository import Atspi
 
 from harness.modes import ALL_MODES
 
@@ -32,6 +33,47 @@ def test_single_click_opens_a_directory(strata, mode):
     )
     strata.entry("notes.txt")
     strata.wait_for_selection([], "documents")
+
+
+@SINGLE_CLICK
+@pytest.mark.preferences(browser_mode="columns", single_click_previews=False)
+@pytest.mark.parametrize("reveal_during_press", [False, True])
+def test_single_click_opens_a_folder_in_a_clipped_parent_column(
+    strata, unreserved_columns, reveal_during_press,
+):
+    browser_left = strata.pane().screen_bounds().x
+    strata.fixture.populate({
+        "documents": {"Level 2": {"Level 3": {"old-branch.txt": "old branch\n"}}},
+    })
+    for name in ["documents", "Level 2", "Level 3"]:
+        strata.select_entry_with_keyboard(name)
+        strata.keyboard.press("Return")
+        strata.wait_for_directory(name)
+
+    folder = strata.entry("pictures", directory=strata.fixture.root.name)
+    bounds = folder.screen_bounds()
+    press_x, press_y = max(bounds.x, browser_left) + 12, bounds.center[1]
+    strata.pointer.move_to(press_x, press_y)
+    strata.pointer.connection.button(1, True)
+    try:
+        if reveal_during_press:
+            # Move the camera without a wheel gesture, which legitimately
+            # cancels the pending click on some GTK versions.
+            scrollbar = next(
+                node for _, node in strata.window.walk()
+                if node.role == "scroll bar" and node.has_state("horizontal")
+            )
+            value = Atspi.Accessible.get_value_iface(scrollbar.accessible)
+            assert Atspi.Value.set_current_value(value, 0.0)
+        time.sleep(0.2)
+        # Sub-threshold pointer jitter must not turn column scrolling into a drag.
+        strata.pointer.move_to(press_x + 2, press_y)
+    finally:
+        strata.pointer.connection.button(1, False)
+
+    strata.wait_for_directory("pictures")
+    strata.entry("diagram.txt", directory="pictures")
+    strata.wait_for_selection([], "pictures")
 
 
 @SINGLE_CLICK

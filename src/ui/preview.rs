@@ -3962,11 +3962,14 @@ fn install_preview_drag(widget: &impl IsA<gtk::Widget>, state: &Rc<PreviewState>
         .build();
     drag.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(state);
-    drag.connect_prepare(move |source, x, y| {
+    drag.connect_prepare(move |source, _, _| {
         let state = weak.upgrade()?;
         let entries = preview_drag_entries(state.current.borrow().as_ref())?;
-        let paintable = gtk::WidgetPaintable::new(Some(&state.header_handle));
-        source.set_icon(Some(&paintable), x.round() as i32, y.round() as i32);
+        if let Some((texture, hot_x, hot_y)) =
+            super::browser::drag_preview_icon(&state.header_handle, &entries)
+        {
+            source.set_icon(Some(&texture), hot_x, hot_y);
+        }
         super::browser::file_drag_content(&entries)
     });
     let weak = Rc::downgrade(state);

@@ -242,14 +242,15 @@ impl SidebarState {
             .push((location.clone(), row.clone()));
         install_sidebar_file_drop(&self.view, row, location.clone());
         let browser = Rc::downgrade(&self.browser);
-        let sidebar = self.widget.clone();
-        let selected_row = row.clone();
+        let sidebar = self.widget.downgrade();
         let keyboard_activation = Rc::new(Cell::new(false));
         let activating = keyboard_activation.clone();
         row.connect_activate(move |_| activating.set(true));
-        row.connect_clicked(move |_| {
+        row.connect_clicked(move |row| {
             let select_first = keyboard_activation.replace(false);
-            select_sidebar_row(&sidebar, &selected_row);
+            if let Some(sidebar) = sidebar.upgrade() {
+                select_sidebar_row(&sidebar, row);
+            }
             if let Some(browser) = browser.upgrade() {
                 match navigation {
                     PlaceNavigation::Direct => {

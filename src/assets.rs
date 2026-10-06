@@ -443,6 +443,11 @@ pub(crate) fn sized_icon_paintable(
     primary_icon_texture_at(name, color, texture_px, logical_px, context)
 }
 
+pub(crate) fn drag_icon_texture(name: &str, color: &str, texture_px: i32) -> Option<gdk::Texture> {
+    let texture_px = texture_px.clamp(24, 768);
+    primary_icon_texture_at(name, color, texture_px, texture_px, IconContext::Interface)
+}
+
 fn primary_icon_texture_at(
     name: &str,
     color: &str,

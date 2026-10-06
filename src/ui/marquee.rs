@@ -156,6 +156,8 @@ struct MarqueeState {
     /// Last pointer position in the scrolled window's coordinates, which do not
     /// move while the content scrolls.
     pointer: Cell<(f64, f64)>,
+    // Surface coordinates distinguish pointer motion from a column moving underneath it.
+    press_position: Cell<Option<(f64, f64)>>,
     /// Selection of every target as the drag began, one entry per target.
     initial: RefCell<Vec<gtk::Bitset>>,
     /// Keep geometry after virtualization unbinds a row so extending or retracting
@@ -195,6 +197,7 @@ pub(super) fn install(setup: MarqueeSetup) -> Marquee {
         allow_drag: setup.allow_drag,
         anchor: Cell::new((0.0, 0.0)),
         pointer: Cell::new((0.0, 0.0)),
+        press_position: Cell::new(None),
         initial: RefCell::new(Vec::new()),
         item_bounds: RefCell::new(Vec::new()),
         modifiers: Cell::new((false, false)),
@@ -239,7 +242,7 @@ pub(super) fn install(setup: MarqueeSetup) -> Marquee {
         let Some(anchor) = translate(&origin, &scroll, (x, y)) else {
             return;
         };
-        state_for_begin.begin(anchor, gesture.current_event_state());
+        state_for_begin.begin(anchor, gesture);
         let clearable = !starts_on_item && super::pointer::is_background(&origin, x, y);
         state_for_begin.clear_on_click.set(clearable);
         state_for_begin.clear_at_press();
@@ -287,7 +290,7 @@ impl Marquee {
                 return;
             };
             gesture.set_state(gtk::EventSequenceState::Claimed);
-            state_for_begin.begin(anchor, gesture.current_event_state());
+            state_for_begin.begin(anchor, gesture);
             state_for_begin.clear_at_press();
         });
         connect_drag_progress(&gesture, &self.state);
@@ -381,7 +384,7 @@ pub(super) fn install_shared_origin_surface(
             return;
         };
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        state.begin(anchor, gesture.current_event_state());
+        state.begin(anchor, gesture);
         state.clear_at_press();
         target_for_begin.replace(Some(state));
     });
@@ -397,6 +400,7 @@ pub(super) fn install_shared_origin_surface(
                 &surface_for_update,
                 (start_x, start_y),
                 (offset_x, offset_y),
+                gesture.current_event().and_then(|event| event.position()),
             );
         }
     });
@@ -427,7 +431,12 @@ fn connect_drag_progress(gesture: &gtk::GestureDrag, state: &Rc<MarqueeState>) {
         let Some(origin) = gesture.widget() else {
             return;
         };
-        if state_for_update.update_drag(&origin, (start_x, start_y), (offset_x, offset_y)) {
+        if state_for_update.update_drag(
+            &origin,
+            (start_x, start_y),
+            (offset_x, offset_y),
+            gesture.current_event().and_then(|event| event.position()),
+        ) {
             gesture.set_state(gtk::EventSequenceState::Claimed);
         }
     });
@@ -450,8 +459,11 @@ impl MarqueeState {
         self.overlay.upgrade()
     }
 
-    fn begin(self: &Rc<Self>, anchor: (f64, f64), modifiers: gtk::gdk::ModifierType) {
+    fn begin(self: &Rc<Self>, anchor: (f64, f64), gesture: &gtk::GestureDrag) {
         self.end();
+        let modifiers = gesture.current_event_state();
+        self.press_position
+            .set(gesture.current_event().and_then(|event| event.position()));
         let Some(scroll) = self.scroll() else {
             return;
         };
@@ -495,15 +507,21 @@ impl MarqueeState {
         origin: &gtk::Widget,
         start: (f64, f64),
         offset: (f64, f64),
+        event_position: Option<(f64, f64)>,
     ) -> bool {
         if !self.active.get() {
             return false;
         }
         if !self.dragging.get() {
+            let (press, current) = self
+                .press_position
+                .get()
+                .zip(event_position)
+                .unwrap_or(((0.0, 0.0), offset));
             if !self.allow_drag.get()
                 || !super::pointer::exceeds_drag_threshold(
-                    (0.0, 0.0),
-                    offset,
+                    press,
+                    current,
                     origin.settings().gtk_dnd_drag_threshold(),
                 )
             {

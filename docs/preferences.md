@@ -12,8 +12,9 @@ appearance preferences change. Fresh installations select Tokyo Night, unless an
 available Omarchy theme is followed automatically. Saved theme choices remain
 unchanged. Folder peeking is off by default when no value is saved; explicitly
 saved choices are preserved. Enable it under **Settings → General → Browsing**.
-When enabled, automatic folder peeks wait for a 1000 ms hover; explicit keyboard
-peeks remain immediate.
+When enabled, automatic folder peeks in Icons and List wait for a 500 ms hover;
+explicit keyboard peeks in those views remain immediate. Miller columns never
+show folder-peek popovers, regardless of the saved preference.
 
 Settings-wide search is transient, panel-local UI state, not a saved preference.
 It filters the existing bound controls rather than creating copies. Register new
@@ -57,7 +58,7 @@ control that might be midway through synchronization.
 | Stored preferences | Consumer / application point |
 | --- | --- |
 | Default directory | New windows without an explicit target read the current choice before navigating, without opening Settings. Existing windows and explicit targets are unchanged. Missing directories fall back to home and clear the saved choice; Reset also restores home. |
-| Folder peeking, single-click previews, columns selection mirror, mode, density, grouping, per-mode click counts, auto-refresh | Every browser binds at construction, including lazily rebuilt view modes. The chooser explicitly disallows folder peeking and the columns selection mirror regardless of the saved values. |
+| Folder peeking, single-click previews, columns selection mirror, mode, density, grouping, per-mode click counts, auto-refresh | Every browser binds at construction, including lazily rebuilt view modes. Miller columns disallow folder-peek popovers regardless of the saved value; Icons and List retain the preference. The chooser explicitly disallows folder peeking and the columns selection mirror regardless of the saved values. |
 | Hidden files | Shared across existing browsers and new columns. |
 | Open folder after dropping files | Drop dispatch reads the saved choice (off by default), including confirmation of cross-device drops. Successful drops reveal the destination only when enabled and the user is still at the transfer origin. Paste and Move/Copy to remain unchanged. |
 | Cross-device drag and drop | Drop dispatch reads the current Copy, Move, or Ask strategy; unresolved volume lookups follow the same cross-device policy. |

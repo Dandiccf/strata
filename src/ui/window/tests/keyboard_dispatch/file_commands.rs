@@ -419,6 +419,73 @@ fn tenxer_delete_confirms_trash_and_permanent_deletion() {
 }
 
 #[test]
+fn columns_shift_delete_deletes_the_cursor_when_the_fill_is_empty() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::file_commands::columns_shift_delete_deletes_the_cursor_when_the_fill_is_empty",
+        || {
+            let fixture = KeyboardFixture::new();
+            let directory = fixture._directory.path().to_path_buf();
+            let browser = fixture.view.browser();
+
+            browser.select_first_on_load(0);
+            browser.reload_active();
+            wait_until(|| browser.selection_is_load_cursor());
+            browser.place_cursor(0, 2, None);
+            assert_eq!(focused_name(&browser), "c.txt");
+            focus_files(&fixture);
+
+            assert!(fixture.press(Key::Delete, ModifierType::SHIFT_MASK));
+            wait_until(|| modal_visible(&fixture.overlay));
+            wait_until(|| {
+                widget_with_class(fixture.overlay.upcast_ref(), "action-dialog-confirm")
+                    .is_some_and(|confirm| confirm.is_sensitive())
+            });
+            assert!(click_class(&fixture.overlay, "action-dialog-confirm"));
+            wait_until(|| !directory.join("c.txt").exists());
+            assert_eq!(directory_names(&directory), ["a.txt", "b.txt"]);
+        },
+    );
+}
+
+#[test]
+fn columns_shift_delete_targets_the_open_folder_when_the_child_selects_nothing() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::file_commands::columns_shift_delete_targets_the_open_folder_when_the_child_selects_nothing",
+        || {
+            let fixture = KeyboardFixture::new();
+            let directory = fixture._directory.path().to_path_buf();
+            std::fs::create_dir(directory.join("folder")).expect("fixture folder");
+            let browser = fixture.view.browser();
+            browser.refresh_all();
+            wait_until(|| rendered_name(&fixture.view.widget(), "folder"));
+
+            let count = browser.column_snapshot(0).expect("column").count;
+            let folder_position = browser
+                .with_entries(0, 0..count, |entries| {
+                    entries
+                        .iter()
+                        .position(|entry| entry.display_name == "folder")
+                })
+                .flatten()
+                .expect("folder is listed");
+            browser.activate(0, folder_position);
+            wait_loaded(&browser, 1);
+            focus_files(&fixture);
+
+            assert!(fixture.press(Key::Delete, ModifierType::SHIFT_MASK));
+            wait_until(|| modal_visible(&fixture.overlay));
+            wait_until(|| {
+                widget_with_class(fixture.overlay.upcast_ref(), "action-dialog-confirm")
+                    .is_some_and(|confirm| confirm.is_sensitive())
+            });
+            assert!(click_class(&fixture.overlay, "action-dialog-confirm"));
+            wait_until(|| !directory.join("folder").exists());
+            assert_eq!(directory_names(&directory), ["a.txt", "b.txt", "c.txt"]);
+        },
+    );
+}
+
+#[test]
 fn tenxer_create_prompt_makes_exact_files_and_folders() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::file_commands::tenxer_create_prompt_makes_exact_files_and_folders",

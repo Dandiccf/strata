@@ -110,6 +110,7 @@ impl Dispatcher {
             Key::D => self.delete_targets(true),
             Key::a if !shift => self.open_create_prompt(),
             Key::c if !shift => self.shortcuts.arm_chord(Chord::Copy),
+            Key::t if !shift && self.chooser.is_none() => self.shortcuts.arm_chord(Chord::Tabs),
             Key::M => self.open_transfer_prompt(Prompt::MoveTo),
             Key::C => self.open_transfer_prompt(Prompt::CopyTo),
             Key::R => self.restore_targets(),

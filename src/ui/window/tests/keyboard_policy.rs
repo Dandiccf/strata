@@ -120,13 +120,13 @@ fn mouse_history_buttons_map_to_navigation_actions() {
 }
 
 #[test]
-fn open_terminal_shortcut_requires_only_control() {
+fn open_terminal_shortcut_requires_control_alt() {
     let control = gtk::gdk::ModifierType::CONTROL_MASK;
     let shift = gtk::gdk::ModifierType::SHIFT_MASK;
     let alt = gtk::gdk::ModifierType::ALT_MASK;
 
-    assert!(is_open_terminal_shortcut(gtk::gdk::Key::t, control));
-    assert!(is_open_terminal_shortcut(gtk::gdk::Key::T, control));
+    assert!(is_open_terminal_shortcut(gtk::gdk::Key::t, control | alt));
+    assert!(is_open_terminal_shortcut(gtk::gdk::Key::T, control | alt));
     assert!(!is_open_terminal_shortcut(
         gtk::gdk::Key::t,
         gtk::gdk::ModifierType::empty()
@@ -135,7 +135,11 @@ fn open_terminal_shortcut_requires_only_control() {
         gtk::gdk::Key::t,
         control | shift
     ));
-    assert!(!is_open_terminal_shortcut(gtk::gdk::Key::t, control | alt));
+    assert!(!is_open_terminal_shortcut(gtk::gdk::Key::t, control));
+    assert!(!is_open_terminal_shortcut(
+        gtk::gdk::Key::t,
+        control | alt | shift
+    ));
     assert!(!is_open_terminal_shortcut(gtk::gdk::Key::F4, control));
 }
 

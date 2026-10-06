@@ -72,7 +72,11 @@ def test_settings_search_filters_navigates_and_clears(strata, width):
     )
     assert strata.window.find(role="label", name="General") is not None
     if width == 640:
-        strata.pointer.click(date_format)  # Dismiss the modal search popover first.
+        strata.pointer.click(date_format)
+        strata.wait(
+            lambda: strata.window.find(role="text", name="Search settings") is None,
+            "compact search closes before opening date choices",
+        )
     strata.pointer.click(date_format)
     iso = strata.wait(
         lambda: strata.window.find(role="label", name="ISO 8601"),
@@ -83,11 +87,10 @@ def test_settings_search_filters_navigates_and_clears(strata, width):
         lambda: strata.environment.read_preferences().get("date_format") == '"iso"',
         "date format selection persists from General",
     )
-    # The preference is saved before the choice popover pops down; a click while
-    # it is still open would only dismiss it.
+    # Hidden choice labels precede GTK releasing the popover's input grab.
     strata.wait(
-        lambda: strata.window.find(role="label", name="Relative") is None,
-        "date format choices close",
+        lambda: date_format.find(role="toggle button", states={"focused"}),
+        "date format choices close and return focus to their button",
     )
     if width == 640:
         strata.pointer.click(strata.window.find(role="button", name="Search settings"))

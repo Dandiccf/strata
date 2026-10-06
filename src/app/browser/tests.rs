@@ -26,6 +26,7 @@ mod operations;
 mod preferences;
 mod recent;
 mod relocation;
+mod reveal;
 mod selection;
 #[path = "sorting/tests.rs"]
 mod staged_sort;
@@ -53,7 +54,7 @@ fn assert_invalid_creation_is_rejected(name: &str, create: impl FnOnce(&Rc<Brows
     assert!(browser.operation_load.borrow().is_none());
     assert!(matches!(
         events.borrow().as_slice(),
-        [BrowserEvent::OperationFailed { message }] if message == expected
+        [BrowserEvent::OperationFailed { message, .. }] if message == expected
     ));
 }
 
@@ -109,6 +110,7 @@ impl FileSource for WatchingFileSource {
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -191,6 +193,7 @@ impl FileSource for RetryFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 }],
             });
             emit(DirectoryEvent::Finished {
@@ -254,6 +257,7 @@ impl FileSource for FilePreviewSource {
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -291,6 +295,7 @@ impl FileSource for ArchiveFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/notes.txt"),
@@ -306,6 +311,7 @@ impl FileSource for ArchiveFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::uri("sftp://example.com/remote-archive.zip"),
@@ -321,6 +327,7 @@ impl FileSource for ArchiveFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/socket.zip"),
@@ -336,6 +343,7 @@ impl FileSource for ArchiveFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
             ],
         });
@@ -371,6 +379,7 @@ impl FileSource for OpenChildBesideFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/example.conf"),
@@ -386,6 +395,7 @@ impl FileSource for OpenChildBesideFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
             ]
         } else {
@@ -425,6 +435,7 @@ impl FileSource for RestoredSortingSource {
             image_dimensions: MetadataValue::Unknown,
             child_count: MetadataValue::Unknown,
             duration_seconds: MetadataValue::Unknown,
+            recent_uri: None,
         };
         emit(DirectoryEvent::Batch {
             request_id: request.id,
@@ -462,6 +473,7 @@ impl FileSource for FakeFileSource {
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -498,6 +510,7 @@ impl FileSource for TrashFileSource {
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -561,6 +574,7 @@ impl OperationProvider for ImmediateOperationProvider {
             Some(ForwardRenameOutcome::Failed) => emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: "rename failed".to_owned(),
+                password_failure: None,
             }),
             Some(ForwardRenameOutcome::Cancelled) => emit(OperationEvent::Cancelled {
                 request_id: request.id,
@@ -851,6 +865,7 @@ fn fixture_entry(path: &str) -> FileEntry {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -895,6 +910,7 @@ fn batch_entry(name: &str) -> FileEntry {
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -1047,6 +1063,7 @@ impl ScriptedSource {
             image_dimensions: MetadataValue::Unknown,
             child_count: MetadataValue::Unknown,
             duration_seconds: MetadataValue::Unknown,
+            recent_uri: None,
         }
     }
     fn answer(
@@ -1267,6 +1284,7 @@ impl FileSource for MixedPeekFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/normal.txt"),
@@ -1282,6 +1300,7 @@ impl FileSource for MixedPeekFileSource {
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
             ],
         });

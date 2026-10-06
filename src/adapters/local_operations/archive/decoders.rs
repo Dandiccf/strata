@@ -8,7 +8,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     ffi::OsStr,
-    io::{Read, Seek},
+    io::{BufRead, BufReader, Read, Seek},
     os::unix::ffi::OsStrExt,
     path::Path,
     sync::{
@@ -20,8 +20,11 @@ use std::{
 
 use gtk::glib;
 
+use crate::services::INCORRECT_ARCHIVE_PASSWORD;
+
 use super::{
-    ARCHIVE_CANCELLED, ArchiveError, archive_failed, copy_with_big_buf,
+    ArchiveError, MAYBE_BAD_PASSWORD, PASSWORD_REQUIRED, archive_failed, archive_read_failed,
+    check_archive_cancelled, copy_with_big_buf,
     extraction::{
         ArchiveOutcome, ExtractionSession, MAX_SYMLINK_TARGET_BYTES, MemberContent, MemberMetadata,
     },
@@ -36,13 +39,19 @@ pub(super) use rar::extract_rar;
 mod tests;
 
 const INVALID_ARCHIVE: &str = "This file is not a valid archive or is damaged.";
-// Plain-header 7z and ZipCrypto cannot distinguish a wrong password from a content checksum failure.
-const MAYBE_BAD_PASSWORD: &str = "The password may be incorrect.";
 
 pub(super) fn zip_error(error: zip::result::ZipError) -> ArchiveError {
+    use zip::result::ZipError;
     match error {
-        zip::result::ZipError::InvalidArchive(_) => archive_failed(INVALID_ARCHIVE),
-        zip::result::ZipError::Io(error) => archive_failed(archive_read_error(error, false)),
+        ZipError::InvalidArchive(_) => archive_failed(INVALID_ARCHIVE),
+        ZipError::Io(error) => archive_failed(archive_read_error(error, false)),
+        // ZIP's password check is a definite rejection, unlike a failed CRC or HMAC.
+        ZipError::InvalidPassword => {
+            ArchiveError::IncorrectPassword(INCORRECT_ARCHIVE_PASSWORD.to_owned())
+        }
+        ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED) => {
+            ArchiveError::PasswordRequired(PASSWORD_REQUIRED.to_owned())
+        }
         error => archive_failed(error),
     }
 }
@@ -58,18 +67,18 @@ fn sevenz_decode_error(error: sevenz_rust2::Error) -> ArchiveError {
         | Error::BadTerminatedPackInfo(_)
         | Error::BadTerminatedSubStreamsInfo
         | Error::BadTerminatedHeader(_) => archive_failed(INVALID_ARCHIVE),
-        Error::PasswordRequired => {
-            archive_failed("A password is required to extract this archive.")
+        Error::PasswordRequired => ArchiveError::PasswordRequired(PASSWORD_REQUIRED.to_owned()),
+        Error::MaybeBadPassword(_) => {
+            ArchiveError::IncorrectPassword(MAYBE_BAD_PASSWORD.to_owned())
         }
-        Error::MaybeBadPassword(_) => archive_failed("The password may be incorrect."),
-        Error::Other(message) if message.as_ref() == INVALID_ARCHIVE => archive_failed(message),
-        Error::Other(message) if message.as_ref() == MAYBE_BAD_PASSWORD => archive_failed(message),
         Error::Io(error, _) => archive_failed(archive_read_error(error, false)),
         error => archive_failed(error),
     }
 }
 
-fn archive_read_error(error: std::io::Error, password_supplied: bool) -> std::io::Error {
+/// Only encrypted data permits password retry; plain-header 7z and ZipCrypto
+/// cannot distinguish a wrong password from damage.
+fn archive_read_error(error: std::io::Error, decrypting: bool) -> std::io::Error {
     use std::io::ErrorKind;
     let checksum_failed = matches!(
         error
@@ -77,13 +86,16 @@ fn archive_read_error(error: std::io::Error, password_supplied: bool) -> std::io
             .and_then(|error| error.downcast_ref::<sevenz_rust2::Error>()),
         Some(sevenz_rust2::Error::ChecksumVerificationFailed)
     );
-    if password_supplied
+    if decrypting
         && (matches!(
             error.kind(),
             ErrorKind::InvalidData | ErrorKind::UnexpectedEof | ErrorKind::InvalidInput
         ) || checksum_failed)
     {
-        return std::io::Error::new(ErrorKind::InvalidData, MAYBE_BAD_PASSWORD);
+        return std::io::Error::new(
+            ErrorKind::InvalidData,
+            ArchiveError::IncorrectPassword(MAYBE_BAD_PASSWORD.to_owned()),
+        );
     }
     // TAR reports these malformed-header errors as Other, not InvalidData.
     let invalid_tar = error.kind() == ErrorKind::Other
@@ -180,21 +192,21 @@ fn read_link_target(reader: &mut impl Read) -> Result<Vec<u8>, ArchiveError> {
     reader
         .take(MAX_SYMLINK_TARGET_BYTES + 1)
         .read_to_end(&mut target)
-        .map_err(archive_failed)?;
+        .map_err(archive_read_failed)?;
     Ok(target)
 }
 
 // Translate only decoder reads; destination writes retain their own errors.
 struct ArchiveReader<R> {
     inner: R,
-    password_supplied: bool,
+    decrypting: bool,
 }
 
 impl<R> ArchiveReader<R> {
     fn new(inner: R) -> Self {
         Self {
             inner,
-            password_supplied: false,
+            decrypting: false,
         }
     }
 }
@@ -203,21 +215,100 @@ impl<R: Read> Read for ArchiveReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         self.inner
             .read(buffer)
-            .map_err(|error| archive_read_error(error, self.password_supplied))
+            .map_err(|error| archive_read_error(error, self.decrypting))
     }
 }
 
-/// tar-rs stops before gzip's CRC32/ISIZE trailer; EOF is needed to verify it.
-fn verify_gzip_trailer(reader: impl Read, cancelled: &AtomicBool) -> Result<(), ArchiveError> {
-    copy_with_big_buf(ArchiveReader::new(reader), &mut std::io::sink(), cancelled).map(|_| ())
+const GZIP_MAGIC: u8 = 0x1f;
+
+/// Unlike MultiGzDecoder, accepts zero padding after the final member.
+struct GzipMembers<R> {
+    /// Always `Some` outside a transition in [`Read::read`].
+    state: Option<GzipState<R>>,
 }
 
-fn sevenz_error(error: ArchiveError) -> sevenz_rust2::Error {
-    sevenz_rust2::Error::Other(error.to_string().into())
+enum GzipState<R> {
+    Member(Box<flate2::bufread::GzDecoder<R>>),
+    /// Retain this state on read errors so a retry cannot mistake them for EOF.
+    Boundary(R),
+    Rest(R),
 }
 
-fn sevenz_is_cancelled(error: &sevenz_rust2::Error) -> bool {
-    matches!(error, sevenz_rust2::Error::Other(message) if message.as_ref() == ARCHIVE_CANCELLED)
+impl<R: BufRead> GzipMembers<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            state: Some(GzipState::Member(Box::new(
+                flate2::bufread::GzDecoder::new(reader),
+            ))),
+        }
+    }
+
+    /// Tape blocking and `dd` may leave zero padding after the gzip trailer.
+    fn verify_padding(self, cancelled: &AtomicBool) -> Result<(), ArchiveError> {
+        let Some(GzipState::Rest(mut rest)) = self.state else {
+            return Ok(());
+        };
+        loop {
+            check_archive_cancelled(cancelled)?;
+            let chunk = rest
+                .fill_buf()
+                .map_err(|error| archive_failed(archive_read_error(error, false)))?;
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            if chunk.iter().any(|byte| *byte != 0) {
+                return Err(archive_failed(INVALID_ARCHIVE));
+            }
+            let length = chunk.len();
+            rest.consume(length);
+        }
+    }
+}
+
+impl<R: BufRead> Read for GzipMembers<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let next_member = match self.state.as_mut().expect("gzip state is present") {
+                GzipState::Member(decoder) => {
+                    let count = decoder.read(buffer)?;
+                    if count > 0 {
+                        return Ok(count);
+                    }
+                    false
+                }
+                GzipState::Boundary(inner) => inner.fill_buf()?.first() == Some(&GZIP_MAGIC),
+                GzipState::Rest(_) => return Ok(0),
+            };
+            let state = match self.state.take().expect("gzip state is present") {
+                GzipState::Member(decoder) => GzipState::Boundary((*decoder).into_inner()),
+                GzipState::Boundary(inner) if next_member => {
+                    GzipState::Member(Box::new(flate2::bufread::GzDecoder::new(inner)))
+                }
+                GzipState::Boundary(inner) | GzipState::Rest(inner) => GzipState::Rest(inner),
+            };
+            let ended = matches!(state, GzipState::Rest(_));
+            self.state = Some(state);
+            if ended {
+                return Ok(0);
+            }
+        }
+    }
+}
+
+/// tar-rs stops before gzip's CRC32/ISIZE trailer; drain every member to verify it.
+fn verify_gzip_trailer<R: BufRead>(
+    mut members: GzipMembers<R>,
+    cancelled: &AtomicBool,
+) -> Result<(), ArchiveError> {
+    copy_with_big_buf(
+        ArchiveReader::new(&mut members),
+        &mut std::io::sink(),
+        cancelled,
+    )?;
+    members.verify_padding(cancelled)
 }
 
 pub(super) fn extract_zip_from_archive(
@@ -232,7 +323,6 @@ pub(super) fn extract_zip_from_archive(
     if let Some(claimed) = archive.decompressed_size() {
         session.preflight_claimed_size(claimed)?;
     }
-    let password_supplied = password.is_some();
     let pw_bytes = password.map(str::as_bytes);
     let mut next_index = 0;
     let result = (|| {
@@ -250,9 +340,10 @@ pub(super) fn extract_zip_from_archive(
                 mode: member_mode(entry.unix_mode(), directory),
                 modified: zip_member_modified(&entry),
             };
+            let decrypting = password.is_some() && entry.encrypted();
             let mut reader = ArchiveReader {
                 inner: &mut entry,
-                password_supplied,
+                decrypting,
             };
             let target;
             let content = if directory {
@@ -276,6 +367,20 @@ pub(super) fn extract_zip_from_archive(
     })
 }
 
+enum TarInput {
+    Plain(std::fs::File),
+    Gzip(GzipMembers<BufReader<std::fs::File>>),
+}
+
+impl Read for TarInput {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(file) => file.read(buffer),
+            Self::Gzip(members) => members.read(buffer),
+        }
+    }
+}
+
 /// TAR cancellation reports at most the current member, never scans unread ones.
 pub(super) fn extract_tar(
     archive_path: &Path,
@@ -288,11 +393,10 @@ pub(super) fn extract_tar(
     let mut session = ExtractionSession::open(dest_dir, archive_name, progress, cancelled)?;
     session.record_hard_link_targets();
     let file = std::fs::File::open(archive_path).map_err(archive_failed)?;
-    // Parallel compressors such as pigz and bgzip write several gzip members.
-    let reader: Box<dyn std::io::Read> = if gzip {
-        Box::new(flate2::read::MultiGzDecoder::new(file))
+    let reader = if gzip {
+        TarInput::Gzip(GzipMembers::new(BufReader::with_capacity(32 * 1024, file)))
     } else {
-        Box::new(file)
+        TarInput::Plain(file)
     };
     let mut archive = tar::Archive::new(reader);
     let mut remaining = None;
@@ -366,14 +470,28 @@ pub(super) fn extract_tar(
         }
         Ok(())
     })();
-    let result = result.and_then(|()| {
-        if gzip {
-            verify_gzip_trailer(archive.into_inner(), cancelled)
-        } else {
-            Ok(())
-        }
+    let result = result.and_then(|()| match archive.into_inner() {
+        TarInput::Gzip(members) => verify_gzip_trailer(members, cancelled),
+        TarInput::Plain(_) => Ok(()),
     });
     session.finish(result, || remaining.into_iter().collect())
+}
+
+fn encrypted_7z_members(archive: &sevenz_rust2::Archive) -> Vec<bool> {
+    archive
+        .stream_map
+        .file_block_index
+        .iter()
+        .map(|block| {
+            block
+                .and_then(|block| archive.blocks.get(block))
+                .is_some_and(|block| {
+                    block.coders.iter().any(|coder| {
+                        coder.encoder_method_id() == sevenz_rust2::EncoderMethod::ID_AES256_SHA256
+                    })
+                })
+        })
+        .collect()
 }
 
 pub(super) fn extract_7z_from_reader(
@@ -388,6 +506,10 @@ pub(super) fn extract_7z_from_reader(
     let password_supplied = !password.is_empty();
     let mut archive =
         sevenz_rust2::ArchiveReader::new(reader, password).map_err(sevenz_decode_error)?;
+    let decrypting = encrypted_7z_members(archive.archive())
+        .into_iter()
+        .map(|encrypted| password_supplied && encrypted)
+        .collect::<Vec<_>>();
     let claimed = archive
         .archive()
         .files
@@ -409,49 +531,52 @@ pub(super) fn extract_7z_from_reader(
         .map(|(index, entry)| (std::ptr::from_ref(entry), index))
         .collect();
     let mut submitted = vec![false; member_indices.len()];
+    // sevenz_rust2 carries callback errors as text; retain their structured kind separately.
+    let mut member_error = None;
     let result = archive.for_each_entries(|entry, reader| {
-        session.check_cancelled().map_err(sevenz_error)?;
-        let Some(&index) = member_indices.get(&std::ptr::from_ref(entry)) else {
-            return Err(sevenz_rust2::Error::Other(
-                "7z decoder returned an unknown member".into(),
-            ));
-        };
-        let mut reader = ArchiveReader {
-            inner: reader,
-            password_supplied,
-        };
-        let unix_mode = (entry.has_windows_attributes
-            && entry.windows_attributes & FILE_ATTRIBUTE_UNIX_EXTENSION != 0)
-            .then_some(entry.windows_attributes >> 16);
-        let symlink = !entry.is_directory && unix_mode.is_some_and(|mode| mode & S_IFMT == S_IFLNK);
-        let metadata = MemberMetadata {
-            mode: member_mode(unix_mode, entry.is_directory),
-            modified: entry
-                .has_last_modified_date
-                .then(|| filetime(entry.last_modified_date.into()))
-                .flatten(),
-        };
-        let target;
-        let content = if entry.is_directory {
-            MemberContent::Directory
-        } else if symlink {
-            target = read_link_target(&mut reader).map_err(sevenz_error)?;
-            MemberContent::Symlink(&target)
-        } else {
-            MemberContent::File(&mut reader, Some(entry.size))
-        };
-        submitted[index] = true;
-        session
-            .extract_member(&entry.name, content, metadata)
-            .map_err(sevenz_error)?;
-        Ok(true)
+        let extracted = (|| {
+            session.check_cancelled()?;
+            let Some(&index) = member_indices.get(&std::ptr::from_ref(entry)) else {
+                return Err(archive_failed("7z decoder returned an unknown member"));
+            };
+            let mut reader = ArchiveReader {
+                inner: reader,
+                decrypting: decrypting[index],
+            };
+            let unix_mode = (entry.has_windows_attributes
+                && entry.windows_attributes & FILE_ATTRIBUTE_UNIX_EXTENSION != 0)
+                .then_some(entry.windows_attributes >> 16);
+            let symlink =
+                !entry.is_directory && unix_mode.is_some_and(|mode| mode & S_IFMT == S_IFLNK);
+            let metadata = MemberMetadata {
+                mode: member_mode(unix_mode, entry.is_directory),
+                modified: entry
+                    .has_last_modified_date
+                    .then(|| filetime(entry.last_modified_date.into()))
+                    .flatten(),
+            };
+            let target;
+            let content = if entry.is_directory {
+                MemberContent::Directory
+            } else if symlink {
+                target = read_link_target(&mut reader)?;
+                MemberContent::Symlink(&target)
+            } else {
+                MemberContent::File(&mut reader, Some(entry.size))
+            };
+            submitted[index] = true;
+            session.extract_member(&entry.name, content, metadata)
+        })();
+        extracted.map(|()| true).map_err(|error| {
+            let returned = sevenz_rust2::Error::Other(error.to_string().into());
+            member_error = Some(error);
+            returned
+        })
     });
     let result = result.map_err(|error| {
-        if sevenz_is_cancelled(&error) {
-            ArchiveError::Cancelled
-        } else {
-            sevenz_decode_error(error)
-        }
+        member_error
+            .take()
+            .unwrap_or_else(|| sevenz_decode_error(error))
     });
     session.finish(result, || {
         archive

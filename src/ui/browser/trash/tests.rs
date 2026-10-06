@@ -99,9 +99,33 @@ fn trashed_entry(root: &Path, name: &str, original: &Path) -> (FileEntry, PathBu
             image_dimensions: crate::model::MetadataValue::Unknown,
             child_count: crate::model::MetadataValue::Unknown,
             duration_seconds: crate::model::MetadataValue::Unknown,
+            recent_uri: None,
         },
         info,
     )
+}
+
+#[test]
+fn permanent_delete_confirmation_is_actionable_while_summary_loads() {
+    crate::test_support::gtk_test(
+        "ui::browser::trash::tests::permanent_delete_confirmation_is_actionable_while_summary_loads",
+        || {
+            let fixture = tempfile::tempdir().expect("fixture");
+            let original = fixture.path().join("original.txt");
+            let (entry, _) = trashed_entry(fixture.path(), "pending", &original);
+            let view = view();
+            let window = window(&view);
+
+            view.state.show_delete_confirmation(vec![entry]);
+
+            let confirm = find_widget(window.upcast_ref(), &|button: &gtk::Button| {
+                button.label().as_deref() == Some("Permanently delete 1 item")
+            })
+            .expect("permanent delete confirmation");
+            assert!(confirm.is_sensitive());
+            window.close();
+        },
+    );
 }
 
 #[test]

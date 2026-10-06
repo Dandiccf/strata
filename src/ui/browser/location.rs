@@ -7,8 +7,10 @@ use crate::services::{
     sanitize_uri_credentials,
 };
 use crate::ui::blur::BlurBin;
-use crate::ui::browser::clipboard::copy_path_text;
-use crate::ui::browser::{BrowserView, ViewState};
+use crate::ui::browser::clipboard::{
+    PreparedFileDrop, arm_spring_load_navigation, copy_path_text, prepare_file_drop_target,
+};
+use crate::ui::browser::{BrowserView, ViewState, file_drop_action};
 use crate::ui::controls::{
     ModalTone, focus_button, form_entry, form_label, form_password_entry,
     message_dialog_description, message_dialog_layout, modal_layout, segmented_control,
@@ -1630,6 +1632,7 @@ impl ViewState {
                             prompt_details,
                         );
                     } else {
+                        state.abandon_deferred_reveal();
                         state.location_stack.set_visible_child_name("breadcrumbs");
                         state.restore_location_text();
                         if let Some(message) = mount_failure_message(&location, &error) {
@@ -1705,6 +1708,7 @@ impl ViewState {
             },
             move || {
                 if let Some(state) = cancel_weak.upgrade() {
+                    state.abandon_deferred_reveal();
                     state.location_stack.set_visible_child_name("breadcrumbs");
                     state.restore_location_text();
                     state.browser.focus_active();
@@ -2301,11 +2305,71 @@ impl ViewState {
                 crate::ui::accessibility::set_description(&button, Some(&crumb.display_path()));
                 button.set_cursor_from_name(Some("pointer"));
                 let weak = Rc::downgrade(self);
+                let clicked_weak = weak.clone();
+                let clicked_crumb = crumb.clone();
                 button.connect_clicked(move |_| {
-                    if let Some(state) = weak.upgrade() {
-                        state.browser.navigate(crumb.clone());
+                    if let Some(state) = clicked_weak.upgrade() {
+                        state.browser.navigate(clicked_crumb.clone());
                     }
                 });
+                let spring_navigate: Rc<dyn Fn(Location)> = {
+                    let weak = weak.clone();
+                    Rc::new(move |location| {
+                        if let Some(state) = weak.upgrade() {
+                            state.browser.navigate_location(location, false);
+                        }
+                    })
+                };
+                let PreparedFileDrop {
+                    target: drop,
+                    state: drop_state,
+                } = prepare_file_drop_target(move || Some(crumb.clone()));
+                let state_for_enter = drop_state.clone();
+                let navigate_for_enter = spring_navigate.clone();
+                drop.connect_enter(move |target, _, _| {
+                    let action = file_drop_action(target, &state_for_enter);
+                    arm_spring_load_navigation(&state_for_enter, target, &navigate_for_enter);
+                    action
+                });
+                let state_for_motion = drop_state.clone();
+                let navigate_for_motion = spring_navigate.clone();
+                drop.connect_motion(move |target, _, _| {
+                    let action = file_drop_action(target, &state_for_motion);
+                    arm_spring_load_navigation(&state_for_motion, target, &navigate_for_motion);
+                    action
+                });
+                let state_for_value = drop_state.clone();
+                let navigate_for_value = spring_navigate.clone();
+                drop.connect_value_notify(move |target| {
+                    if target.current_drop().is_none() {
+                        return;
+                    }
+                    arm_spring_load_navigation(&state_for_value, target, &navigate_for_value);
+                });
+                let state_for_leave = drop_state.clone();
+                drop.connect_leave(move |_| {
+                    state_for_leave.cancel_spring_load_navigation();
+                });
+                drop.connect_drop(move |target, value, _, _| {
+                    drop_state.cancel_spring_load_navigation();
+                    let Some(state) = weak.upgrade() else {
+                        return false;
+                    };
+                    let Some(destination) = drop_state.destination() else {
+                        return false;
+                    };
+                    let Some(sources) = super::locations_from_file_list_value(value) else {
+                        return false;
+                    };
+                    if sources.is_empty() {
+                        return false;
+                    }
+                    let commit =
+                        super::file_drop_commit(target, &destination, &sources, &drop_state);
+                    state.commit_file_drop(destination, sources, commit);
+                    true
+                });
+                button.add_controller(drop);
                 self.breadcrumbs.append(&button);
             }
         }

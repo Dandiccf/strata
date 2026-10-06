@@ -221,7 +221,7 @@ fn append_browsing_options(content: &gtk::Box, manager: &Rc<PreferenceManager>) 
     for switch in [
         PreferenceSwitch {
             title: "Folder peeking",
-            description: "Preview folders automatically while moving through a pane.",
+            description: "Preview folders on hover in Icons and List views.",
             read: PreferenceManager::folder_peeking,
             write: PreferenceManager::set_folder_peeking,
         },

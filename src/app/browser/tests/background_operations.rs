@@ -106,6 +106,7 @@ fn background_completion_preserves_foreground_callbacks_and_ignores_late_events(
         OperationEvent::Failed {
             request_id: first,
             message: "Late failure".into(),
+            password_failure: None,
         },
     );
     assert_eq!(events.borrow().len(), count);
@@ -114,9 +115,10 @@ fn background_completion_preserves_foreground_callbacks_and_ignores_late_events(
         OperationEvent::Failed {
             request_id: second,
             message: "Foreground failure".into(),
+            password_failure: None,
         },
     );
-    assert!(events.borrow().iter().any(|event| matches!(event, BrowserEvent::OperationFailed { message } if message == "Foreground failure")));
+    assert!(events.borrow().iter().any(|event| matches!(event, BrowserEvent::OperationFailed { message, .. } if message == "Foreground failure")));
 }
 
 #[test]
@@ -259,7 +261,7 @@ fn parked_delete_finishes_without_cancelling_foreground_and_respects_permanent_u
                 request_id: id,
                 completed: 1,
                 total: 1,
-                deleted_location: Some(deleted.clone()),
+                deleted_locations: vec![deleted.clone()],
             },
         );
         operations.emit(

@@ -8,7 +8,7 @@ use std::{
     process::Command,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     time::{Duration, Instant},
@@ -23,9 +23,11 @@ use super::release_channel::Version;
 
 mod archive;
 mod command;
+mod download;
 mod manifest;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+use download::{DownloadTimeouts, describe_download_error, describe_read_error, download_agent};
+
 const RELEASE_DOWNLOAD_ROOT: &str = "https://github.com/lgse/strata/releases/download";
 const REPOSITORY: &str = "lgse/strata";
 const MAX_UPDATE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
@@ -55,28 +57,54 @@ impl UpdateMethod {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UpdateInstall {
-    Downloading { downloaded: u64, total: Option<u64> },
+    Downloading {
+        downloaded: u64,
+        total: Option<u64>,
+    },
     Verifying,
     Installing,
+    /// Cancellation is no longer possible.
+    Finalizing,
     Installed,
     Cancelled,
     Failed(String),
 }
 
+const INSTALL_OPEN: u8 = 0;
+const INSTALL_CANCELLED: u8 = 1;
+const INSTALL_COMMITTED: u8 = 2;
+
+/// Cancellation and commitment to replacement are mutually exclusive.
 #[derive(Clone, Debug, Default)]
-pub struct InstallCancel(Arc<AtomicBool>);
+pub struct InstallCancel(Arc<AtomicU8>);
 
 impl InstallCancel {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+    /// Returns false if replacement is already committed and cannot stop.
+    pub fn cancel(&self) -> bool {
+        self.settle(INSTALL_CANCELLED)
     }
 
-    fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+    /// Returns false if cancellation won the race; the binary must not be replaced.
+    pub(crate) fn try_commit(&self) -> bool {
+        self.settle(INSTALL_COMMITTED)
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire) == INSTALL_CANCELLED
+    }
+
+    fn settle(&self, state: u8) -> bool {
+        match self
+            .0
+            .compare_exchange(INSTALL_OPEN, state, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => true,
+            Err(current) => current == state,
+        }
     }
 
     fn check(&self) -> Result<(), InstallStop> {
@@ -511,17 +539,7 @@ fn try_install(
     let old_executable = fs::metadata(current_exe)
         .map_err(|error| format!("Could not inspect the installed binary: {error}"))?;
     cancel.check()?;
-    let rollback = stage_rollback(current_exe, exe_dir)?;
-    if let Err(stop) = cancel.check() {
-        let _removed = fs::remove_file(&rollback);
-        return Err(stop);
-    }
-    if let Err(error) = staged.persist(current_exe) {
-        let _removed = fs::remove_file(&rollback);
-        return Err(InstallStop::Failed(format!(
-            "Could not replace the installed binary: {error}"
-        )));
-    }
+    let rollback = commit_replacement(staged, current_exe, exe_dir, cancel, progress)?;
 
     if let Err(error) = sync_directory(exe_dir).and_then(|()| confirm_replacement(current_exe)) {
         restore_rollback(&rollback, current_exe)?;
@@ -535,6 +553,28 @@ fn try_install(
     retire_old_instances(Path::new("/proc"), current_exe, &old_executable);
 
     Ok(())
+}
+
+fn commit_replacement(
+    staged: tempfile::TempPath,
+    current_exe: &Path,
+    exe_dir: &Path,
+    cancel: &InstallCancel,
+    progress: &Sender<UpdateInstall>,
+) -> Result<PathBuf, InstallStop> {
+    let rollback = stage_rollback(current_exe, exe_dir)?;
+    if !cancel.try_commit() {
+        let _removed = fs::remove_file(&rollback);
+        return Err(InstallStop::Cancelled);
+    }
+    let _sent = progress.send(UpdateInstall::Finalizing);
+    if let Err(error) = staged.persist(current_exe) {
+        let _removed = fs::remove_file(&rollback);
+        return Err(InstallStop::Failed(format!(
+            "Could not replace the installed binary: {error}"
+        )));
+    }
+    Ok(rollback)
 }
 
 fn prepare_release_binary(
@@ -678,11 +718,7 @@ fn fetch_update_metadata(
     cancel: &InstallCancel,
 ) -> Result<Vec<u8>, InstallStop> {
     cancel.check()?;
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_TIMEOUT))
-        .build();
-    let agent: ureq::Agent = config.into();
-    let response = agent
+    let response = download_agent(DownloadTimeouts::default(), cancel)
         .get(url)
         .header("User-Agent", "strata-file-manager")
         .call();
@@ -947,15 +983,30 @@ fn download_to_file_bounded(
     cancel: &InstallCancel,
     progress: &Sender<UpdateInstall>,
 ) -> Result<(), InstallStop> {
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_TIMEOUT))
-        .build();
-    let agent: ureq::Agent = config.into();
-    let mut response = agent
+    download_to_file_with(
+        url,
+        destination,
+        limit,
+        cancel,
+        progress,
+        DownloadTimeouts::default(),
+    )
+}
+
+fn download_to_file_with(
+    url: &str,
+    destination: &Path,
+    limit: u64,
+    cancel: &InstallCancel,
+    progress: &Sender<UpdateInstall>,
+    timeouts: DownloadTimeouts,
+) -> Result<(), InstallStop> {
+    let response = download_agent(timeouts, cancel)
         .get(url)
         .header("User-Agent", "strata-file-manager")
-        .call()
-        .map_err(|error| format!("Could not download the update: {error}"))?;
+        .call();
+    cancel.check()?;
+    let mut response = response.map_err(|error| describe_download_error(&error))?;
     let total: Option<u64> = response
         .headers()
         .get("content-length")
@@ -973,9 +1024,13 @@ fn download_to_file_bounded(
     let _sent = progress.send(UpdateInstall::Downloading { downloaded, total });
     loop {
         cancel.check()?;
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("Could not download the update: {error}"))?;
+        let count = match reader.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) => {
+                cancel.check()?;
+                return Err(describe_read_error(&error).into());
+            }
+        };
         if count == 0 {
             break;
         }

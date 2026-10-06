@@ -8,7 +8,7 @@ import time
 import pytest
 
 from harness.browser import ENTRY_ROLES
-from harness.modes import ALL_MODES
+from harness.modes import ALL_MODES, SINGLE_PANE_MODES
 
 
 def _scroll_pane(node):
@@ -73,6 +73,49 @@ def test_dragging_a_file_onto_a_folder_moves_it(strata, mode):
     )
     strata.wait_for_entry_gone("todo.txt", directory=strata.fixture.root.name)
     assert fixture.path("archive/todo.txt").read_text() == "todo\n"
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_spring_navigation_keeps_the_file_drag_usable(strata, mode):
+    source = strata.entry("todo.txt")
+    target = strata.entry("documents")
+    strata.pointer.drag_points(
+        strata.pointer.drag_origin(source), target.screen_bounds().center, release=False
+    )
+    try:
+        strata.wait(lambda: strata.pane("documents"), "spring navigation into documents")
+        crumb = strata.wait(
+            lambda: strata.window.find(role="button", name=strata.fixture.root.name),
+            "source folder breadcrumb",
+        )
+        strata.pointer.move_to(*crumb.screen_bounds().center)
+        strata.wait_for_directory(strata.fixture.root.name)
+        target = strata.entry("documents")
+        strata.pointer.move_to(*target.screen_bounds().center)
+        strata.wait(lambda: strata.pane("documents"), "second spring navigation")
+        pane = strata.pane("documents").screen_bounds()
+        strata.pointer.move_to(pane.x + pane.width // 2, pane.y + pane.height - 20)
+    finally:
+        strata.pointer.connection.button(1, False)
+    strata.wait(
+        lambda: strata.fixture.path("documents/todo.txt").exists(),
+        "the held file to drop after spring navigation",
+    )
+    assert not strata.fixture.path("todo.txt").exists()
+    assert strata.fixture.path("documents/todo.txt").read_text() == "todo\n"
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_dropping_on_a_parent_breadcrumb_moves_the_file(strata, mode):
+    strata.open_directory("documents")
+    crumb = strata.wait(
+        lambda: strata.window.find(role="button", name=strata.fixture.root.name),
+        "parent breadcrumb",
+    )
+    strata.pointer.drag(strata.entry("notes.txt", directory="documents"), crumb)
+    strata.wait(lambda: strata.fixture.path("notes.txt").exists(), "breadcrumb drop")
+    assert not strata.fixture.path("documents/notes.txt").exists()
+    assert strata.fixture.path("notes.txt").read_text() == "notes\n"
 
 
 @pytest.mark.parametrize("mode", ALL_MODES)
@@ -304,9 +347,28 @@ def metadata_drag_origin(strata, source, edge=None):
     return bounds.x + 4, y
 
 
-@pytest.mark.preferences(folder_peeking=True, browser_mode="icons")
-def test_starting_a_drag_cancels_a_folder_peek(strata):
-    """#621: a drag beginning must cancel any open folder peek in Icons view."""
+@pytest.mark.preferences(folder_peeking=True, browser_mode="columns", columns_mirror_selection=False)
+def test_columns_never_open_hover_peeks_even_with_the_preference_enabled(strata):
+    folder = strata.entry("documents")
+    strata.pointer.move_to(*folder.screen_bounds().center)
+    deadline = time.monotonic() + 1.2
+    seen_peek = False
+
+    def observed_hover():
+        nonlocal seen_peek
+        seen_peek = seen_peek or strata.peek() is not None
+        return time.monotonic() >= deadline
+
+    strata.wait(observed_hover, "a sustained column hover to remain free of folder peeks")
+    assert not seen_peek, "Miller columns must ignore the folder-peeking preference"
+    strata.open_directory("documents")
+    strata.entry("notes.txt", directory="documents")
+
+
+@pytest.mark.preferences(folder_peeking=True)
+@pytest.mark.parametrize("mode", SINGLE_PANE_MODES)
+def test_starting_a_drag_cancels_a_folder_peek(strata, mode):
+    """#621: beginning a drag must cancel any open folder peek."""
 
     pane = strata.pane()
     pane_bounds = pane.screen_bounds()
@@ -315,7 +377,7 @@ def test_starting_a_drag_cancels_a_folder_peek(strata):
     folder = strata.entry("archive")
     start = strata.pointer.drag_origin(folder)
     strata.pointer.move_to(*start)
-    deadline = time.monotonic() + 0.6
+    deadline = time.monotonic() + 0.2
     while time.monotonic() < deadline:
         assert strata.peek() is None, "a brief hover must not open a folder peek"
         time.sleep(0.02)

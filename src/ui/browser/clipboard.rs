@@ -18,38 +18,72 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
-const DRAG_PROXY_MAX_SIZE: f64 = 72.0;
-const DRAG_PROXY_MIN_SIZE: f64 = 32.0;
 const DRAG_PROXY_PADDING: f64 = 3.0;
 const DRAG_PROXY_STACK_OFFSET: f64 = 5.0;
 
-/// Renders a compact Finder-style file pile and returns its pointer hotspot.
+const DRAG_PREVIEW_ICON_PX: f64 = 32.0;
+
+struct DragPreviewLayout {
+    canvas_w: f64,
+    canvas_h: f64,
+    front_x: f64,
+    front_y: f64,
+    badge: Option<(f64, f64, f64, f64)>,
+    hotspot: (i32, i32),
+}
+
+fn drag_preview_layout(icon_px: f64, badge: Option<(f64, f64)>) -> DragPreviewLayout {
+    let front_x = DRAG_PROXY_PADDING;
+    let front_y = DRAG_PROXY_PADDING;
+    let (badge_x, badge_y, badge_w, badge_h) = badge.map_or((0.0, 0.0, 0.0, 0.0), |(w, h)| {
+        (
+            front_x + icon_px - w * 0.4,
+            front_y + icon_px - h * 0.4,
+            w,
+            h,
+        )
+    });
+    let rear_extent = DRAG_PROXY_STACK_OFFSET + DRAG_PROXY_PADDING;
+    let canvas_w = (badge_x + badge_w)
+        .max(front_x + icon_px)
+        .max(icon_px + rear_extent + DRAG_PROXY_PADDING);
+    let canvas_h = (badge_y + badge_h)
+        .max(front_y + icon_px)
+        .max(icon_px + rear_extent + DRAG_PROXY_PADDING);
+    DragPreviewLayout {
+        canvas_w: canvas_w + DRAG_PROXY_PADDING,
+        canvas_h: canvas_h + DRAG_PROXY_PADDING,
+        front_x,
+        front_y,
+        badge: badge.map(|_| (badge_x, badge_y, badge_w, badge_h)),
+        hotspot: (
+            (front_x + icon_px / 2.0).round() as i32,
+            (front_y + icon_px / 2.0).round() as i32,
+        ),
+    }
+}
+
 #[expect(
     deprecated,
     reason = "lookup_color is the only way to read custom named CSS colors"
 )]
-pub(in crate::ui) fn drag_icon_with_count(
-    base: &gtk::Widget,
-    count: usize,
+pub(crate) fn drag_preview_icon(
+    base: &impl IsA<gtk::Widget>,
+    entries: &[FileEntry],
 ) -> Option<(gtk::gdk::Texture, i32, i32)> {
-    if count <= 1 {
-        return None;
-    }
-
-    let source_w = f64::from(base.width()).max(1.0);
-    let source_h = f64::from(base.height()).max(1.0);
-    let source_size = source_w.max(source_h);
-    let scale = if source_size < DRAG_PROXY_MIN_SIZE {
-        DRAG_PROXY_MIN_SIZE / source_size
-    } else {
-        (DRAG_PROXY_MAX_SIZE / source_size).min(1.0)
-    };
-    let icon_w = source_w * scale;
-    let icon_h = source_h * scale;
-    let front_x = DRAG_PROXY_PADDING;
-    let front_y = DRAG_PROXY_PADDING;
-    let paintable = gtk::WidgetPaintable::new(Some(base));
+    let icon_name = entries
+        .first()
+        .map(super::entry::entry_icon)
+        .unwrap_or(crate::assets::icons::DOCUMENTS);
+    let icon = crate::assets::drag_icon_texture(
+        icon_name,
+        &crate::assets::primary_icon_color(),
+        DRAG_PREVIEW_ICON_PX as i32,
+    )?;
+    let icon_w = f64::from(icon.width()).max(1.0);
+    let icon_h = f64::from(icon.height()).max(1.0);
 
     let style = base.style_context();
     let accent = style.lookup_color("strata_accent")?;
@@ -59,82 +93,80 @@ pub(in crate::ui) fn drag_icon_with_count(
     let text = style.lookup_color("strata_text")?;
     let badge_text = contrasting_badge_text(&accent, &text, &surface);
 
-    let label = count.to_string();
-    let layout = base.create_pango_layout(Some(&label));
-    if let Some(mut font) = layout.font_description() {
-        font.set_weight(gtk::pango::Weight::Semibold);
-        layout.set_font_description(Some(&font));
-    }
-    let (ink, _) = layout.pixel_extents();
-    let (badge_w, badge_h) = badge_dimensions(f64::from(ink.width()), f64::from(ink.height()));
-    let badge_x = front_x + icon_w - badge_w * 0.4;
-    let badge_y = front_y + icon_h - badge_h * 0.4;
-    let rear_extent = DRAG_PROXY_STACK_OFFSET + DRAG_PROXY_PADDING;
-    let canvas_w = (badge_x + badge_w).max(front_x + icon_w) + DRAG_PROXY_PADDING;
-    let canvas_h = (badge_y + badge_h).max(front_y + icon_h) + DRAG_PROXY_PADDING;
-    let canvas_w = canvas_w.max(icon_w + rear_extent + DRAG_PROXY_PADDING);
-    let canvas_h = canvas_h.max(icon_h + rear_extent + DRAG_PROXY_PADDING);
+    let multiple = entries.len() > 1;
+    let badge = multiple.then(|| {
+        let layout = base.create_pango_layout(Some(&entries.len().to_string()));
+        if let Some(mut font) = layout.font_description() {
+            font.set_weight(gtk::pango::Weight::Semibold);
+            layout.set_font_description(Some(&font));
+        }
+        let (ink, _) = layout.pixel_extents();
+        let (w, h) = badge_dimensions(f64::from(ink.width()), f64::from(ink.height()));
+        (layout, badge_text, ink, w, h)
+    });
+    let layout = drag_preview_layout(
+        icon_w.max(icon_h),
+        badge.as_ref().map(|(_, _, _, w, h)| (*w, *h)),
+    );
+    let icon_rect =
+        |x: f64, y: f64| graphene::Rect::new(x as f32, y as f32, icon_w as f32, icon_h as f32);
 
     let snapshot = gtk::Snapshot::new();
     let transparent = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0);
     snapshot.append_color(
         &transparent,
-        &graphene::Rect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
+        &graphene::Rect::new(0.0, 0.0, layout.canvas_w as f32, layout.canvas_h as f32),
     );
 
-    for (offset, opacity) in [(DRAG_PROXY_STACK_OFFSET, 0.32), (2.5, 0.6)] {
-        snapshot.push_opacity(opacity);
-        snapshot.save();
-        snapshot.translate(&graphene::Point::new(
-            (front_x + offset) as f32,
-            (front_y + offset) as f32,
-        ));
-        paintable.snapshot(&snapshot, icon_w, icon_h);
-        snapshot.restore();
-        snapshot.pop();
+    if multiple {
+        for (offset, opacity) in [(DRAG_PROXY_STACK_OFFSET, 0.32), (2.5, 0.6)] {
+            snapshot.push_opacity(opacity);
+            snapshot.append_texture(
+                &icon,
+                &icon_rect(layout.front_x + offset, layout.front_y + offset),
+            );
+            snapshot.pop();
+        }
     }
 
     let mut shadow_color = text;
     shadow_color.set_alpha(0.34);
     snapshot.push_shadow(&[gtk::gsk::Shadow::new(shadow_color, 0.0, 1.0, 3.0)]);
-    snapshot.save();
-    snapshot.translate(&graphene::Point::new(front_x as f32, front_y as f32));
-    paintable.snapshot(&snapshot, icon_w, icon_h);
-    snapshot.restore();
+    snapshot.append_texture(&icon, &icon_rect(layout.front_x, layout.front_y));
     snapshot.pop();
 
-    let badge_rect = gtk::gsk::RoundedRect::from_rect(
-        graphene::Rect::new(
-            badge_x as f32,
-            badge_y as f32,
-            badge_w as f32,
-            badge_h as f32,
-        ),
-        (badge_h / 2.0) as f32,
-    );
-    snapshot.push_rounded_clip(&badge_rect);
-    snapshot.append_color(&accent, badge_rect.bounds());
-    snapshot.pop();
-    snapshot.append_border(
-        &badge_rect,
-        &[1.0; 4],
-        &[surface, surface, surface, surface],
-    );
-    let tx = badge_x + (badge_w - f64::from(ink.width())) / 2.0 - f64::from(ink.x());
-    let ty = badge_y + (badge_h - f64::from(ink.height())) / 2.0 - f64::from(ink.y());
-    snapshot.save();
-    snapshot.translate(&graphene::Point::new(tx as f32, ty as f32));
-    snapshot.append_layout(&layout, &badge_text);
-    snapshot.restore();
+    if let (Some((badge_x, badge_y, badge_w, badge_h)), Some((pango, color, ink, _, _))) =
+        (layout.badge, badge.as_ref())
+    {
+        let badge_rect = gtk::gsk::RoundedRect::from_rect(
+            graphene::Rect::new(
+                badge_x as f32,
+                badge_y as f32,
+                badge_w as f32,
+                badge_h as f32,
+            ),
+            (badge_h / 2.0) as f32,
+        );
+        snapshot.push_rounded_clip(&badge_rect);
+        snapshot.append_color(&accent, badge_rect.bounds());
+        snapshot.pop();
+        snapshot.append_border(
+            &badge_rect,
+            &[1.0; 4],
+            &[surface, surface, surface, surface],
+        );
+        let tx = badge_x + (badge_w - f64::from(ink.width())) / 2.0 - f64::from(ink.x());
+        let ty = badge_y + (badge_h - f64::from(ink.height())) / 2.0 - f64::from(ink.y());
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(tx as f32, ty as f32));
+        snapshot.append_layout(pango, color);
+        snapshot.restore();
+    }
 
     let renderer = base.native().and_then(|native| native.renderer())?;
     let node = snapshot.to_node()?;
     let texture = renderer.render_texture(&node, None);
-    Some((
-        texture,
-        (front_x + icon_w / 2.0).round() as i32,
-        (front_y + icon_h / 2.0).round() as i32,
-    ))
+    Some((texture, layout.hotspot.0, layout.hotspot.1))
 }
 
 fn badge_dimensions(text_width: f64, text_height: f64) -> (f64, f64) {
@@ -177,12 +209,21 @@ pub(crate) struct PreparedFileDrop {
     pub state: Rc<FileDropState>,
 }
 
+pub(crate) const SPRING_LOAD_NAVIGATE_DELAY: Duration = Duration::from_millis(750);
+
 /// Reuses one classification for cursor feedback and the eventual transfer.
 pub(crate) struct FileDropState {
     destination: Rc<dyn Fn() -> Option<Location>>,
     last_override: Cell<DropOverride>,
     sources: RefCell<Option<Rc<[Location]>>>,
     classification: RefCell<Option<DropClassification>>,
+    spring_load: RefCell<Option<SpringLoadPending>>,
+}
+
+struct SpringLoadPending {
+    destination: Location,
+    navigate: Option<Box<dyn FnOnce(Location)>>,
+    timer: glib::SourceId,
 }
 
 struct DropClassification {
@@ -206,11 +247,60 @@ impl FileDropState {
             last_override: Cell::new(DropOverride::None),
             sources: RefCell::new(None),
             classification: RefCell::new(None),
+            spring_load: RefCell::new(None),
         }
     }
 
     pub(crate) fn destination(&self) -> Option<Location> {
         (self.destination)()
+    }
+
+    // Repeated motion must not postpone navigation; recycled rows must not open stale destinations.
+    pub(crate) fn schedule_spring_load_navigation(
+        self: &Rc<Self>,
+        drag_active: impl Fn() -> bool + 'static,
+        destination: Location,
+        delay: Duration,
+        navigate: impl FnOnce(Location) + 'static,
+    ) {
+        if self
+            .spring_load
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.destination == destination)
+        {
+            return;
+        }
+        self.cancel_spring_load_navigation();
+        let state = Rc::downgrade(self);
+        let timer = glib::timeout_add_local_once(delay, move || {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            let Some(pending) = state.spring_load.borrow_mut().take() else {
+                return;
+            };
+            if !drag_active() {
+                return;
+            }
+            if state.destination().as_ref() != Some(&pending.destination) {
+                return;
+            }
+            if let Some(navigate) = pending.navigate {
+                navigate(pending.destination);
+            }
+        });
+        *self.spring_load.borrow_mut() = Some(SpringLoadPending {
+            destination,
+            navigate: Some(Box::new(navigate)),
+            timer,
+        });
+    }
+
+    pub(crate) fn cancel_spring_load_navigation(&self) {
+        if let Some(pending) = self.spring_load.borrow_mut().take() {
+            pending.timer.remove();
+        }
     }
 
     fn reset(&self) {
@@ -308,6 +398,48 @@ impl FileDropState {
         });
         (relation, is_noop)
     }
+}
+
+pub(crate) fn file_drag_hover_target(
+    drop_state: &Rc<FileDropState>,
+    target: &gtk::DropTarget,
+) -> Option<Location> {
+    let destination = drop_state.destination()?;
+    target
+        .current_drop()
+        .filter(|offered| {
+            offered
+                .formats()
+                .contains_type(gtk::gdk::FileList::static_type())
+        })
+        .map(|_| destination)
+}
+
+/// Ignore drop validity so the source folder can spring open even though a self-drop is forbidden.
+pub(crate) fn arm_spring_load_navigation(
+    drop_state: &Rc<FileDropState>,
+    target: &gtk::DropTarget,
+    navigate: &Rc<dyn Fn(Location)>,
+) {
+    let Some(destination) = file_drag_hover_target(drop_state, target) else {
+        drop_state.cancel_spring_load_navigation();
+        return;
+    };
+    let drag_active = {
+        let target = target.downgrade();
+        move || {
+            target
+                .upgrade()
+                .is_some_and(|target| target.current_drop().is_some())
+        }
+    };
+    let navigate = navigate.clone();
+    drop_state.schedule_spring_load_navigation(
+        drag_active,
+        destination,
+        SPRING_LOAD_NAVIGATE_DELAY,
+        move |location| navigate(location),
+    );
 }
 
 pub(crate) fn prepare_file_drop_target(

@@ -19,9 +19,11 @@ pub(super) const PEEK_LABEL: &str = "Folder peek";
 
 const PEEK_GAP: f32 = 8.0;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct PeekAnchor {
     pub(super) widget: gtk::Widget,
-    pub(super) origin_depth: usize,
 }
 
 pub(super) struct PeekView {
@@ -46,7 +48,7 @@ pub struct PeekBehavior {
 impl Default for PeekBehavior {
     fn default() -> Self {
         Self {
-            open_delay: Duration::from_millis(1000),
+            open_delay: Duration::from_millis(500),
             close_delay: Duration::from_millis(80),
             fade_duration: Duration::from_millis(150),
             item_limit: 8,
@@ -112,19 +114,6 @@ fn peek_label_factory(entries: Rc<RefCell<Vec<FileEntry>>>) -> gtk::SignalListIt
     });
     factory.connect_unbind(|_, item| crate::ui::thumbnail::cancel_list_item_thumbnails(item));
     factory
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PeekOriginBounds {
-    Anchor,
-    Column,
-}
-
-fn peek_origin_bounds(mode: BrowserMode) -> PeekOriginBounds {
-    match mode {
-        BrowserMode::Columns => PeekOriginBounds::Column,
-        BrowserMode::Icons | BrowserMode::List => PeekOriginBounds::Anchor,
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,7 +195,8 @@ impl ViewState {
         location: Location,
         anchor: gtk::Widget,
     ) {
-        if !self.peek_enabled.get()
+        if self.mode.get() == BrowserMode::Columns
+            || !self.peek_enabled.get()
             || self.input_ownership.borrow().last_navigation
                 == crate::ui::input_ownership::NavigationInput::Keyboard
         {
@@ -227,10 +217,8 @@ impl ViewState {
         {
             return;
         }
-        self.peek_anchor.replace(Some(PeekAnchor {
-            widget: anchor,
-            origin_depth,
-        }));
+        self.peek_anchor
+            .replace(Some(PeekAnchor { widget: anchor }));
 
         let weak_state = Rc::downgrade(self);
         let source = glib::timeout_add_local_once(self.peek_behavior.open_delay, move || {
@@ -268,6 +256,10 @@ impl ViewState {
     pub(super) fn append_peek(self: &Rc<Self>, location: &Location) {
         let anchor = self.peek_anchor.take();
         self.close_peek_visual();
+        if self.mode.get() == BrowserMode::Columns {
+            self.browser.close_peek();
+            return;
+        }
         let Some(anchor) = anchor else {
             self.browser.close_peek();
             return;
@@ -276,24 +268,9 @@ impl ViewState {
             self.browser.close_peek();
             return;
         };
-        let source_bounds = match peek_origin_bounds(self.mode_views.borrow().mode()) {
-            PeekOriginBounds::Anchor => row_bounds,
-            PeekOriginBounds::Column => {
-                let Some(bounds) = self
-                    .columns
-                    .borrow()
-                    .get(anchor.origin_depth)
-                    .and_then(|column| column.shell.compute_bounds(&self.overlay))
-                else {
-                    self.browser.close_peek();
-                    return;
-                };
-                bounds
-            }
-        };
         let Some(placement) = peek_horizontal_placement(
-            source_bounds.x(),
-            source_bounds.width(),
+            row_bounds.x(),
+            row_bounds.width(),
             self.overlay.width() as f32,
         ) else {
             self.browser.close_peek();
@@ -407,14 +384,14 @@ impl ViewState {
     }
 
     pub(in crate::ui) fn open_keyboard_peek(&self) {
+        if self.mode.get() == BrowserMode::Columns {
+            return;
+        }
         let Some((widget, depth, location)) = self.mode_views.borrow().keyboard_peek_target()
         else {
             return;
         };
-        self.peek_anchor.replace(Some(PeekAnchor {
-            widget,
-            origin_depth: depth,
-        }));
+        self.peek_anchor.replace(Some(PeekAnchor { widget }));
         self.browser.begin_peek(depth, location);
         if self.peek.borrow().is_none() {
             self.peek_anchor.take();

@@ -30,7 +30,7 @@ use crate::{
     model::Location,
     services::{
         ArchiveFormat, CancelledOperation, CompressRequest, ExtractRequest, LoadHandle,
-        OperationEvent, OperationRequestId, validate_basename,
+        OperationEvent, OperationRequestId, PasswordFailure, validate_basename,
     },
 };
 use compression::{
@@ -87,6 +87,7 @@ pub(super) fn compress(request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: "Archive destination must be a local path".to_owned(),
+                password_failure: None,
             });
             return;
         };
@@ -94,6 +95,7 @@ pub(super) fn compress(request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: message.to_owned(),
+                password_failure: None,
             });
             return;
         }
@@ -108,6 +110,7 @@ pub(super) fn compress(request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: "Nothing to compress".to_owned(),
+                password_failure: None,
             });
             return;
         }
@@ -180,9 +183,10 @@ pub(super) fn compress(request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)
                 Vec::new(),
                 source_locations,
             )),
-            Err(ArchiveError::Failed(error)) => emit(OperationEvent::Failed {
+            Err(error) => emit(OperationEvent::Failed {
                 request_id: request.id,
-                message: error,
+                message: error.to_string(),
+                password_failure: None,
             }),
         }
     });
@@ -202,6 +206,7 @@ pub(super) fn extract(request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: "Archive must be a local file".to_owned(),
+                password_failure: None,
             });
             return;
         };
@@ -212,6 +217,7 @@ pub(super) fn extract(request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: format!("Not an archive: `{}`", request.entry.display_name),
+                password_failure: None,
             });
             return;
         }
@@ -219,6 +225,7 @@ pub(super) fn extract(request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: "Extract destination must be a local path".to_owned(),
+                password_failure: None,
             });
             return;
         };
@@ -227,6 +234,7 @@ pub(super) fn extract(request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>)
             emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: format!("Could not create folder: {e}"),
+                password_failure: None,
             });
             return;
         }
@@ -338,13 +346,15 @@ pub(super) fn extract(request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>)
                 Vec::new(),
                 Vec::new(),
             )),
-            Ok(Err(ArchiveError::Failed(error))) => emit(OperationEvent::Failed {
+            Ok(Err(error)) => emit(OperationEvent::Failed {
                 request_id: request.id,
-                message: error,
+                password_failure: error.password_failure(),
+                message: error.to_string(),
             }),
             Err(_) => emit(OperationEvent::Failed {
                 request_id: request.id,
                 message: "Extraction task panicked".to_owned(),
+                password_failure: None,
             }),
         }
     });
@@ -353,25 +363,42 @@ pub(super) fn extract(request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>)
     })
 }
 
+pub(crate) const PASSWORD_REQUIRED: &str = "A password is required to extract this archive.";
+/// 7z/RAR and failed decryption checks cannot always distinguish damage from a bad password.
+pub(crate) const MAYBE_BAD_PASSWORD: &str = "The password may be incorrect.";
+
 /// Byte size of the reusable read/write buffer used by [`copy_with_big_buf`].
 const COPY_BUF: usize = 1 << 20;
-/// Sentinel message used to round-trip cancellation through `sevenz_rust2`.
 const ARCHIVE_CANCELLED: &str = "Operation cancelled";
 
 /// Failure or cooperative cancellation of a compress or extract step.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ArchiveError {
     /// The [`LoadHandle`] cancelled the operation before it finished.
     Cancelled,
     /// Encoding, decoding, or filesystem work failed with this message.
     Failed(String),
+    PasswordRequired(String),
+    IncorrectPassword(String),
+}
+
+impl ArchiveError {
+    fn password_failure(&self) -> Option<PasswordFailure> {
+        match self {
+            Self::PasswordRequired(_) => Some(PasswordFailure::Required),
+            Self::IncorrectPassword(_) => Some(PasswordFailure::Incorrect),
+            Self::Cancelled | Self::Failed(_) => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ArchiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Cancelled => f.write_str(ARCHIVE_CANCELLED),
-            Self::Failed(message) => f.write_str(message),
+            Self::Failed(message)
+            | Self::PasswordRequired(message)
+            | Self::IncorrectPassword(message) => f.write_str(message),
         }
     }
 }
@@ -392,6 +419,16 @@ impl From<&str> for ArchiveError {
 
 fn archive_failed(error: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::Failed(error.to_string())
+}
+
+fn archive_read_failed(error: std::io::Error) -> ArchiveError {
+    match error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ArchiveError>())
+    {
+        Some(inner) => inner.clone(),
+        None => archive_failed(error),
+    }
 }
 
 /// Returns [`ArchiveError::Cancelled`] when the `cancelled` flag is set.
