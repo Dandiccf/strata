@@ -118,7 +118,20 @@ impl ActionMenuSection {
         let provider_model = gio::Menu::new();
         let provider_group = gio::SimpleActionGroup::new();
         let provider_epoch = Rc::new(std::cell::Cell::new(0));
-        root.append_section(None, &provider_model);
+        let provider_start = root.n_items();
+        let provider_root = root.clone();
+        // An enclosing section would add a second separator above the titled groups.
+        provider_model.connect_items_changed(move |model, position, removed, added| {
+            for _ in 0..removed {
+                provider_root.remove(provider_start + position);
+            }
+            for index in position..position + added {
+                provider_root.insert_item(
+                    provider_start + index,
+                    &gio::MenuItem::from_model(model, index),
+                );
+            }
+        });
         popover.insert_action_group("provider", Some(&provider_group));
         let closed_epoch = provider_epoch.clone();
         popover.connect_closed(move |popover| {

@@ -100,6 +100,7 @@ def test_provider_updates_open_menu_and_revalidates_mixed_selection(strata, prov
     (provider_registration / "state").write_text("offline")
     strata.wait(lambda: "Release test pin" not in strata.menu_items(), "provider withdrawal")
     strata.wait(lambda: not strata.window.find(role="label", name="Example Cloud"), "empty provider group withdrawn")
+    assert {"Open", "Cut", "Copy"}.issubset(strata.menu_items()), "provider withdrawal preserves built-in commands"
     strata.wait(lambda: not strata.window.find(role="image", description="example: Available offline"), "badges withdrawn")
     strata.dismiss_menu()
     (provider_registration / "state").write_text("on-demand")
@@ -231,6 +232,7 @@ def test_overlapping_providers_expose_source_and_prioritize_warning_status(strat
     strata.wait(lambda: not strata.window.find(role="label", name="Example Cloud"), "only the withdrawn provider group disappears")
     strata.wait(lambda: strata.menu_items().count("Release test pin") == 1, "other provider action remains available")
     assert strata.window.find(role="label", name="beta")
+    assert {"Open", "Cut", "Copy"}.issubset(strata.menu_items()), "group removal preserves surrounding commands"
     strata.choose_menu_item("Release test pin")
     record = overlapping_provider / "record"
     strata.wait(record.exists, "remaining provider action dispatched")
