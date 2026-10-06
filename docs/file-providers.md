@@ -20,12 +20,16 @@ Install one directory per provider under `$XDG_CONFIG_HOME/strata/providers/`
 {
   "version": 1,
   "id": "example",
+  "name": "Example Cloud",
   "command": ["/usr/bin/python3", "/home/alice/.config/strata/providers/example/provider.py"],
   "icons": {"available": "available.png", "working": "working.png"}
 }
 ```
 
 Save this as `example/provider.json`. The id must match the directory name.
+The optional `name` supplies the human-readable menu group heading; without it,
+Strata uses the id. Names must contain non-whitespace plain text, at most 64 UTF-8
+bytes, without control characters. Existing registrations need no changes.
 Commands are literal argv with an absolute executable; no shell interpolation,
 PATH lookup, placeholder expansion or working-directory executable lookup is
 performed. The child runs with `/` as its working directory. Nothing in a browsed
@@ -76,8 +80,10 @@ row. Badges share the thumbnail/icon rendering used by Columns, List and Icons.
 ```
 
 Return an empty `actions` array for ineligible selections. No placeholder or
-disabled global menu item is inserted. Providers choose flat actions, recursive
-submenus, or a mixture:
+disabled global menu item is inserted. Strata always keeps each provider's root
+entries together in an inline section with a small, muted, non-interactive
+heading. This is not an extra submenu: providers choose flat actions, recursive
+submenus, or a mixture within their section:
 
 ```json
 {"version":1,"id":2,"actions":[{"id":"share","label":"Copy share link","context":"opaque-selection-token"},{"id":"offline","label":"Offline availability","children":[{"id":"keep","label":"Keep offline","icon":"available","context":"opaque-selection-token"}]}]}
@@ -88,11 +94,13 @@ Branches cannot have `context`. Across the entire tree, allow at most 64 nodes,
 four levels (roots are level one), and unique ids of 1–64 ASCII letters, digits
 or dashes. Labels are nonempty plain text, at most 128 UTF-8 bytes, without control
 characters. Icons are optional declared icon ids. Leaf `context` is an optional
-nonempty opaque string of at most 2,048 UTF-8 bytes. Root labels include the
-provider id so overlapping adapters remain distinguishable without mandatory
-grouping. Menus populate asynchronously; retained branches reuse their submenu
-models on refresh. Removed leaves are disabled before removal, including when
-their containing branch is withdrawn or the menu closes.
+nonempty opaque string of at most 2,048 UTF-8 bytes. Action and submenu labels
+remain as supplied, without repeated provider suffixes. The section heading
+identifies their source using the registered name or id, including when different
+providers supply identical labels. Empty sections and their headings disappear.
+Menus populate asynchronously; retained provider sections and branches reuse
+their models on refresh. Removed leaves are disabled before removal, including
+when their containing section or branch is withdrawn or the menu closes.
 
 Each menu and activation describes the whole selection, never a silently filtered
 subset. An adapter may support cross-account selections; otherwise return no

@@ -39,10 +39,52 @@ fn discovery_refuses_symlinks_writable_registration_and_relative_programs() {
     assert!(discover(second.path()).is_empty());
 }
 #[test]
+fn registration_accepts_optional_names_and_rejects_invalid_display_text() {
+    let root = tempfile::tempdir().expect("registration fixture");
+    registration(root.path(), vec![python()]);
+    let manifest_path = root.path().join("example/provider.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest"))
+            .expect("parse manifest");
+    for (name, accepted) in [
+        (None, true),
+        (Some(serde_json::Value::Null), true),
+        (Some(serde_json::json!("Example Cloud")), true),
+        (Some(serde_json::json!("a".repeat(64))), true),
+        (Some(serde_json::json!("☁".repeat(21))), true),
+        (Some(serde_json::json!("")), false),
+        (Some(serde_json::json!("   ")), false),
+        (Some(serde_json::json!("a".repeat(65))), false),
+        (Some(serde_json::json!("☁".repeat(22))), false),
+        (Some(serde_json::json!("Cloud\nProvider")), false),
+        (Some(serde_json::json!("Cloud\rProvider")), false),
+        (Some(serde_json::json!("Cloud\tProvider")), false),
+        (Some(serde_json::json!("Cloud\u{1b}Provider")), false),
+        (Some(serde_json::json!("Cloud\0Provider")), false),
+        (Some(serde_json::json!(12)), false),
+    ] {
+        manifest
+            .as_object_mut()
+            .expect("manifest object")
+            .remove("name");
+        if let Some(name) = &name {
+            manifest["name"] = name.clone();
+        }
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest");
+        assert_eq!(!discover(root.path()).is_empty(), accepted, "name {name:?}");
+    }
+}
+
+#[test]
 fn provider_frames_restrict_icons_size_and_action_ids() {
     let m = Manifest {
         version: 1,
         id: "example".into(),
+        name: None,
         command: vec![python()],
         icons: BTreeMap::new(),
     };
@@ -188,6 +230,7 @@ fn manifest() -> Manifest {
     Manifest {
         version: 1,
         id: "example".into(),
+        name: None,
         command: vec![python()],
         icons: BTreeMap::new(),
     }

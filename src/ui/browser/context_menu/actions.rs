@@ -653,7 +653,9 @@ fn collect_presentations(model: &gio::MenuModel, items: &mut Vec<ItemPresentatio
                 .item_attribute_value(index, name, None)
                 .and_then(|value| value.get::<String>())
         };
-        if let Some(label) = string("label") {
+        if let Some(label) = string("label")
+            && model.item_link(index, "section").is_none()
+        {
             items.push(ItemPresentation {
                 label: label.replace("__", "_"),
                 description: string("x-strata-description").unwrap_or_default(),

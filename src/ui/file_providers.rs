@@ -32,6 +32,7 @@ struct Provider {
     client: Client,
     icons: HashMap<String, gdk::Texture>,
     id: String,
+    name: String,
     cache: HashMap<String, Answer<Decoration>>,
     menus: HashMap<MenuKey, Answer<Vec<MenuAction>>>,
     freshness: Freshness,
@@ -203,9 +204,11 @@ impl Hub {
                     })
                     .collect();
                 let id = r.manifest.id.clone();
+                let name = r.manifest.name.clone().unwrap_or_else(|| id.clone());
                 self.providers.push(Provider {
                     client: protocol::start(r),
                     id,
+                    name,
                     icons,
                     cache: HashMap::new(),
                     menus: HashMap::new(),

@@ -83,32 +83,35 @@ def provider_registration(test_environment, fixture_tree, request):
     script.write_text(PROGRAM)
     # Small PNG, bounded and loaded only from this trusted registration.
     (folder / "badge.png").write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHUlEQVR4nGM0qnj2n4ECwESJ5lEDRg0YNWAwGQAAosYCrxCcv1sAAAAASUVORK5CYII="))
-    (folder / "provider.json").write_text(json.dumps({"version":1,"id":"example","command":[sys.executable,str(script),str(fixture_tree.root),str(state),str(folder/"record")],"icons":{"badge":"badge.png"}}))
+    (folder / "provider.json").write_text(json.dumps({"version":1,"id":"example","name":"Example Cloud","command":[sys.executable,str(script),str(fixture_tree.root),str(state),str(folder/"record")],"icons":{"badge":"badge.png"}}))
     fixture_tree.path("local-only.txt").write_text("unrelated")
     return folder
 
 
 def test_provider_updates_open_menu_and_revalidates_mixed_selection(strata, provider_registration):
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Keep test pin · example" in strata.menu_items(), "asynchronous provider menu")
+    strata.wait(lambda: "Keep test pin" in strata.menu_items(), "asynchronous provider menu")
+    strata.wait(lambda: strata.window.find(role="label", name="Example Cloud"), "provider group heading")
+    assert "Example Cloud" not in strata.menu_items(), "provider heading is not an action"
     (provider_registration / "state").write_text("kept")
     strata.wait(lambda: strata.window.find(role="image", description="example: Available offline"), "badge accessibility after state event")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items(), "event refresh of open menu")
-    assert "Keep test pin · example" not in strata.menu_items()
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "event refresh of open menu")
+    assert "Keep test pin" not in strata.menu_items()
     (provider_registration / "state").write_text("offline")
-    strata.wait(lambda: "Release test pin · example" not in strata.menu_items(), "provider withdrawal")
+    strata.wait(lambda: "Release test pin" not in strata.menu_items(), "provider withdrawal")
+    strata.wait(lambda: not strata.window.find(role="label", name="Example Cloud"), "empty provider group withdrawn")
     strata.wait(lambda: not strata.window.find(role="image", description="example: Available offline"), "badges withdrawn")
     strata.dismiss_menu()
     (provider_registration / "state").write_text("on-demand")
     strata.select_entry("todo.txt")
     strata.click_entry_with("local-only.txt", ["ctrl"])
     strata.open_context_menu("local-only.txt")
-    assert "Keep test pin · example" not in strata.menu_items()
+    assert "Keep test pin" not in strata.menu_items()
     strata.dismiss_menu()
     strata.select_entry("todo.txt")
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Keep test pin · example" in strata.menu_items(), "eligible selection")
-    strata.choose_menu_item("Keep test pin · example")
+    strata.wait(lambda: "Keep test pin" in strata.menu_items(), "eligible selection")
+    strata.choose_menu_item("Keep test pin")
     record = provider_registration / "record"
     strata.wait(record.exists, "provider action dispatched")
     assert json.loads(record.read_text())["paths"] == [str(strata.fixture.path("todo.txt"))]
@@ -121,8 +124,8 @@ def test_provider_background_receives_only_clicked_folder(strata, provider_regis
         strata.pane(root), at=strata.background_point(root), button=3
     )
     strata.wait(strata.context_menu, "background menu")
-    strata.wait(lambda: "Keep test pin · example" in strata.menu_items(), "background provider action")
-    strata.choose_menu_item("Keep test pin · example")
+    strata.wait(lambda: "Keep test pin" in strata.menu_items(), "background provider action")
+    strata.choose_menu_item("Keep test pin")
     record = provider_registration / "record"
     strata.wait(record.exists, "background action dispatched")
     request = json.loads(record.read_text())
@@ -135,13 +138,13 @@ def test_refresh_keeps_unchanged_badges_and_open_menu_visible(strata, provider_r
     (provider_registration / "state").write_text("kept")
     (provider_registration / "delay").touch()
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items(), "initial provider menu")
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "initial provider menu")
     strata.wait(lambda: strata.window.find(role="image", description="example: Available offline"), "initial badge")
     if invalidate:
         (provider_registration / "event").write_text("refresh without changing state")
     deadline = time.monotonic() + 7
     while time.monotonic() < deadline:
-        assert "Release test pin · example" in strata.menu_items(), "refresh withdrew an unchanged menu"
+        assert "Release test pin" in strata.menu_items(), "refresh withdrew an unchanged menu"
         assert strata.window.find(role="image", description="example: Available offline"), "refresh withdrew an unchanged badge"
         time.sleep(.04)
 
@@ -154,11 +157,11 @@ def test_continuous_events_do_not_starve_slow_menu_or_badge_replies(strata, prov
     (provider_registration / "delay").touch()
     (provider_registration / "storm").touch()
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items(), "menu progress during continuous events")
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "menu progress during continuous events")
     strata.wait(lambda: strata.window.find(role="image", description="example: Available offline"), "badge progress during continuous events")
     deadline = time.monotonic() + 16
     while time.monotonic() < deadline:
-        assert "Release test pin · example" in strata.menu_items()
+        assert "Release test pin" in strata.menu_items()
         assert strata.window.find(role="image", description="example: Available offline")
         time.sleep(.1)
 
@@ -166,9 +169,10 @@ def test_continuous_events_do_not_starve_slow_menu_or_badge_replies(strata, prov
 def test_nested_menu_refresh_preserves_navigation_and_activates_only_leaves(strata, provider_registration):
     (provider_registration / "tree").touch()
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Offline availability · example" in strata.menu_items(), "nested provider menu")
-    assert "Inspect test state · example" in strata.menu_items()
-    strata.pointer.click(strata.menu_item("Offline availability · example"))
+    strata.wait(lambda: "Offline availability" in strata.menu_items(), "nested provider menu")
+    strata.wait(lambda: strata.window.find(role="label", name="Example Cloud"), "mixed provider group heading")
+    assert "Inspect test state" in strata.menu_items()
+    strata.pointer.click(strata.menu_item("Offline availability"))
     strata.wait(lambda: "Keep test pin" in strata.menu_items(), "submenu opened")
     assert not (provider_registration / "record").exists(), "submenu navigation dispatched an action"
     (provider_registration / "state").write_text("kept")
@@ -195,8 +199,8 @@ def test_nested_menu_refresh_preserves_navigation_and_activates_only_leaves(stra
     (provider_registration / "deep-relabel").unlink()
     (provider_registration / "state").write_text("on-demand")
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Offline availability · example" in strata.menu_items(), "menu restored")
-    strata.pointer.click(strata.menu_item("Offline availability · example"))
+    strata.wait(lambda: "Offline availability" in strata.menu_items(), "menu restored")
+    strata.pointer.click(strata.menu_item("Offline availability"))
     strata.wait(lambda: "Keep test pin" in strata.menu_items(), "leaf available")
     strata.choose_menu_item("Keep test pin")
     record = provider_registration / "record"
@@ -218,22 +222,32 @@ def overlapping_provider(provider_registration, fixture_tree):
 
 
 @pytest.mark.usefixtures("overlapping_provider")
-def test_overlapping_providers_expose_source_and_prioritize_warning_status(strata):
+def test_overlapping_providers_expose_source_and_prioritize_warning_status(strata, provider_registration, overlapping_provider):
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items() and "Release test pin · beta" in strata.menu_items(), "both provider actions")
+    strata.wait(lambda: strata.menu_items().count("Release test pin") == 2, "both providers retain their identically labelled actions")
+    strata.wait(lambda: strata.window.find(role="label", name="Example Cloud") and strata.window.find(role="label", name="beta"), "separate provider groups with display name and legacy id fallback")
     strata.wait(lambda: strata.window.find(role="image", description="beta: Available offline; example: Available offline"), "warning provider first with both status descriptions")
+    (provider_registration / "state").write_text("offline")
+    strata.wait(lambda: not strata.window.find(role="label", name="Example Cloud"), "only the withdrawn provider group disappears")
+    strata.wait(lambda: strata.menu_items().count("Release test pin") == 1, "other provider action remains available")
+    assert strata.window.find(role="label", name="beta")
+    strata.choose_menu_item("Release test pin")
+    record = overlapping_provider / "record"
+    strata.wait(record.exists, "remaining provider action dispatched")
+    assert json.loads(record.read_text())["action"] == "release"
+    assert not (provider_registration / "record").exists()
 
 
 def test_open_menu_replaces_context_without_replacing_leaf(strata, provider_registration):
     token = provider_registration / "context"
     token.write_text("old-object-incarnation")
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Keep test pin · example" in strata.menu_items(), "token-bearing action")
+    strata.wait(lambda: "Keep test pin" in strata.menu_items(), "token-bearing action")
     token.write_text("new-object-incarnation")
     (provider_registration / "event").write_text("selection identity changed")
     # An unchanged label does not expose the refresh; wait for a full fallback period.
     time.sleep(6)
-    strata.choose_menu_item("Keep test pin · example")
+    strata.choose_menu_item("Keep test pin")
     record = provider_registration / "record"
     strata.wait(record.exists, "context-bearing activation")
     assert json.loads(record.read_text())["context"] == "new-object-incarnation"
@@ -244,8 +258,8 @@ def test_partial_activation_reports_original_whole_selection(strata, provider_re
     strata.select_entry("todo.txt")
     strata.click_entry_with("readme.md", ["ctrl"])
     strata.open_context_menu("readme.md")
-    strata.wait(lambda: "Keep test pin · example" in strata.menu_items(), "whole selection action")
-    strata.choose_menu_item("Keep test pin · example")
+    strata.wait(lambda: "Keep test pin" in strata.menu_items(), "whole selection action")
+    strata.choose_menu_item("Keep test pin")
     strata.wait(lambda: any(" ".join(node.name.split()) == "example: Partially accepted (1/2) Job: fixture-job-17 One test pin accepted; another was rejected" for node in strata.window.find_all(role="label")), "partial counts, job reference and provider source")
     record = json.loads((provider_registration / "record").read_text())
     assert set(record["paths"]) == {str(strata.fixture.path(name)) for name in ("todo.txt", "readme.md")}
@@ -254,16 +268,16 @@ def test_partial_activation_reports_original_whole_selection(strata, provider_re
 def test_method_error_without_revision_withdraws_cached_presentation(strata, provider_registration):
     (provider_registration / "state").write_text("kept")
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items(), "initial revisioned menu")
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "initial revisioned menu")
     strata.wait(lambda: strata.window.find(role="image", description="example: Available offline"), "initial badge")
     pid = (provider_registration / "pid").read_text()
     (provider_registration / "method-error").touch()
     (provider_registration / "event").write_text("withdraw")
-    strata.wait(lambda: "Release test pin · example" not in strata.menu_items(), "method error withdraws menu")
+    strata.wait(lambda: "Release test pin" not in strata.menu_items(), "method error withdraws menu")
     strata.wait(lambda: not strata.window.find(role="image", description="example: Available offline"), "method error withdraws badges")
     (provider_registration / "method-error").unlink()
     (provider_registration / "event").write_text("recover")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items(), "healthy provider recovers without restart")
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "healthy provider recovers without restart")
     strata.wait(lambda: strata.window.find(role="image", description="example: Available offline"), "recovered badge")
     assert (provider_registration / "pid").read_text() == pid
 
@@ -271,13 +285,13 @@ def test_method_error_without_revision_withdraws_cached_presentation(strata, pro
 def test_disconnect_after_acceptance_reports_uncertainty_and_never_replays(strata, provider_registration):
     (provider_registration / "disconnect").touch()
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Keep test pin · example" in strata.menu_items(), "initial action")
-    strata.choose_menu_item("Keep test pin · example")
+    strata.wait(lambda: "Keep test pin" in strata.menu_items(), "initial action")
+    strata.choose_menu_item("Keep test pin")
     record = provider_registration / "record"
     strata.wait(record.exists, "fixture accepted action before disconnect")
     accepted = record.read_text()
     strata.wait(lambda: any(" ".join(node.name.split()) == "example: The provider disconnected. The action may already have been accepted; check its state before retrying." for node in strata.window.find_all(role="label")), "uncertain outcome")
     strata.keyboard.press("Escape")
     strata.open_context_menu("todo.txt")
-    strata.wait(lambda: "Release test pin · example" in strata.menu_items(), "provider restarted and state revalidated")
+    strata.wait(lambda: "Release test pin" in strata.menu_items(), "provider restarted and state revalidated")
     assert record.read_text() == accepted, "accepted action was replayed after reconnect"

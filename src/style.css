@@ -4133,7 +4133,8 @@ textview > popover.menu > contents > scrolledwindow > viewport > stack {
   font-weight: 700;
 }
 
-.item-context-summary {
+.item-context-summary,
+.actions-context-popover label.separator {
   color: @strata_dim_text;
   font-size: 0.82em;
 }

@@ -3,6 +3,7 @@ use super::{MenuAction, MenuKey, MenuResult, Pending, request, with_hub};
 use gtk::{gio, glib, prelude::*};
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeMap,
     rc::Rc,
 };
 
@@ -65,7 +66,6 @@ impl Node {
                     .cloned()
                     .map(|a| (provider, a))
                     .collect::<Vec<_>>(),
-                false,
             );
             node.children = Some((model, nodes));
         } else {
@@ -100,14 +100,8 @@ impl Node {
         node
     }
 
-    fn item(&self, root: bool) -> gio::MenuItem {
-        let label = with_hub(|hub| {
-            if root {
-                format!("{} · {}", self.data.label, hub.providers[self.provider].id)
-            } else {
-                self.data.label.clone()
-            }
-        });
+    fn item(&self) -> gio::MenuItem {
+        let label = &self.data.label;
         let item = if let Some((model, _)) = &self.children {
             gio::MenuItem::new_submenu(Some(&label.replace('_', "__")), model)
         } else {
@@ -137,7 +131,6 @@ fn reconcile(
     model: &gio::Menu,
     nodes: &mut Vec<Node>,
     items: &MenuResult,
-    root: bool,
 ) -> bool {
     let mut changed = false;
     for index in (0..nodes.len()).rev() {
@@ -166,11 +159,11 @@ fn reconcile(
             {
                 let node = nodes.remove(position);
                 model.remove(position as i32);
-                model.insert_item(index as i32, &node.item(root));
+                model.insert_item(index as i32, &node.item());
                 nodes.insert(index, node);
             } else {
                 let node = Node::new(context, *provider, data.clone());
-                model.insert_item(index as i32, &node.item(root));
+                model.insert_item(index as i32, &node.item());
                 nodes.insert(index, node);
             }
             changed = true;
@@ -188,7 +181,6 @@ fn reconcile(
                     .cloned()
                     .map(|a| (*provider, a))
                     .collect::<Vec<_>>(),
-                false,
             );
         }
         if let Some(leaf) = &node.leaf {
@@ -198,7 +190,7 @@ fn reconcile(
         node.data = data.clone();
         if presentation_changed {
             model.remove(index as i32);
-            model.insert_item(index as i32, &node.item(root));
+            model.insert_item(index as i32, &node.item());
             changed = true;
         }
     }
@@ -211,10 +203,24 @@ fn reconcile(
     changed
 }
 
+struct ProviderSection {
+    provider: usize,
+    model: gio::Menu,
+    nodes: Vec<Node>,
+}
+
+impl ProviderSection {
+    fn retire(&self, context: &Context) {
+        for node in &self.nodes {
+            node.retire(context);
+        }
+    }
+}
+
 pub(super) struct Renderer {
     context: Context,
     model: gio::Menu,
-    nodes: Vec<Node>,
+    sections: Vec<ProviderSection>,
 }
 
 impl Renderer {
@@ -235,19 +241,55 @@ impl Renderer {
                 epoch,
             },
             model,
-            nodes: Vec::new(),
+            sections: Vec::new(),
         }
     }
 
     pub(super) fn update(&mut self, result: MenuResult) -> bool {
-        reconcile(&self.context, &self.model, &mut self.nodes, &result, true)
+        let mut groups: BTreeMap<usize, MenuResult> = BTreeMap::new();
+        for (provider, action) in result {
+            groups.entry(provider).or_default().push((provider, action));
+        }
+        let mut changed = false;
+        for index in (0..self.sections.len()).rev() {
+            if !groups.contains_key(&self.sections[index].provider) {
+                self.sections.remove(index).retire(&self.context);
+                self.model.remove(index as i32);
+                changed = true;
+            }
+        }
+        for (index, (provider, actions)) in groups.iter().enumerate() {
+            let new_section = self
+                .sections
+                .get(index)
+                .is_none_or(|s| s.provider != *provider);
+            if new_section {
+                self.sections.insert(
+                    index,
+                    ProviderSection {
+                        provider: *provider,
+                        model: gio::Menu::new(),
+                        nodes: Vec::new(),
+                    },
+                );
+            }
+            let section = &mut self.sections[index];
+            changed |= reconcile(&self.context, &section.model, &mut section.nodes, actions);
+            if new_section {
+                let name = with_hub(|hub| hub.providers[*provider].name.clone());
+                self.model
+                    .insert_section(index as i32, Some(&name), &section.model);
+                changed = true;
+            }
+        }
+        changed
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        for node in &self.nodes {
-            node.retire(&self.context);
+        for section in &self.sections {
+            section.retire(&self.context);
         }
     }
 }

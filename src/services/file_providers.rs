@@ -22,6 +22,7 @@ pub(crate) const PATH_LIMIT: usize = 200;
 pub(crate) struct Manifest {
     pub version: u32,
     pub id: String,
+    pub name: Option<String>,
     pub command: Vec<String>,
     #[serde(default)]
     pub icons: BTreeMap<String, String>,
@@ -51,6 +52,9 @@ fn load(dir: &Path) -> Option<Registration> {
     let manifest: Manifest = serde_json::from_slice(&data).ok()?;
     if manifest.version != 1
         || !slug(&manifest.id)
+        || manifest.name.as_ref().is_some_and(|name| {
+            name.trim().is_empty() || name.len() > 64 || name.chars().any(char::is_control)
+        })
         || dir.file_name()?.to_str()? != manifest.id
         || manifest.command.is_empty()
         || manifest.command.len() > 16

@@ -42,6 +42,7 @@ fn install_hub() {
         manifest: protocol::Manifest {
             version: 1,
             id: "example".into(),
+            name: Some("Example Cloud".into()),
             command: vec![
                 "/usr/bin/python3".into(),
                 "-u".into(),
@@ -59,6 +60,7 @@ fn install_hub() {
                 client: protocol::start(registration),
                 icons: Default::default(),
                 id: "example".into(),
+                name: "Example Cloud".into(),
                 cache: Default::default(),
                 menus: Default::default(),
                 freshness: Freshness::default(),
@@ -120,6 +122,7 @@ for line in sys.stdin:
             manifest: protocol::Manifest {
                 version: 1,
                 id: "example".into(),
+                name: None,
                 command: vec![
                     "/usr/bin/python3".into(),
                     "-u".into(),
@@ -215,6 +218,122 @@ fn action(id: &str, label: &str, children: Option<Vec<MenuAction>>) -> MenuActio
 }
 
 #[test]
+fn provider_sections_scope_duplicate_labels_and_retire_empty_groups() {
+    crate::test_support::gtk_test(
+        "ui::file_providers::tests::provider_sections_scope_duplicate_labels_and_retire_empty_groups",
+        || {
+            install_hub();
+            let scratch = tempfile::tempdir().expect("provider fixture");
+            let records = [scratch.path().join("example"), scratch.path().join("beta")];
+            let script = "import json,sys\nfrom pathlib import Path\nfor line in sys.stdin:\n r=json.loads(line)\n Path(sys.argv[1]).write_text(json.dumps(r))\n print(json.dumps({'version':1,'id':r['id'],'message':'Accepted'}),flush=True)";
+            with_hub(|hub| {
+                hub.providers = ["example", "beta"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        let name = (index == 0).then(|| "Example Cloud".to_owned());
+                        Provider {
+                            id: id.into(),
+                            name: name.clone().unwrap_or_else(|| id.into()),
+                            client: protocol::start(Registration {
+                                manifest: protocol::Manifest {
+                                    version: 1,
+                                    id: id.into(),
+                                    name,
+                                    command: vec![
+                                        "/usr/bin/python3".into(),
+                                        "-u".into(),
+                                        "-c".into(),
+                                        script.into(),
+                                        records[index].to_str().expect("fixture path").into(),
+                                    ],
+                                    icons: Default::default(),
+                                },
+                                icons: Default::default(),
+                            }),
+                            icons: Default::default(),
+                            cache: Default::default(),
+                            menus: Default::default(),
+                            freshness: Freshness::default(),
+                            disconnected: false,
+                            last_busy: None,
+                        }
+                    })
+                    .collect();
+            });
+            let model = gio::Menu::new();
+            let group = gio::SimpleActionGroup::new();
+            let mut renderer = menus::Renderer::new(
+                model.clone(),
+                group.clone(),
+                glib::WeakRef::new(),
+                (vec!["/file".into()], false),
+                Rc::new(Cell::new(1)),
+                1,
+            );
+            let mut example = action("keep", "Keep offline", None);
+            example.context = Some("example-incarnation".into());
+            let mut beta = example.clone();
+            beta.context = Some("beta-incarnation".into());
+            let more = action("status", "Show availability", None);
+            renderer.update(vec![(1, beta), (0, example), (1, more.clone())]);
+            let section = |index| model.item_link(index, "section").expect("provider section");
+            let label = |model: &gio::MenuModel, index| {
+                model
+                    .item_attribute_value(index, "label", None)
+                    .and_then(|value| value.get::<String>())
+                    .expect("label")
+            };
+            let first = section(0);
+            let second = section(1);
+            assert_eq!(label(model.upcast_ref(), 0), "Example Cloud");
+            assert_eq!(label(model.upcast_ref(), 1), "beta");
+            assert_eq!(label(&first, 0), "Keep offline");
+            assert_eq!(label(&second, 0), "Keep offline");
+            assert_eq!(label(&second, 1), "Show availability");
+            let old_example = group
+                .lookup_action("action-0-keep")
+                .expect("example action");
+            group.activate_action("action-0-keep", None);
+            group.activate_action("action-1-keep", None);
+            for (index, record) in records.iter().enumerate() {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let received: serde_json::Value = loop {
+                    if let Some(received) = std::fs::read(record)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                    {
+                        break received;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "provider did not receive its action"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                assert_eq!(received["action"], "keep");
+                assert_eq!(received["paths"], serde_json::json!(["/file"]));
+                assert_eq!(
+                    received["context"],
+                    ["example-incarnation", "beta-incarnation"][index]
+                );
+            }
+            renderer.update(vec![(1, more)]);
+            assert_eq!(section(0), second);
+            assert_eq!(model.n_items(), 1);
+            assert!(!old_example.is_enabled());
+            assert!(group.lookup_action("action-0-keep").is_none());
+            assert!(group.lookup_action("action-1-keep").is_none());
+            assert!(group.lookup_action("action-1-status").is_some());
+            renderer.update(Vec::new());
+            assert_eq!(model.n_items(), 0);
+            assert!(group.list_actions().is_empty());
+            HUB.with(|cell| cell.replace(None));
+        },
+    );
+}
+
+#[test]
 fn nested_refresh_retains_navigation_model_and_withdraws_old_leaf_actions() {
     crate::test_support::gtk_test(
         "ui::file_providers::tests::nested_refresh_retains_navigation_model_and_withdraws_old_leaf_actions",
@@ -236,7 +355,8 @@ fn nested_refresh_retains_navigation_model_and_withdraws_old_leaf_actions() {
                 (0, action("share", "Share", None)),
                 (0, availability.clone()),
             ]);
-            let submenu = model.item_link(1, "submenu").expect("submenu");
+            let section = model.item_link(0, "section").expect("provider section");
+            let submenu = section.item_link(1, "submenu").expect("submenu");
             assert!(group.lookup_action("action-0-availability").is_none());
             let old_keep = group.lookup_action("action-0-keep").expect("leaf");
             renderer.update(vec![(
@@ -247,7 +367,8 @@ fn nested_refresh_retains_navigation_model_and_withdraws_old_leaf_actions() {
                     Some(vec![action("release", "Release", None)]),
                 ),
             )]);
-            assert_eq!(model.item_link(0, "submenu"), Some(submenu));
+            assert_eq!(model.item_link(0, "section"), Some(section.clone()));
+            assert_eq!(section.item_link(0, "submenu"), Some(submenu));
             assert!(!old_keep.is_enabled());
             assert!(group.lookup_action("action-0-keep").is_none());
             assert!(group.lookup_action("action-0-release").is_some());
@@ -413,6 +534,7 @@ fn continuously_dirty_rows_do_not_starve_other_windows_or_later_batches() {
                     manifest: protocol::Manifest {
                         version: 1,
                         id: "example".into(),
+                        name: None,
                         command: vec![
                             "/usr/bin/python3".into(),
                             "-u".into(),
