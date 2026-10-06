@@ -79,7 +79,7 @@ fn restart_resets_revision_requirements_and_pending_work() {
         hub.providers[0].freshness.invalidate(None, Some(100));
         hub.pending
             .insert(9, Pending::Query(0, 1, vec!["/file".into()]));
-        hub.offline(0, &[]);
+        hub.offline(0, &[], Some(&[9]));
         assert!(hub.pending.is_empty());
         assert!(
             hub.providers[0]
@@ -87,6 +87,119 @@ fn restart_resets_revision_requirements_and_pending_work() {
                 .accept(&["/file".into()], Some(0))
         );
         assert!(hub.providers[0].freshness.accept(&["/file".into()], None));
+    });
+    HUB.with(|cell| cell.replace(None));
+}
+
+#[test]
+fn disconnect_does_not_retire_requests_admitted_after_the_failed_session() {
+    install_hub();
+    let scratch = tempfile::tempdir().expect("provider fixture");
+    let ready = scratch.path().join("ready");
+    let release = scratch.path().join("release");
+    let record = scratch.path().join("activations");
+    let script = r#"import json,sys,time
+from pathlib import Path
+ready,release,record=map(Path,sys.argv[1:])
+for line in sys.stdin:
+ r=json.loads(line)
+ if r['id']==1:
+  ready.touch()
+  while not release.exists(): time.sleep(.01)
+  sys.exit(0)
+ if r['method']=='menu':
+  with ready.open('a') as f: f.write(str(r['id'])+'\n')
+  result={'version':1,'id':r['id'],'actions':[{'id':'keep','label':'Keep'}]}
+ else:
+  with record.open('a') as f: f.write(str(r['id'])+'\n')
+  result={'version':1,'id':r['id'],'message':'Accepted'}
+ print(json.dumps(result),flush=True)
+"#;
+    with_hub(|hub| {
+        hub.providers[0].client = protocol::start(Registration {
+            manifest: protocol::Manifest {
+                version: 1,
+                id: "example".into(),
+                command: vec![
+                    "/usr/bin/python3".into(),
+                    "-u".into(),
+                    "-c".into(),
+                    script.into(),
+                    ready.to_str().expect("fixture path").into(),
+                    release.to_str().expect("fixture path").into(),
+                    record.to_str().expect("fixture path").into(),
+                ],
+                icons: Default::default(),
+            },
+            icons: Default::default(),
+        });
+        for _ in 0..10 {
+            hub.invalidate(0);
+        }
+        let mut activation = request("activate", vec!["/file".into()], false);
+        activation.action = Some("keep".into());
+        let owner = glib::WeakRef::new();
+        hub.send(0, activation.clone(), Pending::Activate(0, owner.clone()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "provider did not receive activation"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        hub.send(0, activation.clone(), Pending::Activate(0, owner.clone()));
+        std::fs::write(&release, "go").expect("release provider");
+        let Update::Offline { unsent, in_flight } = hub.providers[0]
+            .client
+            .updates
+            .recv_timeout(Duration::from_secs(5))
+            .expect("disconnect update")
+        else {
+            panic!("expected failed session")
+        };
+        assert_eq!(in_flight, Some(1));
+        assert_eq!(unsent, [2]);
+        hub.send(0, activation, Pending::Activate(0, owner));
+        let key = (vec!["/file".into()], false);
+        let generation = hub.providers[0].freshness.generation();
+        hub.send(
+            0,
+            request("menu", key.0.clone(), key.1),
+            Pending::Menu(0, generation, key.clone()),
+        );
+        let affected: Vec<_> = unsent.iter().copied().chain(in_flight).collect();
+        hub.offline(0, &unsent, Some(&affected));
+        assert!(
+            hub.pending.contains_key(&3),
+            "newly admitted activation lost its pending outcome"
+        );
+        assert!(!hub.pending.contains_key(&1));
+        assert!(!hub.pending.contains_key(&2));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hub.pending.contains_key(&3) || hub.pending.contains_key(&4) {
+            assert!(Instant::now() < deadline, "new request outcome was lost");
+            hub.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&record).expect("activation record"),
+            "3\n"
+        );
+        assert!(hub.providers[0].menus.contains_key(&key));
+        hub.invalidate(0);
+        assert_eq!(hub.menu(&key).len(), 1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(&ready)
+            .is_ok_and(|requests| requests.lines().any(|id| id == "5"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "previous session generation suppressed the new menu invalidation"
+            );
+            hub.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
     });
     HUB.with(|cell| cell.replace(None));
 }

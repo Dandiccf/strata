@@ -196,6 +196,12 @@ fn menu_valid(actions: &[MenuAction], manifest: &Manifest) -> bool {
     visit(actions, 1, &mut 0, &mut HashSet::new(), manifest)
 }
 
+fn plain_text(text: &str) -> bool {
+    !text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+}
+
 pub(super) fn checked_reply(bytes: &[u8], manifest: &Manifest) -> io::Result<Reply> {
     let r: Reply = serde_json::from_slice(bytes).map_err(|_| io::Error::other("invalid JSON"))?;
     let invalid_outcome = r.outcome.as_ref().is_some_and(|o| {
@@ -218,6 +224,7 @@ pub(super) fn checked_reply(bytes: &[u8], manifest: &Manifest) -> io::Result<Rep
     if r.version != 1
         || (r.id.is_some() == r.event.is_some())
         || r.message.len() > 16384
+        || !plain_text(&r.message)
         || r.error.as_ref().is_some_and(|e| !slug(e))
         || invalid_outcome
         || r.decorations.as_ref().is_some_and(|ds| {
@@ -225,6 +232,7 @@ pub(super) fn checked_reply(bytes: &[u8], manifest: &Manifest) -> io::Result<Rep
                 || ds.iter().any(|d| {
                     !native_path(&d.path)
                         || d.description.len() > 512
+                        || !plain_text(&d.description)
                         || d.priority > 2
                         || d.badge
                             .as_ref()

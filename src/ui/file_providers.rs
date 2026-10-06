@@ -222,7 +222,10 @@ impl Hub {
             let (updates, closed) = self.providers[index].client.updates.drain();
             for update in updates {
                 match update {
-                    Update::Offline { unsent } => self.offline(index, &unsent),
+                    Update::Offline { unsent, in_flight } => {
+                        let affected: Vec<_> = unsent.iter().copied().chain(in_flight).collect();
+                        self.offline(index, &unsent, Some(&affected));
+                    }
                     Update::Reply(reply) if reply.event.is_some() => {
                         self.providers[index]
                             .freshness
@@ -364,7 +367,7 @@ impl Hub {
                 }
             }
             if closed {
-                self.offline(index, &[]);
+                self.offline(index, &[], None);
                 self.providers[index].disconnected = true;
             }
         }
@@ -440,16 +443,27 @@ impl Hub {
             }
         }
     }
-    fn offline(&mut self, index: usize, unsent: &[u64]) {
+    fn offline(&mut self, index: usize, unsent: &[u64], affected: Option<&[u64]>) {
         self.providers[index].freshness = Freshness::default();
         self.providers[index].cache.clear();
         self.providers[index].menus.clear();
+        for pending in self.pending.values_mut() {
+            match pending {
+                Pending::Query(provider, generation, _)
+                | Pending::Menu(provider, generation, _)
+                    if *provider == index =>
+                {
+                    *generation = self.providers[index].freshness.generation();
+                }
+                _ => (),
+            }
+        }
         let ids: Vec<_> = self
             .pending
             .iter()
             .filter_map(|(id, pending)| match pending {
                 Pending::Query(i, _, _) | Pending::Menu(i, _, _) | Pending::Activate(i, _)
-                    if *i == index =>
+                    if *i == index && affected.is_none_or(|ids| ids.contains(id)) =>
                 {
                     Some(*id)
                 }

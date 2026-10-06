@@ -20,7 +20,10 @@ const UPDATE_LIMIT: usize = 32;
 
 pub(crate) enum Update {
     Reply(Box<Reply>),
-    Offline { unsent: Vec<u64> },
+    Offline {
+        unsent: Vec<u64>,
+        in_flight: Option<u64>,
+    },
 }
 
 pub(crate) struct Requests {
@@ -122,7 +125,7 @@ impl Updates {
     }
 
     #[cfg(test)]
-    pub(super) fn recv_timeout(&self, timeout: Duration) -> Result<Update, mpsc::RecvTimeoutError> {
+    pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<Update, mpsc::RecvTimeoutError> {
         let deadline = Instant::now() + timeout;
         loop {
             match self.try_recv() {
@@ -202,10 +205,12 @@ impl Updates {
         self.changed.notify_one();
     }
 
-    fn offline(&self, unsent: Vec<u64>) {
+    fn offline(&self, unsent: Vec<u64>, in_flight: Option<u64>) {
         let mut state = self.state.lock().expect("provider update queue");
         state.flush_events();
-        state.replies.push_back(Update::Offline { unsent });
+        state
+            .replies
+            .push_back(Update::Offline { unsent, in_flight });
         state.reply_count += 1;
         self.changed.notify_one();
     }
@@ -296,7 +301,7 @@ pub(crate) fn start(registration: Registration) -> Client {
                     }
                     let mut unsent = incoming.discard();
                     unsent.extend(failure.unsent);
-                    out.offline(unsent);
+                    out.offline(unsent, failure.in_flight);
                     thread::sleep(Duration::from_secs(2));
                 }
             }
@@ -316,6 +321,7 @@ pub(crate) fn start(registration: Registration) -> Client {
 struct Failure {
     reason: &'static str,
     unsent: Option<u64>,
+    in_flight: Option<u64>,
 }
 
 impl From<io::Error> for Failure {
@@ -323,6 +329,7 @@ impl From<io::Error> for Failure {
         Self {
             reason: "transport failure",
             unsent: None,
+            in_flight: None,
         }
     }
 }
@@ -351,8 +358,10 @@ fn run(
     let (mut stream, mut child) = spawn().map_err(|_| Failure {
         reason: "spawn failure",
         unsent: Some(first_id),
+        in_flight: None,
     })?;
     let mut next = Some(first);
+    let mut in_flight = None;
     let result = (|| {
         let mut buffer = Vec::new();
         let mut pending: Option<(Request, Instant)> = None;
@@ -367,6 +376,7 @@ fn run(
                     next = requests.next().map_err(|_| Failure {
                         reason: "host closed",
                         unsent: None,
+                        in_flight: None,
                     })?;
                 }
                 if let Some(r) = next.take() {
@@ -376,8 +386,10 @@ fn run(
                         return Err(Failure {
                             reason: "invalid host request",
                             unsent: Some(r.id),
+                            in_flight: None,
                         });
                     }
+                    in_flight = Some(r.id);
                     stream.write_all(&line)?;
                     pending = Some((r, Instant::now()));
                 }
@@ -389,6 +401,7 @@ fn run(
                 return Err(Failure {
                     reason: "request timeout",
                     unsent: None,
+                    in_flight: None,
                 });
             }
             let mut bytes = [0; 8192];
@@ -397,6 +410,7 @@ fn run(
                     return Err(Failure {
                         reason: "provider closed",
                         unsent: None,
+                        in_flight: None,
                     });
                 }
                 Ok(n) => buffer.extend_from_slice(&bytes[..n]),
@@ -410,10 +424,12 @@ fn run(
             for frame in take_frames(&mut buffer).map_err(|_| Failure {
                 reason: "frame limit",
                 unsent: None,
+                in_flight: None,
             })? {
                 let reply = checked_reply(&frame, manifest).map_err(|_| Failure {
                     reason: "invalid response",
                     unsent: None,
+                    in_flight: None,
                 })?;
                 if reply.event.is_some() {
                     if (revision_mode && reply.revision.is_none())
@@ -425,6 +441,7 @@ fn run(
                         return Err(Failure {
                             reason: "invalid revision ordering",
                             unsent: None,
+                            in_flight: None,
                         });
                     }
                     revision_mode |= reply.revision.is_some();
@@ -444,10 +461,12 @@ fn run(
                         return Err(Failure {
                             reason: "invalid method response",
                             unsent: None,
+                            in_flight: None,
                         });
                     }
                     revision_mode |= reply.revision.is_some();
                     updates.publish(reply);
+                    in_flight = None;
                 }
             }
         }
@@ -462,7 +481,11 @@ fn run(
             reason: "host closed",
             ..
         }) => Ok(()),
-        other => other,
+        Err(mut failure) => {
+            failure.in_flight = in_flight;
+            Err(failure)
+        }
+        Ok(()) => Ok(()),
     }
 }
 

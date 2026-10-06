@@ -123,7 +123,10 @@ idempotency token; the host neither interprets it nor manufactures replay safety
 Adapters without tokens must still guarantee safe identity revalidation.
 
 Every successful activation requires a nonempty plain-text `message` (at most
-16 KiB). Optional `outcome.status` is `accepted`, `rejected`, `partial` or `unknown`.
+16 KiB). Messages and decoration descriptions may contain newlines, carriage
+returns and tabs, but no other control characters, including NUL or terminal
+escape sequences. Optional `outcome.status` is `accepted`, `rejected`, `partial`
+or `unknown`.
 `accepted` and `total` must appear together, with `total` equal to the original
 selection size and `0 <= accepted <= total`. Accepted means all submitted;
 rejected means none; partial means some but not all. Unknown may report a confirmed
@@ -212,7 +215,9 @@ Requests time out eight seconds after dispatch, not admission; socket writes aft
 250 ms. Invalid frames, excessive output and timeouts disconnect the provider;
 its process group is terminated and state is withdrawn, with a two-second restart
 backoff. Actions in flight are reported as uncertain, unsent queued actions as
-unsent; neither is replayed. Ordinary on-demand/unrecognized files stay unbadged.
+unsent; neither is replayed. Disconnect updates retire only requests from the
+failed session; requests admitted afterward keep their outcome tracking across
+restart. Ordinary on-demand/unrecognized files stay unbadged.
 
 The GTK thread does not perform provider socket or subprocess I/O. It applies
 completed bounded batches on its main loop. Each provider cache holds at most

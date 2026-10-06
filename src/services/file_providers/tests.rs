@@ -269,6 +269,26 @@ fn responses_require_method_fields_and_validate_partial_outcomes() {
     )
     .expect("error");
     assert!(unsupported.matches(&request(1, "menu")));
+    for text in ["Accepted\0hidden", "Unavailable\u{1b}[31m", "Status\u{7}"] {
+        for frame in [
+            serde_json::json!({"version":1,"id":1,"message":text}),
+            serde_json::json!({"version":1,"id":1,"decorations":[{"path":"/file","description":text}]}),
+        ] {
+            assert!(
+                checked_reply(&serde_json::to_vec(&frame).expect("json"), &manifest()).is_err(),
+                "control data was accepted for GTK presentation"
+            );
+        }
+    }
+    let formatted = checked_reply(
+        &serde_json::to_vec(&serde_json::json!({
+            "version":1,"id":1,"message":"Accepted\nDetails:\tjob 17\r\n"
+        }))
+        .expect("json"),
+        &manifest(),
+    )
+    .expect("plain-text formatting");
+    assert!(formatted.matches(&request(1, "activate")));
     for (accepted, valid) in [(0, false), (1, true), (2, false), (3, false)] {
         let frame = serde_json::json!({"version":1,"id":1,"message":"Partial result","outcome":{"status":"partial","accepted":accepted,"total":2}});
         assert_eq!(
