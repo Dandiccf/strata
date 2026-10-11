@@ -299,7 +299,7 @@ fn context_hints_follow_the_active_map() {
                 ("Cut", "X"),
                 ("Copy", "Y"),
                 ("Move to Trash", "D"),
-                ("Permanently delete", "Shift+D"),
+                ("Delete without Trash", "Shift+D"),
                 ("Copy path", "Copy name"),
             ] {
                 assert_eq!(after(label), Some(hint), "{hints:?}");

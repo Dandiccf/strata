@@ -778,8 +778,8 @@ impl ViewState {
             )
         } else {
             (
-                format!("Permanently delete {}?", item_count_label(count)),
-                format!("Permanently delete {}", item_count_label(count)),
+                format!("Delete {} without using Trash?", item_count_label(count)),
+                format!("Delete {}", item_count_label(count)),
             )
         };
         let layout = message_dialog_layout(
@@ -845,7 +845,7 @@ impl ViewState {
         let explanation = message_dialog_description(if trash {
             "These items can be restored from Trash."
         } else {
-            "These items will be permanently deleted. This action cannot be undone."
+            "These items will be deleted without using the local Trash. On local drives this cannot be undone. Cloud providers may retain deleted items for recovery."
         });
         layout.body.append(&explanation);
         let content = layout.content;
@@ -987,7 +987,7 @@ impl ViewState {
                 return;
             };
             subtitle.set_label(&format!(
-                "{}{} · {}{} will be permanently deleted",
+                "{}{} · {}{} will be deleted",
                 if summary.truncated() { "At least " } else { "" },
                 item_count_label(summary.item_count),
                 if summary.truncated() { "at least " } else { "" },

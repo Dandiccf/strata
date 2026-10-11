@@ -2424,7 +2424,7 @@ impl Browser {
         self.deletion_permanent.set(permanent);
         self.operation_destination_description
             .replace(if permanent {
-                "Permanent deletion".to_owned()
+                "Deletion without Trash".to_owned()
             } else {
                 "Destination: Trash".to_owned()
             });

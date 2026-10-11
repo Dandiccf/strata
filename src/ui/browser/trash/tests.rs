@@ -119,7 +119,7 @@ fn permanent_delete_confirmation_is_actionable_while_summary_loads() {
             view.state.show_delete_confirmation(vec![entry]);
 
             let confirm = find_widget(window.upcast_ref(), &|button: &gtk::Button| {
-                button.label().as_deref() == Some("Permanently delete 1 item")
+                button.label().as_deref() == Some("Delete 1 item")
             })
             .expect("permanent delete confirmation");
             assert!(confirm.is_sensitive());

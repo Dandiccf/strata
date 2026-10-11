@@ -48,7 +48,7 @@ def test_delete_animation_preserves_survivors_and_restores_interaction(strata, m
 
     strata.keyboard.press("shift+Delete")
     strata.wait_for_dialog()
-    strata.pointer.click(strata.dialog_button("Permanently delete 1 item"))
+    strata.pointer.click(strata.dialog_button("Delete 1 item"))
     strata.wait(
         lambda: not fixture.path("todo.txt").exists(),
         "the file to be deleted",

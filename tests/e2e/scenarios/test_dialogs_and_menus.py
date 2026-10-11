@@ -49,7 +49,7 @@ def test_the_entry_context_menu_offers_named_actions_and_accelerators(strata):
     assert_menu_order(strata, [
         "Open", "Open With…", "Quick preview", "Print", "Cut", "Copy", "Duplicate",
         "Rename", "Move to…", "Copy to…", "Compress…", "Customize…", "Copy path",
-        "Copy name", "Properties", "Move to Trash", "Permanently delete",
+        "Copy name", "Properties", "Move to Trash", "Delete without Trash",
     ])
     strata.dismiss_menu()
 
@@ -58,7 +58,7 @@ def test_the_entry_context_menu_offers_named_actions_and_accelerators(strata):
         "Open", "Open With…", "Open in Terminal", "Cut", "Copy", "Duplicate",
         "Rename", "Move to…", "Copy to…", "Compress…", "Pin to sidebar",
         "Customize…", "Copy path", "Copy name", "Properties", "Move to Trash",
-        "Permanently delete",
+        "Delete without Trash",
     ])
     strata.dismiss_menu()
 
@@ -145,7 +145,7 @@ def test_keyboard_context_menu_targets_selection_and_owns_keys(strata, mode, sho
     assert_menu_order(strata, [
         "Open With…", "Cut", "Copy", "Duplicate", "Move to…", "Copy to…",
         "Compress…", "Copy paths", "Copy names", "Properties", "Move to Trash",
-        "Permanently delete",
+        "Delete without Trash",
     ])
     strata.wait(
         lambda: strata.menu_item("New Folder with Selection").has_state("focused"),
@@ -479,7 +479,7 @@ def test_enter_submits_compress_then_floating_chooser_extracts(strata):
         "Open", "Open With…", "Extract here", "Extract to…", "Cut", "Copy",
         "Duplicate", "Rename", "Move to…", "Copy to…", "Compress…",
         "Customize…", "Copy path", "Copy name", "Properties", "Move to Trash",
-        "Permanently delete",
+        "Delete without Trash",
     ])
     strata.choose_menu_item("Extract to…")
     chooser = strata.destination_chooser("Extract to")

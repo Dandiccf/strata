@@ -223,7 +223,7 @@ pub(super) fn install_item(
             options.push((
                 Action::PermanentDelete,
                 crate::assets::icons::TRASH,
-                "Permanently delete",
+                "Delete without Trash",
                 ContextHint::PermanentDelete,
                 true,
                 true,

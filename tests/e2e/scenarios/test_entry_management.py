@@ -220,7 +220,7 @@ def test_permanent_delete_requires_confirmation_and_can_be_cancelled(strata, mod
 
     dialog = strata.wait_for_dialog()
     assert dialog.role in ("dialog", "alert")
-    assert dialog.name == "Permanently delete 1 item?", (
+    assert dialog.name == "Delete 1 item without using Trash?", (
         f"unexpected dialog {dialog.name!r}"
     )
     assert fixture.path("todo.txt").exists(), (
@@ -234,7 +234,7 @@ def test_permanent_delete_requires_confirmation_and_can_be_cancelled(strata, mod
     strata.select_entry("todo.txt")
     strata.keyboard.press("shift+Delete")
     strata.wait_for_dialog()
-    strata.pointer.click(strata.dialog_button("Permanently delete 1 item"))
+    strata.pointer.click(strata.dialog_button("Delete 1 item"))
 
     strata.wait(
         lambda: not fixture.path("todo.txt").exists(),
@@ -259,7 +259,7 @@ def test_permanent_delete_through_a_symlinked_parent(strata, mode):
     strata.select_entry("notes.txt", directory="documents-alias")
     strata.keyboard.press("shift+Delete")
     strata.wait_for_dialog()
-    strata.pointer.click(strata.dialog_button("Permanently delete 1 item"))
+    strata.pointer.click(strata.dialog_button("Delete 1 item"))
 
     strata.wait(
         lambda: not fixture.path("documents/notes.txt").exists()

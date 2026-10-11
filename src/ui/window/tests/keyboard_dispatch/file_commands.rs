@@ -383,7 +383,7 @@ fn tenxer_delete_confirms_trash_and_permanent_deletion() {
                 assert_eq!(
                     focused_button(&fixture).and_then(|button| button.label()),
                     Some("Cancel".into()),
-                    "the size summary must not move focus to Permanently delete"
+                    "the size summary must not move focus to Delete"
                 );
                 cancel.emit_clicked();
                 wait_until(|| !modal_visible(&fixture.overlay));

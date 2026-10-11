@@ -906,7 +906,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     };
     let permanent_delete = item_context_danger_option(
         crate::assets::icons::CIRCLE_X,
-        "Permanently delete",
+        "Delete without Trash",
         ContextHint::PermanentDelete,
     );
     permanent_delete.add_css_class("danger");
@@ -1047,7 +1047,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     };
     let permanent_delete_multiple = item_context_danger_option(
         crate::assets::icons::CIRCLE_X,
-        "Permanently delete",
+        "Delete without Trash",
         ContextHint::PermanentDelete,
     );
     permanent_delete_multiple.add_css_class("danger");
